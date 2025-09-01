@@ -15,7 +15,7 @@ fn main() {
 #[derive(Debug)]
 struct BitTorrent {
     decoder: Decoder,
-    metadata: Option<HashMap<BencodePrimitiveTypes, BencodePrimitiveTypes>>
+    metadata: Option<HashMap<String, BencodeTypes>>
 }
 
 impl BitTorrent {
@@ -31,7 +31,7 @@ impl BitTorrent {
         debug!("[BitTorrent] bytes length decoded: {:?}", n);
 
         match val {
-            BencodeType::Dictionary(val) => {
+            BencodeTypes::Dictionary(val) => {
                 self.metadata = Some(val);
             }
             _ => {
@@ -42,18 +42,13 @@ impl BitTorrent {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
-enum BencodePrimitiveTypes {
+#[derive(Debug, PartialEq, Eq)]
+enum BencodeTypes {
     String(String),
     Integer(isize),
-    List(Vec<BencodePrimitiveTypes>),
-}
-
-#[derive(Debug, PartialEq)]
-enum BencodeType {
-    Primitive(BencodePrimitiveTypes),
-    List(Vec<BencodePrimitiveTypes>),
-    Dictionary(HashMap<BencodePrimitiveTypes, BencodePrimitiveTypes>),
+    List(Vec<BencodeTypes>),
+    Dictionary(HashMap<String, BencodeTypes>),
+    Raw(Vec<u8>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -61,43 +56,78 @@ struct Decoder {}
 
 impl Decoder {
     // Returns the number of bytes read and the decoded type
-    pub fn from_bytes(&self, bytes: &[u8]) -> Result<(usize, BencodeType)>{
+    pub fn from_bytes(&self, bytes: &[u8]) -> Result<(usize, BencodeTypes)>{
         if is_list(bytes) {
             let (n, val) = self.decode_list(bytes)?;
-            return Ok((n, BencodeType::List(val)));
+            return Ok((n, BencodeTypes::List(val)));
         } 
 
         if is_dictionary(bytes) {
             let (n, val) = self.decode_dictionary(bytes)?;
-            return Ok((n, BencodeType::Dictionary(val)));
+            return Ok((n, BencodeTypes::Dictionary(val)));
         }
 
         let (n, val) = self.decode_primitive(bytes)?;
-        return Ok((n, BencodeType::Primitive(val)));
+        return Ok((n, val));
     }
 
-    pub fn decode_primitive(&self, bytes: &[u8]) -> Result<(usize, BencodePrimitiveTypes)> {
-        if bytes.len() >= 20 {
-            dbg!("[decode_primitive] bytes: {:?}", String::from_utf8(bytes[0..20].to_vec()).unwrap());
+    pub fn decode_primitive(&self, bytes: &[u8]) -> Result<(usize, BencodeTypes)> {
+        if bytes.len() >= 10 {
+            let next_bytes = String::from_utf8(bytes[0..20].to_vec());
+
+            if next_bytes.is_ok() {
+                dbg!("[decode_primitive] bytes: {:?}", next_bytes.unwrap());
+            } else {
+                dbg!("[decode_primitive] cannot print invalid UTF-8 string: {:?}", next_bytes.unwrap_err());
+            }
         }
-        
+
         // The order of the checks is important or it will misconsider the data type.
+        if is_dictionary(bytes) {
+            let (n, val) = self.decode_dictionary(bytes)?;
+            return Ok((n, BencodeTypes::Dictionary(val)));
+        }
+
         if is_list(bytes) {
             let (n, val) = self.decode_list(bytes)?;
-            return Ok((n, BencodePrimitiveTypes::List(val)));
+            return Ok((n, BencodeTypes::List(val)));
         }
 
         if is_integer(bytes) {
             let (n, val) = self.decode_integer(bytes)?;
-            return Ok((n, BencodePrimitiveTypes::Integer(val)));
+            return Ok((n, BencodeTypes::Integer(val)));
         }
 
         if is_string(bytes) {
             let (n, val) = self.decode_string(bytes)?;
-            return Ok((n, BencodePrimitiveTypes::String(val)));
+            return Ok((n, BencodeTypes::String(val)));
         }
 
-        Err(anyhow!("received an unsupported type"))
+        Err(anyhow!("the provided data is not a valid primitive"))
+    }
+
+    // TODO: Review if there is a way to not add everything as unknown if for some reason
+    // there is other valid types after this raw bytes.
+    pub fn handle_as_raw(&self, bytes: &[u8]) -> Result<(usize, BencodeTypes)> {
+        let mut curr_idx = 0;
+        while curr_idx < bytes.len() {
+            let b = bytes[curr_idx];
+
+            if b == b':' {
+                break;
+            }
+
+            curr_idx += 1;
+        }
+
+        let input_len = &bytes[0..curr_idx];
+        let input_len_str: &str = std::str::from_utf8(input_len)?;
+        let len: usize = input_len_str.parse()?;
+
+        curr_idx += 1; // ignore the colon in the string
+
+        let input = &bytes[curr_idx..len+curr_idx]; 
+        Ok((len+curr_idx, BencodeTypes::Raw(input.to_vec())))
     }
 
     pub fn decode_string(&self, bytes: &[u8]) -> Result<(usize, String)> {
@@ -147,7 +177,7 @@ impl Decoder {
         Ok((n, number))
     }
     
-    pub fn decode_list(&self, bytes: &[u8]) -> Result<(usize, Vec<BencodePrimitiveTypes>)> {
+    pub fn decode_list(&self, bytes: &[u8]) -> Result<(usize, Vec<BencodeTypes>)> {
         if !is_list(bytes) {
             return Err(anyhow!("the provided data is not a list"));
         }
@@ -173,7 +203,7 @@ impl Decoder {
         Ok((curr_idx + 1, result))
     }
 
-    pub fn decode_dictionary(&self, bytes: &[u8]) -> Result<(usize, HashMap<BencodePrimitiveTypes, BencodePrimitiveTypes>)> {
+    pub fn decode_dictionary(&self, bytes: &[u8]) -> Result<(usize, HashMap<String, BencodeTypes>)> {
         if !(is_dictionary(bytes)) {
             return Err(anyhow!("the provided data is not a dictionary"));
         }
@@ -183,14 +213,22 @@ impl Decoder {
         let mut curr_idx = 0;
         let mut hm = HashMap::new();
         while curr_idx < input.len(){
-            let (n, key) = self.decode_primitive(&input[curr_idx..])?;
+            let (n, key) = self.decode_string(&input[curr_idx..])?;
             curr_idx+=n;
 
-            let (n, val) = self.decode_primitive(&input[curr_idx..])?;
-            curr_idx += n;
-
+            // the pieces key has special caracters that are not valid UTF-8 characters, so we need to handle it as raw.
+            let val = if key == "pieces" {
+                dbg!("[decode_dictionary] pieces key found");
+                let (n, v) = self.handle_as_raw(&input[curr_idx..])?;
+                curr_idx += n;
+                v
+            } else {
+                let (n, v) = self.decode_primitive(&input[curr_idx..])?;
+                curr_idx += n;
+                v
+            };
+            
             dbg!("[decode_dictionary] adding the key: {:?} with the value: {:?}", &key, &val);
-
             hm.insert(key, val);
         }
 
@@ -204,17 +242,25 @@ fn is_list(bytes: &[u8]) -> bool {
 
 fn is_string(bytes: &[u8]) -> bool {
     let mut curr_idx = 0;
-    
+
     while curr_idx < bytes.len() {
-        if bytes[curr_idx] as char == ':' {
+        let b = bytes[curr_idx];
+
+        if b == b':' {
             break;
         }
+
+        // Only allow digits before colon
+        if !(b'0'..=b'9').contains(&b) {
+            return false;
+        }
+
         curr_idx += 1;
     }
 
-    return bytes.len() >= 2 && bytes[0] as isize > 0 && curr_idx < bytes.len()
+    // valid if at least one digit before colon
+    return curr_idx > 0 && curr_idx < bytes.len() && bytes[curr_idx] == b':';
 }
-
 fn is_integer(bytes: &[u8]) -> bool {
     let mut curr_idx = 0;
     while curr_idx < bytes.len() {
@@ -318,7 +364,7 @@ mod tests {
             (
                 "01 - simple list",
                 "l4:rust6:golangi40ei-60ee".as_bytes().to_vec(),
-                Ok((25, vec![BencodePrimitiveTypes::String(String::from("rust")), BencodePrimitiveTypes::String(String::from("golang")), BencodePrimitiveTypes::Integer(40), BencodePrimitiveTypes::Integer(-60)])),
+                Ok((25, vec![BencodeTypes::String(String::from("rust")), BencodeTypes::String(String::from("golang")), BencodeTypes::Integer(40), BencodeTypes::Integer(-60)])),
             ),
             (
                 "02 - empty list",
@@ -328,19 +374,19 @@ mod tests {
             (
                 "03 - list with a single string",
                 "l5:helloi52ee".as_bytes().to_vec(),
-                Ok((13, vec![BencodePrimitiveTypes::String(String::from("hello")), BencodePrimitiveTypes::Integer(52)])),
+                Ok((13, vec![BencodeTypes::String(String::from("hello")), BencodeTypes::Integer(52)])),
             ),
             (
                 "04 - list with a single integer",
                 "li40ee".as_bytes().to_vec(),
-                Ok((6, vec![BencodePrimitiveTypes::Integer(40)])),
+                Ok((6, vec![BencodeTypes::Integer(40)])),
             ),
             (
                 "05 - list within a list",
                 "ll5:helloel5:worldee".as_bytes().to_vec(),
                 Ok((20, vec![
-                    BencodePrimitiveTypes::List(vec![BencodePrimitiveTypes::String(String::from("hello"))]), 
-                    BencodePrimitiveTypes::List(vec![BencodePrimitiveTypes::String(String::from("world"))])]
+                    BencodeTypes::List(vec![BencodeTypes::String(String::from("hello"))]), 
+                    BencodeTypes::List(vec![BencodeTypes::String(String::from("world"))])]
                 )),
             ),
             (
@@ -372,7 +418,12 @@ mod tests {
             (
                 "01 - simple dictionary",
                 "d3:foo3:bar5:helloi52ee".as_bytes().to_vec(),
-                Ok((23, HashMap::from([(BencodePrimitiveTypes::String(String::from("foo")), BencodePrimitiveTypes::String(String::from("bar"))), (BencodePrimitiveTypes::String(String::from("hello")), BencodePrimitiveTypes::Integer(52))]))),
+                Ok((23, HashMap::from(
+                    [
+                        (String::from("foo"), BencodeTypes::String(String::from("bar"))), 
+                        (String::from("hello"), BencodeTypes::Integer(52)),
+                    ])
+                )),
             ),
         ];
 
@@ -380,6 +431,40 @@ mod tests {
             println!("{}", name);
 
             let decoder = Decoder {};
+            let res = decoder.decode_dictionary(&input);
+
+            if res.is_ok() && expected.is_ok() {
+                assert_eq!(res.unwrap(), expected.unwrap());
+            } else if res.is_err() && expected.is_err() {
+                assert!(res.unwrap_err().to_string().contains(&expected.unwrap_err().to_string()));
+            } else {
+                panic!("Result variants did not match");
+            }
+        }
+    }
+
+    #[test]
+    fn test_handle_as_raw() {
+        let test_cases: Vec<(&'static str, Vec<u8>, Result<(usize, HashMap<String, BencodeTypes>)>)> = vec![
+            (
+                "01 - dictionary with raw",
+                "d6:pieces11:hello worlde".as_bytes().to_vec(),
+                Ok((24, 
+                    HashMap::from(
+                        [
+                            (String::from("pieces"), BencodeTypes::Raw("hello world".as_bytes().to_vec()))
+                        ]
+                    )
+                )),
+            ),
+        ];
+
+        for (name, input, expected) in test_cases {
+            println!("{}", name);
+
+            let decoder = Decoder {};
+
+            // this should handle the pieces key as raw
             let res = decoder.decode_dictionary(&input);
 
             if res.is_ok() && expected.is_ok() {

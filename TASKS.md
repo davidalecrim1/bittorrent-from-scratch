@@ -6,5 +6,6 @@
 - [ ] Parse a torrent file and store its information about the server (a.k.a tracker) with the peers;
     - [x] Understand the problem of announce list.
     - [x] Add the feature of a list within a list.
-    - [ ] Add the feature of a dictionary within a dictionary (I will need to refactor things).
+    - [x] Add the feature of a dictionary within a dictionary (I will need to refactor things).
+    - [x] Handle the pieces keyword to parse things as raw instead of string because of invalid UTF-8.
 
