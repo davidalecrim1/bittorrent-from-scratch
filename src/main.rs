@@ -46,6 +46,7 @@ impl BitTorrent {
 enum BencodePrimitiveTypes {
     String(String),
     Integer(isize),
+    List(Vec<BencodePrimitiveTypes>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -76,14 +77,24 @@ impl Decoder {
     }
 
     pub fn decode_primitive(&self, bytes: &[u8]) -> Result<(usize, BencodePrimitiveTypes)> {
-        if is_string(bytes) {
-            let (n, val) = self.decode_string(bytes)?;
-            return Ok((n, BencodePrimitiveTypes::String(val)));
+        if bytes.len() >= 20 {
+            dbg!("[decode_primitive] bytes: {:?}", String::from_utf8(bytes[0..20].to_vec()).unwrap());
         }
         
+        // The order of the checks is important or it will misconsider the data type.
+        if is_list(bytes) {
+            let (n, val) = self.decode_list(bytes)?;
+            return Ok((n, BencodePrimitiveTypes::List(val)));
+        }
+
         if is_integer(bytes) {
             let (n, val) = self.decode_integer(bytes)?;
             return Ok((n, BencodePrimitiveTypes::Integer(val)));
+        }
+
+        if is_string(bytes) {
+            let (n, val) = self.decode_string(bytes)?;
+            return Ok((n, BencodePrimitiveTypes::String(val)));
         }
 
         Err(anyhow!("received an unsupported type"))
@@ -141,19 +152,25 @@ impl Decoder {
             return Err(anyhow!("the provided data is not a list"));
         }
     
-        let input = &bytes[1..bytes.len()-1];
+        let mut curr_idx = 0;
+        curr_idx += 1; // ignore the 'l' in the provided bytes
     
         let mut result = Vec::new();
-        let mut curr_idx = 0;
 
-        while curr_idx < input.len() {
-            let (n, val) = self.decode_primitive(&input[curr_idx..])?;
+        while curr_idx < bytes.len() {
+            if bytes[curr_idx] as char == 'e' { // reached the end of this list
+                break;
+            }
+
+            let (n, val) = self.decode_primitive(&bytes[curr_idx..])?;
             result.push(val);
             curr_idx += n;
         }
 
-        // +2 because of the 'l' and the 'e' in the provided bytes
-        Ok((curr_idx + 2, result))
+        dbg!("[decode_list] result: {:?}", &result);
+
+        // +1 because of the 'e' in the provided bytes
+        Ok((curr_idx + 1, result))
     }
 
     pub fn decode_dictionary(&self, bytes: &[u8]) -> Result<(usize, HashMap<BencodePrimitiveTypes, BencodePrimitiveTypes>)> {
@@ -171,6 +188,8 @@ impl Decoder {
 
             let (n, val) = self.decode_primitive(&input[curr_idx..])?;
             curr_idx += n;
+
+            dbg!("[decode_dictionary] adding the key: {:?} with the value: {:?}", &key, &val);
 
             hm.insert(key, val);
         }
@@ -197,7 +216,15 @@ fn is_string(bytes: &[u8]) -> bool {
 }
 
 fn is_integer(bytes: &[u8]) -> bool {
-    return bytes.len() >= 2 && bytes[0] as char =='i' && bytes[bytes.len()-1] as char == 'e'
+    let mut curr_idx = 0;
+    while curr_idx < bytes.len() {
+        if bytes[curr_idx] as char == 'e' {
+            break;
+        }
+        curr_idx += 1;
+    }
+
+    return bytes.len() >= 2 && bytes[0] as char =='i' && curr_idx < bytes.len()
 }
 
 fn is_dictionary(bytes: &[u8]) -> bool {
@@ -308,6 +335,19 @@ mod tests {
                 "li40ee".as_bytes().to_vec(),
                 Ok((6, vec![BencodePrimitiveTypes::Integer(40)])),
             ),
+            (
+                "05 - list within a list",
+                "ll5:helloel5:worldee".as_bytes().to_vec(),
+                Ok((20, vec![
+                    BencodePrimitiveTypes::List(vec![BencodePrimitiveTypes::String(String::from("hello"))]), 
+                    BencodePrimitiveTypes::List(vec![BencodePrimitiveTypes::String(String::from("world"))])]
+                )),
+            ),
+            (
+                "06 - empty list",
+                "le".as_bytes().to_vec(),
+                Ok((2, vec![])),
+            )
         ];
 
         for (name, input, expected) in test_cases {
