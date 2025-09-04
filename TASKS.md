@@ -8,4 +8,10 @@
     - [x] Add the feature of a list within a list.
     - [x] Add the feature of a dictionary within a dictionary (I will need to refactor things).
     - [x] Handle the pieces keyword to parse things as raw instead of string because of invalid UTF-8.
-
+- [ ] Change the file parsing to a test instead of the main function.
+- [x] Create a function to return the hash of the info.
+- [x] Parse the pieces length and it's hashes into the bittorrent client.
+- [x] Debug the request for the tracker to work on Postman.
+- [x] Create the request for the tracker server.
+- [x] Validate if my info hash is right using serde bencode.
+- [x] Fix bug in list parsing with the end of a list.
