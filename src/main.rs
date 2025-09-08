@@ -534,6 +534,40 @@ impl Decoder {
     }
 }
 
+pub struct PeerHandshake {
+    info_hash: [u8; 20],
+    peer_id: [u8; 20],
+    reserved: [u8; 8],
+}
+
+impl PeerHandshake {
+    pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
+        Self {
+            info_hash,
+            peer_id,
+            reserved: [0; 8],
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(68);
+        // pstrlen (1 byte)
+        bytes.push(19);
+        // pstr (19 bytes)
+        bytes.extend_from_slice(b"BitTorrent protocol");
+        // reserved (8 bytes)
+        bytes.extend_from_slice(&self.reserved);
+        // info_hash (20 bytes)
+        bytes.extend_from_slice(&self.info_hash);
+        // peer_id (20 bytes)
+        bytes.extend_from_slice(&self.peer_id);
+
+        return bytes;
+    }
+}
+
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
