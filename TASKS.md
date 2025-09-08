@@ -15,5 +15,5 @@
 - [x] Create the request for the tracker server.
 - [x] Validate if my info hash is right using serde bencode.
 - [x] Fix bug in list parsing with the end of a list.
-- [ ] Send a message to a peer and return the hash of the connection.
-- [ ] Start spliting into multiple files based on how rust manages modules.
+- [x] Send a message to a peer and return the hash of the connection.
+- [x] Start spliting into multiple files based on how rust manages modules.
