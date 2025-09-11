@@ -1,7 +1,9 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap};
 use std::net::IpAddr;
 use std::str::FromStr;
 use anyhow::{anyhow, Result};
+use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::fmt::Debug;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -24,6 +26,9 @@ impl Peer {
         Self { ip: IpAddr::from_str(&ip).unwrap(), port }
     }
 
+    pub fn get_addr(&self) -> String {
+        format!("{}:{}", &self.ip, &self.port)
+    }
 }
 
 pub struct PeerHandshake {
@@ -72,6 +77,10 @@ impl PeerHandshake {
             reserved: reserved.try_into()?,
         })
     }
+
+    pub fn get_peer_id(&self) -> [u8; 20] { 
+        self.peer_id
+    }
 }
 
 impl Debug for PeerHandshake {
@@ -81,3 +90,278 @@ impl Debug for PeerHandshake {
         write!(f, "PeerHandshake {{ info_hash: {:?}, peer_id: {:?} }}", info_hash, peer_id)
     }
 }
+
+#[derive(Debug)]
+pub struct PeerConnection {
+    peer: Peer,
+    peer_id: Option<[u8; 20]>,
+    stream: Option<TcpStream>,
+}
+
+impl PeerConnection {
+    pub fn new(peer: Peer) -> Self { 
+        Self { peer, peer_id: None, stream: None }
+    }
+
+    pub async fn handshake(&mut self, client_peer_id: [u8; 20], info_hash: [u8; 20]) -> Result<PeerHandshake> {
+        let handshake = PeerHandshake::new(info_hash, client_peer_id);
+        let bytes = handshake.to_bytes();
+
+        let mut stream = TcpStream::connect(self.peer.get_addr()).await?;
+        stream.write_all(&bytes).await?;
+
+        let mut buffer = vec![0u8; 68]; // the response is always 68 bytes
+        let n = stream.read(&mut buffer).await?;
+
+        let res = PeerHandshake::from_bytes(&buffer[..n])?;
+        self.peer_id = Some(res.get_peer_id());
+        self.stream = Some(stream);
+        Ok(res)
+    }
+
+    pub async fn read_messages(&mut self, num_pieces: usize) {
+        let mut buffer = vec![0u8; 1024*10];
+
+        if let Some(stream) = &mut self.stream {
+            let n = stream.read(&mut buffer).await.unwrap();
+            dbg!("[read_messages] received message, length: {}", n);
+            let msg = PeerMessage::from_bytes(&buffer[..n], num_pieces).unwrap();
+            dbg!("[read_messages] received message: {:?}", msg);
+        }
+    }
+
+    pub fn get_peer_id(&self) -> Option<[u8; 20]> {
+        self.peer_id
+    }
+}
+
+#[derive(Debug)]
+pub enum PeerMessage {
+    Bitfield(BitfieldMessage), 
+}
+
+impl PeerMessage {
+    pub fn from_bytes(bytes: &[u8], num_pieces: usize) -> Result<Self> {
+        if bytes.len() < 5 {
+            return Err(anyhow!("the provided data is not a valid message"));
+        }
+       
+        let length = Self::get_length(bytes)?;
+        dbg!("[from_bytes] the message length: {}", length);
+        let message_type = bytes[4];
+
+        match message_type {
+            5 => { 
+                let message = BitfieldMessage::from_bytes(bytes, num_pieces)?;
+                Ok(Self::Bitfield(message))
+            }
+            _ => {
+                return Err(anyhow!("the provided data is not a valid message"));
+            }
+        }
+    }
+
+    fn get_length(bytes: &[u8]) -> Result<usize> {
+        let length = &bytes[0..4];
+        let length = u32::from_be_bytes(length.try_into()?);
+        Ok(length as usize)
+    }
+}
+
+// This message keeps track of which pieces the peer has.
+// This can be seen by the pieces of the file using the index of the vector.
+// e.g. bitfield[0] = true means that the peer has the first piece.
+// The pieces hashes and total number of pieces come from the torrent file.
+pub struct BitfieldMessage {
+    bitfield: Vec<bool>,
+}
+
+impl BitfieldMessage {
+    pub fn from_bytes(bytes: &[u8], num_pieces: usize) -> Result<Self> {
+        let mut bitfield = Vec::with_capacity(num_pieces);
+
+        for i in 0..num_pieces {
+            let byte_index = i / 8;
+            let bit_index = 7 - (i % 8);
+            let has_piece = if byte_index < bytes.len() {
+                (bytes[byte_index] >> bit_index) & 1 == 1
+            } else {
+                false
+            };
+            bitfield.push(has_piece);
+        }
+
+        Ok(Self { bitfield })
+    }
+
+    pub fn has_piece(&self, index: usize) -> bool {
+        self.bitfield.get(index).copied().unwrap_or(false)
+    }
+}
+
+impl Debug for BitfieldMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let bits = self.bitfield.iter()
+            .map(|&b| if b { "1" } else { "0" })
+            .collect::<String>();
+
+        write!(f, "BitfieldMessage {{ bits: \"{}\" }}", bits)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bitfield_message_from_bytes_single_byte() {
+        let bytes = vec![0b10101010];
+        let num_pieces = 8;
+        
+        let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
+        
+        assert!(bitfield.has_piece(0));
+        assert!(!bitfield.has_piece(1));
+        assert!(bitfield.has_piece(2));
+        assert!(!bitfield.has_piece(3));
+        assert!(bitfield.has_piece(4));
+        assert!(!bitfield.has_piece(5));
+        assert!(bitfield.has_piece(6));
+        assert!(!bitfield.has_piece(7));
+    }
+
+    #[test]
+    fn test_bitfield_message_from_bytes_multiple_bytes() {
+        let bytes = vec![0b11110000, 0b00001111];
+        let num_pieces = 16;
+        
+        let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
+        
+        for i in 0..4 {
+            assert!(bitfield.has_piece(i), "Piece {} should be available", i);
+        }
+        for i in 4..8 {
+            assert!(!bitfield.has_piece(i), "Piece {} should not be available", i);
+        }
+        for i in 8..12 {
+            assert!(!bitfield.has_piece(i), "Piece {} should not be available", i);
+        }
+        for i in 12..16 {
+            assert!(bitfield.has_piece(i), "Piece {} should be available", i);
+        }
+    }
+
+    #[test]
+    fn test_bitfield_message_fewer_pieces_than_bits() {
+        let bytes = vec![0b11111111];
+        let num_pieces = 5;
+        
+        let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
+        
+        for i in 0..5 {
+            assert!(bitfield.has_piece(i), "Piece {} should be available", i);
+        }
+        
+        assert!(!bitfield.has_piece(5));
+        assert!(!bitfield.has_piece(6));
+        assert!(!bitfield.has_piece(7));
+    }
+
+    #[test]
+    fn test_bitfield_message_all_pieces_available() {
+        let bytes = vec![0b11111111, 0b11111111];
+        let num_pieces = 16;
+        
+        let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
+        
+        for i in 0..16 {
+            assert!(bitfield.has_piece(i), "Piece {} should be available", i);
+        }
+    }
+
+    #[test]
+    fn test_bitfield_message_no_pieces_available() {
+        let bytes = vec![0b00000000, 0b00000000];
+        let num_pieces = 16;
+        
+        let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
+        
+        for i in 0..16 {
+            assert!(!bitfield.has_piece(i), "Piece {} should not be available", i);
+        }
+    }
+
+    #[test]
+    fn test_bitfield_message_has_piece_out_of_bounds() {
+        let bytes = vec![0b10101010];
+        let num_pieces = 4;
+        
+        let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
+        
+        assert!(!bitfield.has_piece(100));
+        assert!(!bitfield.has_piece(8));
+    }
+
+    #[test]
+    fn test_bitfield_message_empty_bytes() {
+        let bytes = vec![];
+        let num_pieces = 0;
+        
+        let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
+        
+        assert!(!bitfield.has_piece(0));
+    }
+
+    #[test]
+    fn test_bitfield_message_msb_ordering() {
+        let bytes = vec![0b10000000];
+        let num_pieces = 8;
+        
+        let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
+        
+        assert!(bitfield.has_piece(0));
+        for i in 1..8 {
+            assert!(!bitfield.has_piece(i), "Piece {} should not be available", i);
+        }
+    }
+
+    #[test]
+    fn test_bitfield_message_realistic_scenario() {
+        let bytes = vec![0b11010100, 0b10110000, 0b00000001];
+        let num_pieces = 20;
+        
+        let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
+        
+        let expected = [
+            true, true, false, true, false, true, false, false,
+            true, false, true, true, false, false, false, false,
+            false, false, false, true
+        ];
+        
+        for (i, &expected_value) in expected.iter().enumerate() {
+            assert_eq!(
+                bitfield.has_piece(i), 
+                expected_value, 
+                "Piece {} should be {}", 
+                i, 
+                if expected_value { "available" } else { "not available" }
+            );
+        }
+    }
+
+    #[test]
+    fn test_bitfield_message_insufficient_bytes() {
+        let bytes = vec![0b11110000];
+        let num_pieces = 12;
+        
+        let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
+        
+        for i in 0..4 {
+            assert!(bitfield.has_piece(i), "Piece {} should be available", i);
+        }
+        for i in 4..12 {
+            assert!(!bitfield.has_piece(i), "Piece {} should not be available", i);
+        }
+    }
+}
+

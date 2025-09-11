@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use reqwest::{Client};
 
 mod client;
@@ -7,6 +9,7 @@ mod types;
 use client::BitTorrent;
 use encoding::Decoder;
 use encoding::Encoder;
+
 
 #[tokio::main]
 async fn main() {
@@ -25,9 +28,11 @@ async fn main() {
     let res = torrent.get_peers().await.unwrap();
     dbg!("[main] torrent peers: {:?}", &res);
 
+    let mut peer_conn = torrent.create_peer_connection(*b"postman-000000000001", &res[1]).await.unwrap();
+    dbg!("[main] peer connection: {:?}", &peer_conn.get_peer_id().unwrap());
 
-    let handshake = torrent.handshake_with_peer(*b"postman-000000000001", &res[0]).await.unwrap();
-    dbg!("[main] handshake: {:?}", &handshake);
+    dbg!("[main] read messages");
+    peer_conn.read_messages(torrent.get_num_pieces().unwrap()).await;
     
     // for debugging
     //fs::write("./output.txt", format!("{:?}", torrent)).unwrap();

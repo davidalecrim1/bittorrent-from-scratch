@@ -17,3 +17,9 @@
 - [x] Fix bug in list parsing with the end of a list.
 - [x] Send a message to a peer and return the hash of the connection.
 - [x] Start spliting into multiple files based on how rust manages modules.
+- [ ] Download a piece of the file.
+  - [x] Refactor the code structure to persist the connection and reuse it.
+  - [x] Reuse the connection to write another message after a handshake.
+  - [x] Parse the bitfield message into a struct to know which piece does the peer have;
+  - [x] Add a test to make this parsing clear in the future;
+  - [ ] Send an interested message;

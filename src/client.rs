@@ -7,17 +7,15 @@ use sha1::{Sha1, Digest};
 
 use crate::encoding::Decoder;
 use crate::encoding::Encoder;
-use crate::types::{BencodeTypes, Peer, PeerHandshake};
+use crate::types::{BencodeTypes, Peer, PeerConnection};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 
 #[derive(Debug)]
 pub struct BitTorrent {
     decoder: Decoder,
     encoder: Encoder,
     metadata: Option<BTreeMap<String, BencodeTypes>>,
-    http_client: Client
+    http_client: Client,
 }
 
 impl BitTorrent {
@@ -49,16 +47,7 @@ impl BitTorrent {
     }
 
     fn get_info_hash(&self) -> Result<Vec<u8>> {
-        let info = self.metadata
-        .as_ref()
-        .ok_or(anyhow!("the metadata is not present"))?
-        .get("info")
-        .ok_or(anyhow!("the info is not present"))?;
-
-        let info_dict = match info {
-            BencodeTypes::Dictionary(dict) => dict,
-            _ => return Err(anyhow!("the info is not a dictionary")),
-        };
+        let info_dict = self.get_info_dict()?;
 
         let bytes = self.encoder.from_bencode_types(BencodeTypes::Dictionary(info_dict.clone()))?;
         Ok(Sha1::new().chain_update(&bytes).finalize().to_vec())
@@ -79,16 +68,7 @@ impl BitTorrent {
     }
 
     pub fn get_file_size(&self) -> Result<usize> {
-        let info = self.metadata
-            .as_ref()
-            .ok_or(anyhow!("the metadata is not present"))?
-            .get("info")
-            .ok_or(anyhow!("the info is not present"))?;
-
-        let info_dict = match info {
-            BencodeTypes::Dictionary(dict) => dict,
-            _ => return Err(anyhow!("the info is not a dictionary")),
-        };
+        let info_dict = self.get_info_dict()?;
 
         let length = match info_dict.get("length").ok_or(anyhow!("the length is not present"))? {
             BencodeTypes::Integer(i) => i,
@@ -196,23 +176,39 @@ impl BitTorrent {
         }
     }
 
-    pub async fn handshake_with_peer(&self, client_peer_id: [u8; 20], peer: &Peer) -> Result<PeerHandshake> {
-        let info_hash = self.get_info_hash()?
+    pub async fn create_peer_connection(&mut self, client_peer_id: [u8; 20], peer: &Peer) -> Result<PeerConnection> {
+        let info_hash: [u8; 20] = self.get_info_hash()?
             .try_into()
             .map_err(|_| anyhow!("info hash is not 20 bytes"))?;
 
-        let handshake = PeerHandshake::new(info_hash, client_peer_id);
-        let bytes = handshake.to_bytes();
+        let mut peer_conn = PeerConnection::new(peer.clone());
+        peer_conn.handshake(client_peer_id, info_hash).await?;
+        Ok(peer_conn)
+    }
 
-        let mut stream = TcpStream::connect(format!("{}:{}", &peer.ip, &peer.port)).await?;
+    pub fn get_num_pieces(&self) -> Result<usize> {
+        let info_dict = self.get_info_dict()?;
+        let num_pieces = match info_dict.get("piece length").ok_or(anyhow!("the piece length is not present"))? {
+            BencodeTypes::Integer(i) => *i as usize,
+            _ => return Err(anyhow!("the pieces is not a string")),
+        };
 
-        stream.write_all(&bytes).await?;
+        Ok(num_pieces)
+    }
 
-        let mut buffer = vec![0u8; 68]; // the response is always 68 bytes
-        let n = stream.read(&mut buffer).await?;
+    fn get_info_dict(&self) -> Result<&BTreeMap<String, BencodeTypes>> {
+        let info = self.metadata
+            .as_ref()
+            .ok_or(anyhow!("the metadata is not present"))?
+            .get("info")
+            .ok_or(anyhow!("the info is not present"))?;
+    
+        let info_dict = match info {
+            BencodeTypes::Dictionary(dict) => dict,
+            _ => return Err(anyhow!("the info is not a dictionary")),
+        };
 
-        let response = PeerHandshake::from_bytes(&buffer[..n])?;
-        Ok(response)
+        Ok(info_dict)
     }
 
 }
