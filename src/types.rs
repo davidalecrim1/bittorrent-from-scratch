@@ -5,6 +5,8 @@ use anyhow::{anyhow, Result};
 use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::fmt::Debug;
+use std::time::Duration;
+use tokio::time::sleep;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum BencodeTypes {
@@ -106,17 +108,41 @@ impl PeerConnection {
     pub async fn handshake(&mut self, client_peer_id: [u8; 20], info_hash: [u8; 20]) -> Result<PeerHandshake> {
         let handshake = PeerHandshake::new(info_hash, client_peer_id);
         let bytes = handshake.to_bytes();
+        let max_retries = 3;
 
+        let mut last_error = None;
+
+        for attempt in 1..=max_retries {
+            match self.try_handshake(&bytes).await {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < max_retries {
+                        let delay = Duration::from_millis(200 * 2_u64.pow(attempt - 1)); // 200ms, 400ms, 800ms ...
+                        dbg!("[handshake] attempt {} failed, retrying in {}ms", 
+                               attempt, delay.as_millis());
+                        sleep(delay).await;
+                    }
+                }
+            }
+        }
+
+        Err(anyhow!("Failed to handshake with peer {} after {} attempts: {}", 
+                   self.peer.get_addr(), max_retries, last_error.unwrap()))
+    }
+
+    async fn try_handshake(&mut self, handshake_bytes: &[u8]) -> Result<PeerHandshake> {
         let mut stream = TcpStream::connect(self.peer.get_addr()).await?;
-        stream.write_all(&bytes).await?;
+        stream.write_all(handshake_bytes).await?;
 
-        let mut buffer = vec![0u8; 68]; // the response is always 68 bytes
+        let mut buffer = vec![0u8; 68];
         let n = stream.read(&mut buffer).await?;
 
-        let res = PeerHandshake::from_bytes(&buffer[..n])?;
-        self.peer_id = Some(res.get_peer_id());
+        let response = PeerHandshake::from_bytes(&buffer[..n])?;
+        self.peer_id = Some(response.get_peer_id());
         self.stream = Some(stream);
-        Ok(res)
+        
+        Ok(response)
     }
 
     pub async fn read_messages(&mut self, num_pieces: usize) {
@@ -133,10 +159,18 @@ impl PeerConnection {
     pub fn get_peer_id(&self) -> Option<[u8; 20]> {
         self.peer_id
     }
+
+    pub async fn send_interested(&mut self) {
+        if let Some(stream) = &mut self.stream {
+            stream.write_all(&InterestedMessage::to_bytes()).await.unwrap();
+        }
+    }
 }
 
 #[derive(Debug)]
 pub enum PeerMessage {
+    Unchoke(UnchokeMessage),
+    Interested(InterestedMessage),
     Bitfield(BitfieldMessage), 
 }
 
@@ -151,11 +185,18 @@ impl PeerMessage {
         let message_type = bytes[4];
 
         match message_type {
+            1 => {
+                let message = UnchokeMessage::from_bytes(bytes)?;
+                dbg!("[from_bytes] received unchoke message: {:?}", &message);
+                Ok(Self::Unchoke(message))
+            }
             5 => { 
                 let message = BitfieldMessage::from_bytes(bytes, num_pieces)?;
+                dbg!("[from_bytes] received bitfield message: {:?}", &message);
                 Ok(Self::Bitfield(message))
-            }
+            } 
             _ => {
+                dbg!("[from_bytes] received invalid message: {:?}", &message_type);
                 return Err(anyhow!("the provided data is not a valid message"));
             }
         }
@@ -206,6 +247,33 @@ impl Debug for BitfieldMessage {
             .collect::<String>();
 
         write!(f, "BitfieldMessage {{ bits: \"{}\" }}", bits)
+    }
+}
+
+#[derive(Debug)]
+pub struct InterestedMessage {}
+impl InterestedMessage {
+    pub fn to_bytes() -> [u8; 5] {
+        let mut bytes = [0u8; 5];
+        bytes[0..4].copy_from_slice(&1u32.to_be_bytes()); // length
+        bytes[4] = 2; // message type; 2 = interested
+        bytes
+    }
+}
+
+#[derive(Debug)]
+pub struct UnchokeMessage {}
+impl UnchokeMessage {
+    pub fn to_bytes() -> [u8; 5] {
+        let mut bytes = [0u8; 5];
+        bytes[0..4].copy_from_slice(&1u32.to_be_bytes()); // length
+        bytes[4] = 1; // message type; 1 = unchoke
+        bytes
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        // Just ignore the bytes for now since it's just an empty message
+        Ok(Self {})
     }
 }
 

@@ -22,4 +22,11 @@
   - [x] Reuse the connection to write another message after a handshake.
   - [x] Parse the bitfield message into a struct to know which piece does the peer have;
   - [x] Add a test to make this parsing clear in the future;
-  - [ ] Send an interested message;
+  - [x] Send an interested message;
+  - [ ] Refactor the read messages using a channel to fix the ownership problem between two tasks in Rust;
+- [ ] Add retries to the tracker server given that the peers sometimes return a 503 or a message like this:
+  [src/encoding.rs:333:13] &key = "peers"
+  [src/encoding.rs:333:13] &val = String(
+      "�}�;\u{1b}\u{1a}",
+  )
+- [ ] Add retries to the peer server given it sometimes refuses a connection;
