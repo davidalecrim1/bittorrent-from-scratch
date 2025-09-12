@@ -7,6 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::fmt::Debug;
 use std::time::Duration;
 use tokio::time::sleep;
+use tokio::sync::mpsc;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum BencodeTypes {
@@ -105,6 +106,12 @@ impl PeerConnection {
         Self { peer, peer_id: None, stream: None }
     }
 
+    pub fn get_peer_id(&self) -> Option<[u8; 20]> {
+        self.peer_id
+    }
+
+    // Opens the connection and performs the handshake.
+    // This is the kick off to run the messages loop.
     pub async fn handshake(&mut self, client_peer_id: [u8; 20], info_hash: [u8; 20]) -> Result<PeerHandshake> {
         let handshake = PeerHandshake::new(info_hash, client_peer_id);
         let bytes = handshake.to_bytes();
@@ -145,24 +152,65 @@ impl PeerConnection {
         Ok(response)
     }
 
-    pub async fn read_messages(&mut self, num_pieces: usize) {
+    pub async fn start_exchanging_messages(&mut self, num_pieces: usize) -> Result<(mpsc::Sender<PeerMessage>, mpsc::Receiver<PeerMessage>)> {
+        let (message_tx, message_rx) = mpsc::channel::<PeerMessage>(100);
+        let (command_tx, mut command_rx) = mpsc::channel::<PeerMessage>(10);
+
         let mut buffer = vec![0u8; 1024*10];
+        let mut stream = self.stream.take().ok_or_else(|| anyhow!("No stream available"))?;
 
-        if let Some(stream) = &mut self.stream {
-            let n = stream.read(&mut buffer).await.unwrap();
-            dbg!("[read_messages] received message, length: {}", n);
-            let msg = PeerMessage::from_bytes(&buffer[..n], num_pieces).unwrap();
-            dbg!("[read_messages] received message: {:?}", msg);
-        }
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    // Handle commands that should be sent in the TCP connection.
+                    command = command_rx.recv() => {
+                        if let Some(command) = command {
+                            if let Err(e) = Self::handle_command(command, &mut stream).await {
+                                dbg!("[peer_loop] error handling command: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                    // Handle incoming messages in the TCP connection.
+                    read_message = stream.read(&mut buffer) => {
+                        match read_message {
+                            Ok(0) => {
+                                dbg!("[peer_loop] connection closed by peer");
+                                break;
+                            }
+                            Ok(n) => {
+                                let msg = PeerMessage::from_bytes(&buffer[..n], num_pieces);
+                                if let Err(e) = msg {
+                                    dbg!("[peer_loop] error parsing message: {}", e);
+                                    break;
+                                }
+                                message_tx.send(msg.unwrap()).await.unwrap();
+                            }
+                            Err(e) => {
+                                dbg!("[peer_loop] error reading message: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            dbg!("[peer_loop] the loop with the peer has finished");
+        });
+
+        Ok((command_tx, message_rx))
     }
 
-    pub fn get_peer_id(&self) -> Option<[u8; 20]> {
-        self.peer_id
-    }
-
-    pub async fn send_interested(&mut self) {
-        if let Some(stream) = &mut self.stream {
-            stream.write_all(&InterestedMessage::to_bytes()).await.unwrap();
+    async fn handle_command(command: PeerMessage, stream: &mut TcpStream) -> Result<()>{
+        match command {
+            PeerMessage::Interested(message) => {
+                dbg!("[handle_command] received interested message: {:?}", &message);
+                stream.write_all(&InterestedMessage::to_bytes()).await.unwrap();
+                Ok(())
+            }
+            _ => {
+                dbg!("[handle_command] received invalid command: {:?}", &command);
+                return Err(anyhow!("the provided data is not a valid command"));
+            }
         }
     }
 }

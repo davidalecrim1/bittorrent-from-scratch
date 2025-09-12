@@ -23,10 +23,14 @@
   - [x] Parse the bitfield message into a struct to know which piece does the peer have;
   - [x] Add a test to make this parsing clear in the future;
   - [x] Send an interested message;
-  - [ ] Refactor the read messages using a channel to fix the ownership problem between two tasks in Rust;
+  - [x] Refactor the read messages using a channel to fix the ownership problem between two tasks in Rust;
+    - [x] This should look like in Go with channels and a select. This seems the way to do it.
 - [ ] Add retries to the tracker server given that the peers sometimes return a 503 or a message like this:
   [src/encoding.rs:333:13] &key = "peers"
   [src/encoding.rs:333:13] &val = String(
       "�}�;\u{1b}\u{1a}",
   )
 - [ ] Add retries to the peer server given it sometimes refuses a connection;
+- [ ] Improve the printing of the logs because its too verbose and breaking line for vectors;
+- [ ] Move the download file logic to the BitTorrent to orchestrate the messages with the peers;
+- [ ] Create a excalidraw diagram of this whole program;

@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::{Client};
@@ -32,24 +31,50 @@ async fn main() {
     let pieces_count = torrent.get_num_pieces().unwrap();
 
     for peer in res {
-        let peer_conn_res = torrent.create_peer_connection(*b"postman-000000000001", &peer).await;
-        if peer_conn_res.is_err() {
-            dbg!("[main] failed to create peer connection: {:?}", peer_conn_res.err().unwrap());
+        let mut peer_conn = match torrent.create_peer_connection(*b"postman-000000000001", &peer).await {
+            Ok(conn) => conn,
+            Err(e) => {
+                dbg!("[main] failed to create peer connection: {:?}", e);
+                continue;
+            }
+        };
+
+        let peer_id: [u8; 20] = peer_conn.get_peer_id().unwrap();
+        dbg!("[main] peer connection success: {:?}", &peer_id);
+
+        let (command_sender, mut message_receiver) = match peer_conn.start_exchanging_messages(pieces_count).await {
+            Ok(channels) => channels,
+            Err(e) => {
+                dbg!("[main] failed to start message exchange: {:?}", e);
+                continue;
+            }
+        };
+
+        tokio::task::spawn(async move {
+            while let Some(message) = message_receiver.recv().await {
+                match message {
+                    types::PeerMessage::Unchoke(_) => {
+                        dbg!("[main] received unchoke message - peer is ready to send data");
+                    }
+                    types::PeerMessage::Bitfield(bitfield) => {
+                        dbg!("[main] received bitfield message - peer has pieces info");
+                    }
+                    types::PeerMessage::Interested(_) => {
+                        dbg!("[main] received interested message from peer");
+                    }
+                }
+            }
+            dbg!("[main] message handling loop finished");
+        });
+
+        let interested_msg = types::PeerMessage::Interested(types::InterestedMessage {});
+        dbg!("[main] sending interested message to peer");
+        if let Err(e) = command_sender.send(interested_msg).await {
+            dbg!("[main] failed to send interested message: {:?}", e);
             continue;
         }
 
-        let peer_conn = Arc::new(peer_conn_res.unwrap());
-        let peer_id: [u8; 20] = peer_conn.get_peer_id().unwrap();
-
-        dbg!("[main] peer connection success: {:?}", &peer_id);
-        dbg!("[main] peer connection read messages");
-        
-        tokio::task::spawn(async move {
-            let peer_conn = peer_conn.clone();
-            peer_conn.read_messages(pieces_count).await;
-        });
-        
-        peer_conn.send_interested().await;
+        tokio::time::sleep(Duration::from_secs(10)).await; // just a hack to hang the main thread
         break;
     }
     // for debugging
