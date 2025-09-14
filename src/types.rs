@@ -4,10 +4,15 @@ use std::str::FromStr;
 use anyhow::{anyhow, Result};
 use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::bytes::BytesMut;
+use tokio_util::codec::{Decoder, Encoder, FramedRead, FramedWrite};
+use futures_util::{StreamExt, SinkExt};
 use std::fmt::Debug;
 use std::time::Duration;
 use tokio::time::sleep;
 use tokio::sync::mpsc;
+use log::debug;
+use bytes::Buf;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum BencodeTypes {
@@ -126,7 +131,7 @@ impl PeerConnection {
                     last_error = Some(e);
                     if attempt < max_retries {
                         let delay = Duration::from_millis(200 * 2_u64.pow(attempt - 1)); // 200ms, 400ms, 800ms ...
-                        dbg!("[handshake] attempt {} failed, retrying in {}ms", 
+                        debug!("[handshake] attempt {} failed, retrying in {}ms", 
                                attempt, delay.as_millis());
                         sleep(delay).await;
                     }
@@ -152,66 +157,39 @@ impl PeerConnection {
         Ok(response)
     }
 
-    pub async fn start_exchanging_messages(&mut self, num_pieces: usize) -> Result<(mpsc::Sender<PeerMessage>, mpsc::Receiver<PeerMessage>)> {
-        let (message_tx, message_rx) = mpsc::channel::<PeerMessage>(100);
-        let (command_tx, mut command_rx) = mpsc::channel::<PeerMessage>(10);
+    // This should block if everthing is working correctly 
+    // for reading and writing messages to the peer over the channels.
+    pub async fn run(&mut self, num_pieces: usize, notify: mpsc::Sender<PeerMessage>, mut rx: mpsc::Receiver<PeerMessage>) -> Result<()> {
+        if self.stream.is_none() {
+            return Err(anyhow!("the stream is not present"));
+        }
 
-        let mut buffer = vec![0u8; 1024*10];
-        let mut stream = self.stream.take().ok_or_else(|| anyhow!("No stream available"))?;
-
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    // Handle commands that should be sent in the TCP connection.
-                    command = command_rx.recv() => {
-                        if let Some(command) = command {
-                            if let Err(e) = Self::handle_command(command, &mut stream).await {
-                                dbg!("[peer_loop] error handling command: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                    // Handle incoming messages in the TCP connection.
-                    read_message = stream.read(&mut buffer) => {
-                        match read_message {
-                            Ok(0) => {
-                                dbg!("[peer_loop] connection closed by peer");
-                                break;
-                            }
-                            Ok(n) => {
-                                let msg = PeerMessage::from_bytes(&buffer[..n], num_pieces);
-                                if let Err(e) = msg {
-                                    dbg!("[peer_loop] error parsing message: {}", e);
-                                    break;
-                                }
-                                message_tx.send(msg.unwrap()).await.unwrap();
-                            }
-                            Err(e) => {
-                                dbg!("[peer_loop] error reading message: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            dbg!("[peer_loop] the loop with the peer has finished");
+        let stream = self.stream.take().unwrap();
+        let (reader, writer) = stream.into_split();
+        let mut reader = FramedRead::new(reader, PeerMessageDecoder { num_pieces });
+        let mut writer = FramedWrite::new(writer, PeerMessageEncoder { num_pieces });
+        
+        // Spawn write loop
+        tokio::task::spawn( async move {
+            while let Some(message)= rx.recv().await {
+                let _ = writer.send(message).await;
+            }       
         });
 
-        Ok((command_tx, message_rx))
-    }
-
-    async fn handle_command(command: PeerMessage, stream: &mut TcpStream) -> Result<()>{
-        match command {
-            PeerMessage::Interested(message) => {
-                dbg!("[handle_command] received interested message: {:?}", &message);
-                stream.write_all(&InterestedMessage::to_bytes()).await.unwrap();
-                Ok(())
-            }
-            _ => {
-                dbg!("[handle_command] received invalid command: {:?}", &command);
-                return Err(anyhow!("the provided data is not a valid command"));
+        // Spawn read loop
+        while let Some(item) = reader.next().await {
+            match item {
+                Ok(msg) => {
+                    let _ = notify.send(msg).await;
+                }
+                Err(e) => {
+                    debug!("[run] error receiving message: {}", &e);
+                    return Err(anyhow!("error receiving message: {}", e));
+                }
             }
         }
+
+        Ok(())
     }
 }
 
@@ -222,38 +200,105 @@ pub enum PeerMessage {
     Bitfield(BitfieldMessage), 
 }
 
+pub struct PeerMessageDecoder {
+    num_pieces: usize,
+}
+
+impl Decoder for PeerMessageDecoder {
+    type Item = PeerMessage;
+    type Error = anyhow::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        match PeerMessage::from_bytes(src.as_ref(), self.num_pieces) {
+            Ok((n, message)) => {
+                src.advance(n);
+                Ok(Some(message))
+            }
+            Err(e) => {
+                // TODO: See if there is a better way to handle this more like Golang sentinel errors.
+                if e.to_string().contains("incomplete message") || e.to_string().contains("the message has less than 5 bytes") {
+                    Ok(None) // Need more data - this is normal!
+                } else {
+                    Err(e)
+                }
+            }
+        }
+        
+    }
+}
+
+pub struct PeerMessageEncoder {
+    num_pieces: usize,
+}
+
+impl Encoder<PeerMessage> for PeerMessageEncoder {
+    type Error = anyhow::Error;
+
+    fn encode(&mut self, item: PeerMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let bytes = item.to_bytes();
+        if let Err(e) = bytes {
+            debug!("[encode] error converting message to bytes: {}", &e);
+            return Err(anyhow!("error converting message to bytes: {}", e));
+        }
+
+        dst.extend_from_slice(&bytes.unwrap());
+        Ok(())
+    }
+}
+
 impl PeerMessage {
-    pub fn from_bytes(bytes: &[u8], num_pieces: usize) -> Result<Self> {
-        if bytes.len() < 5 {
-            return Err(anyhow!("the provided data is not a valid message"));
+    pub fn from_bytes(src: &[u8], num_pieces: usize) -> Result<(usize, Self)> {
+        if src.len() < 5 {
+            return Err(anyhow!("the message has less than 5 bytes, it has {}", src.len()));
         }
        
-        let length = Self::get_length(bytes)?;
-        dbg!("[from_bytes] the message length: {}", length);
-        let message_type = bytes[4];
+        let length = Self::get_length(src)?;
+        debug!("[from_bytes] the message length: {}", length);
+        let message_type = src[4];
+
+        // Total message size = 4 bytes (length field) + length bytes (payload including message type)
+        let total_size = 4 + length;
+        if src.len() < total_size {
+            return Err(anyhow!("incomplete message, need {} bytes, got {}", total_size, src.len()));
+        }
 
         match message_type {
             1 => {
-                let message = UnchokeMessage::from_bytes(bytes)?;
-                dbg!("[from_bytes] received unchoke message: {:?}", &message);
-                Ok(Self::Unchoke(message))
+                let message = UnchokeMessage::from_bytes(src)?;
+                debug!("[from_bytes] received unchoke message: {:?}", &message);
+                Ok((total_size, Self::Unchoke(message)))
             }
             5 => { 
-                let message = BitfieldMessage::from_bytes(bytes, num_pieces)?;
-                dbg!("[from_bytes] received bitfield message: {:?}", &message);
-                Ok(Self::Bitfield(message))
+                // Pass the payload data (excluding length and message type bytes)
+                let payload = &src[5..];
+                let message = BitfieldMessage::from_bytes(payload, num_pieces)?;
+                debug!("[from_bytes] received bitfield message: {:?}", &message);
+                Ok((total_size, Self::Bitfield(message)))
             } 
             _ => {
-                dbg!("[from_bytes] received invalid message: {:?}", &message_type);
-                return Err(anyhow!("the provided data is not a valid message"));
+                debug!("[from_bytes] received invalid message: {:?} with length {}", &message_type, length);
+                return Err(anyhow!("the message type is invalid: {:?}", &message_type));
             }
         }
     }
 
     fn get_length(bytes: &[u8]) -> Result<usize> {
+        if bytes.len() < 4 {
+            return Err(anyhow!("the provided data has less than 4 bytes, it has {}", bytes.len()));
+        }
+
         let length = &bytes[0..4];
         let length = u32::from_be_bytes(length.try_into()?);
         Ok(length as usize)
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        match self {
+            Self::Interested(message) => Ok(message.to_bytes().to_vec()),
+            _ => {
+                return Err(anyhow!("the message being encoded is not supported: {:?}", &self));
+            }
+        }
     }
 }
 
@@ -268,7 +313,6 @@ pub struct BitfieldMessage {
 impl BitfieldMessage {
     pub fn from_bytes(bytes: &[u8], num_pieces: usize) -> Result<Self> {
         let mut bitfield = Vec::with_capacity(num_pieces);
-
         for i in 0..num_pieces {
             let byte_index = i / 8;
             let bit_index = 7 - (i % 8);
@@ -286,22 +330,33 @@ impl BitfieldMessage {
     pub fn has_piece(&self, index: usize) -> bool {
         self.bitfield.get(index).copied().unwrap_or(false)
     }
+
+    pub fn get_first_available_piece(&self) -> Option<usize> {
+        self.bitfield
+            .iter()
+            .enumerate()
+            .find_map(|(i, &has_piece)| if has_piece { Some(i) } else { None })
+    }
+    
 }
 
 impl Debug for BitfieldMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let bits = self.bitfield.iter()
-            .map(|&b| if b { "1" } else { "0" })
-            .collect::<String>();
+        // let bits = self.bitfield.iter()
+        //     .map(|&b| if b { "1" } else { "0" })
+        //     .collect::<String>();
 
-        write!(f, "BitfieldMessage {{ bits: \"{}\" }}", bits)
+        // write!(f, "BitfieldMessage {{ bits: \"{}\" }}", bits)
+
+        let amount_of_bits = self.bitfield.len();
+        write!(f, "BitfieldMessage {{ amount_of_bits: {} }}", amount_of_bits)
     }
 }
 
 #[derive(Debug)]
 pub struct InterestedMessage {}
 impl InterestedMessage {
-    pub fn to_bytes() -> [u8; 5] {
+    pub fn to_bytes(&self) -> [u8; 5] {
         let mut bytes = [0u8; 5];
         bytes[0..4].copy_from_slice(&1u32.to_be_bytes()); // length
         bytes[4] = 2; // message type; 2 = interested

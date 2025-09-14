@@ -1,2 +1,3 @@
 test:
-	cargo run . 2> output.txt || tail -n 20 output.txt
+	# Print the stdout and stderr to the file
+	rm output.txt && RUST_BACKTRACE=1 cargo run . > output.txt 2>&1

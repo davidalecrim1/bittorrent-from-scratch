@@ -2,12 +2,13 @@ use std::fmt::{Debug};
 use std::{collections::BTreeMap, fs};
 use anyhow::{anyhow, Result};
 use log::debug;
+use tokio::sync::mpsc;
 use reqwest::{Client, Url};
 use sha1::{Sha1, Digest};
 
 use crate::encoding::Decoder;
 use crate::encoding::Encoder;
-use crate::types::{BencodeTypes, Peer, PeerConnection};
+use crate::types::{BencodeTypes, InterestedMessage, Peer, PeerConnection, PeerMessage};
 
 
 #[derive(Debug)]
@@ -41,7 +42,7 @@ impl BitTorrent {
         Ok(())
     }
 
-    pub fn get_info_hash_as_hex(&self) -> Result<String> {
+    fn get_info_hash_as_hex(&self) -> Result<String> {
         let hash = self.get_info_hash()?;
         Ok(hex::encode(hash))
     }
@@ -67,7 +68,7 @@ impl BitTorrent {
         Ok(formatted)
     }
 
-    pub fn get_file_size(&self) -> Result<usize> {
+    fn get_file_size(&self) -> Result<usize> {
         let info_dict = self.get_info_dict()?;
 
         let length = match info_dict.get("length").ok_or(anyhow!("the length is not present"))? {
@@ -78,7 +79,7 @@ impl BitTorrent {
         Ok(*length as usize)
     }
 
-    pub async fn get_peers(&self) -> Result<Vec<Peer>> {
+    async fn get_peers(&self) -> Result<Vec<Peer>> {
         let endpoint = self.metadata.as_ref()
         .ok_or(anyhow!("the metadata is not present"))?
         .get("announce")
@@ -117,7 +118,7 @@ impl BitTorrent {
                     return Err(anyhow!("the request to the tracker server failed, status: {:?}", res.status()));
                 }
                 let body = res.bytes().await.unwrap();
-                dbg!("[get_peers] body: {:?}", String::from_utf8_lossy(&body));
+                debug!("[get_peers] body: {}", String::from_utf8_lossy(&body));
                 let (_, val) = self.decoder.from_bytes(&body)?;
                 val
             }
@@ -176,7 +177,7 @@ impl BitTorrent {
         }
     }
 
-    pub async fn create_peer_connection(&mut self, client_peer_id: [u8; 20], peer: &Peer) -> Result<PeerConnection> {
+    async fn create_peer_connection(&mut self, client_peer_id: [u8; 20], peer: &Peer) -> Result<PeerConnection> {
         let info_hash: [u8; 20] = self.get_info_hash()?
             .try_into()
             .map_err(|_| anyhow!("info hash is not 20 bytes"))?;
@@ -186,7 +187,7 @@ impl BitTorrent {
         Ok(peer_conn)
     }
 
-    pub fn get_num_pieces(&self) -> Result<usize> {
+    fn get_num_pieces(&self) -> Result<usize> {
         let info_dict = self.get_info_dict()?;
         let num_pieces = match info_dict.get("piece length").ok_or(anyhow!("the piece length is not present"))? {
             BencodeTypes::Integer(i) => *i as usize,
@@ -211,4 +212,58 @@ impl BitTorrent {
         Ok(info_dict)
     }
 
+    pub fn print_file_metadata(&self) -> Result<()> {
+        let hash = self.get_info_hash_as_hex()?;
+        let size = self.get_file_size()?;
+        let num_pieces = self.get_num_pieces()?;
+        debug!("[print_file_metadata] hash: {:?}, size: {:?}, num_pieces: {:?}", hash, size, num_pieces);
+        Ok(())
+    }
+
+    // TODO: Evolve this to download the file from multiple peers.
+    // Initially this will donwload only a single piece.
+    pub async fn download_file(&mut self) -> Result<()> {
+        let peers = self.get_peers().await?;
+        debug!("[download_file] torrent peers: {:?}", &peers);
+
+        let num_pieces = self.get_num_pieces()?;
+        debug!("[download_file] pieces count: {:?}", num_pieces);
+        let client_peer_id = *b"postman-000000000001";
+
+        for peer in peers {
+            let mut conn = match self.create_peer_connection(client_peer_id, &peer).await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    debug!("[download_file] failed to create peer connection: {:?}", e);
+                    continue;
+                }
+            };
+    
+            let peer_id: [u8; 20] = conn.get_peer_id().ok_or(anyhow!("the peer id is not present"))?;
+            debug!("[download_file] peer connection success: {:?}", &peer_id);
+
+            // Channel for receiving messages FROM the peer
+            let (peer_to_client_tx, mut peer_to_client_rx) = mpsc::channel::<PeerMessage>(100);
+            // Channel for sending messages TO the peer  
+            let (client_to_peer_tx, client_to_peer_rx) = mpsc::channel::<PeerMessage>(100);
+
+            // Spawn task to handle messages RECEIVED from peer
+            tokio::task::spawn(async move {
+                while let Some(message) = peer_to_client_rx.recv().await {
+                    debug!("[download_file] received message from peer: {:?}", &message);
+                    if let PeerMessage::Bitfield(bitfield) = message {
+                        debug!("[download_file] received bitfield message from peer: {:?}", &bitfield);
+                        //client_to_peer_tx.send(PeerMessage::Interested(InterestedMessage{})).await.unwrap();
+                        //debug!("[download_file] sent interested message to peer");
+                    }
+                }
+            });
+
+            // Run the peer connection in a separate task
+            conn.run(num_pieces, peer_to_client_tx, client_to_peer_rx).await?;
+            break; // For now just find one peer that accepts the connection.
+        }
+
+        Ok(())
+    }
 }
