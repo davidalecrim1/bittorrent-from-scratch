@@ -99,10 +99,12 @@ impl Debug for PeerHandshake {
     }
 }
 
+pub type PeerId = [u8; 20];
+
 #[derive(Debug)]
 pub struct PeerConnection {
     peer: Peer,
-    peer_id: Option<[u8; 20]>,
+    peer_id: Option<PeerId>,
     stream: Option<TcpStream>,
 }
 
@@ -198,6 +200,7 @@ pub enum PeerMessage {
     Unchoke(UnchokeMessage),
     Interested(InterestedMessage),
     Bitfield(BitfieldMessage), 
+    Request(RequestMessage),
 }
 
 pub struct PeerMessageDecoder {
@@ -295,6 +298,7 @@ impl PeerMessage {
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         match self {
             Self::Interested(message) => Ok(message.to_bytes().to_vec()),
+            Self::Request(message) => Ok(message.to_bytes().to_vec()),
             _ => {
                 return Err(anyhow!("the message being encoded is not supported: {:?}", &self));
             }
@@ -367,7 +371,7 @@ impl InterestedMessage {
 #[derive(Debug)]
 pub struct UnchokeMessage {}
 impl UnchokeMessage {
-    pub fn to_bytes() -> [u8; 5] {
+    pub fn to_bytes(&self) -> [u8; 5] {
         let mut bytes = [0u8; 5];
         bytes[0..4].copy_from_slice(&1u32.to_be_bytes()); // length
         bytes[4] = 1; // message type; 1 = unchoke
@@ -377,6 +381,26 @@ impl UnchokeMessage {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         // Just ignore the bytes for now since it's just an empty message
         Ok(Self {})
+    }
+}
+
+#[derive(Debug)]
+pub struct RequestMessage {
+    pub piece_index: u32,
+    pub begin: u32,
+    pub length: u32,
+}
+
+impl RequestMessage {
+    pub fn to_bytes(&self) -> [u8; 17] {
+        let mut bytes = [0u8; 17];
+        // length prefix (13 bytes payload)
+        bytes[0..4].copy_from_slice(&13u32.to_be_bytes());
+        bytes[4] = 6; // message ID = 6 (request)
+        bytes[5..9].copy_from_slice(&self.piece_index.to_be_bytes());
+        bytes[9..13].copy_from_slice(&self.begin.to_be_bytes());
+        bytes[13..17].copy_from_slice(&self.length.to_be_bytes());
+        bytes
     }
 }
 

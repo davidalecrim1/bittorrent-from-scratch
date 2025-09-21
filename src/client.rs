@@ -1,5 +1,5 @@
 use std::fmt::{Debug};
-use std::{collections::BTreeMap, fs};
+use std::{collections::BTreeMap, collections::HashMap, fs};
 use anyhow::{anyhow, Result};
 use log::debug;
 use tokio::sync::mpsc;
@@ -8,20 +8,27 @@ use sha1::{Sha1, Digest};
 
 use crate::encoding::Decoder;
 use crate::encoding::Encoder;
-use crate::types::{BencodeTypes, InterestedMessage, Peer, PeerConnection, PeerMessage};
+use crate::types::{BencodeTypes, BitfieldMessage, InterestedMessage, Peer, PeerConnection, PeerId, PeerMessage, RequestMessage};
 
+const BLOCK_SIZE: usize = 16 * 1024; // 16 KiB
 
-#[derive(Debug)]
+#[derive(Debug)]    
 pub struct BitTorrent {
     decoder: Decoder,
     encoder: Encoder,
     metadata: Option<BTreeMap<String, BencodeTypes>>,
     http_client: Client,
+
+    // Keep track of the pieces that have been downloaded.
+    downloaded_pieces: HashMap<u32, bool>,
+
+    // Store the bitfield message from the peer.
+    peer_bitfield: HashMap<PeerId, BitfieldMessage>,
 }
 
 impl BitTorrent {
     pub fn new(decoder: Decoder, encoder: Encoder, http_client: Client) -> Self {
-        Self { decoder, encoder, metadata: None, http_client }
+        Self { decoder, encoder, metadata: None, http_client, downloaded_pieces: HashMap::new(), peer_bitfield: HashMap::new() }
     }
 
     pub fn load_file(&mut self,path: &str) -> Result<()>{
@@ -247,23 +254,81 @@ impl BitTorrent {
             // Channel for sending messages TO the peer  
             let (client_to_peer_tx, client_to_peer_rx) = mpsc::channel::<PeerMessage>(100);
 
+            let mut download_piece_state = DownloadPieceState::new();
+
             // Spawn task to handle messages RECEIVED from peer
             tokio::task::spawn(async move {
                 while let Some(message) = peer_to_client_rx.recv().await {
                     debug!("[download_file] received message from peer: {:?}", &message);
-                    if let PeerMessage::Bitfield(bitfield) = message {
-                        debug!("[download_file] received bitfield message from peer: {:?}", &bitfield);
-                        //client_to_peer_tx.send(PeerMessage::Interested(InterestedMessage{})).await.unwrap();
-                        //debug!("[download_file] sent interested message to peer");
+                    match message {
+                        PeerMessage::Bitfield(bitfield) => {
+                            download_piece_state.received_bitfield = true;
+                            debug!("[download_file] received bitfield message from peer: {:?}", &bitfield);
+
+                            client_to_peer_tx.send(PeerMessage::Interested(InterestedMessage{})).await.unwrap();
+                            download_piece_state.sent_interested = true;
+                            debug!("[download_file] sent interested message to peer");
+                        }
+                        PeerMessage::Unchoke(unchoke) => {
+                            debug!("[download_file] received unchoke message from peer: {:?}", &unchoke);
+                            download_piece_state.received_unchoke = true;
+
+                            if download_piece_state.is_ready_for_download() {
+                                debug!("[download_file] is ready for downloading pieces from the peer");
+                                // TODO: This will cause an ownership problem. I need to think about it.
+                                // self.download_pieces_from_peer(client_to_peer_tx).unwrap();
+                                // TODO: Download the available pieces.
+                                // Need to think how I will handle this.
+                                // I will need here to use the peer to download the pieces that it has.
+                                // It's a good idea to send this to a function.
+                            }
+                        }
+                        _ => {
+                            debug!("[download_file] received invalid message from peer: {:?}", &message);
+                        }
                     }
                 }
             });
 
             // Run the peer connection in a separate task
+            // Writes will be handled here when sent through the `client_to_peer_tx` channel.
+            // Reads will be notified in the channel `peer_to_client_tx` that is read above.
             conn.run(num_pieces, peer_to_client_tx, client_to_peer_rx).await?;
             break; // For now just find one peer that accepts the connection.
         }
 
         Ok(())
     }
+
+    // Download each piece available from the peer.
+    // TODO: Need to think about the event loops of the messages with the peers.
+    fn download_pieces_from_peer(&self, client_to_peer_tx: mpsc::Sender<PeerMessage>, peer_id: PeerId) -> Result<()> {
+        let bitfield = self.peer_bitfield.get(&peer_id).ok_or(anyhow!("the bitfield is not present"))?;
+
+        // TODO: Just a hack for now to get a piece to download.
+        let piece = bitfield.get_first_available_piece().ok_or(anyhow!("the piece is not present"))?;
+        // TODO: I need to break the pieces into blocks and download it.x
+        // Maybe here I need to change the logic. The channels to send and receive messages it's getting messy.
+        Ok(())
+    }
 }
+
+// Used to keep track of the state of the download of a piece.
+// When all the messages are received, the peer is ready for 
+// the client to download the available pieces.
+struct DownloadPieceState {
+    pub sent_interested: bool,
+    pub received_bitfield: bool,
+    pub received_unchoke: bool,
+}
+
+impl DownloadPieceState {
+    fn new() -> Self {
+        Self { sent_interested: false, received_bitfield: false, received_unchoke: false }
+    }
+
+    fn is_ready_for_download(&self) -> bool {
+        debug!("[is_ready_for_download] sent_interested: {:?}, received_bitfield: {:?}, received_unchoke: {:?}", self.sent_interested, self.received_bitfield, self.received_unchoke);
+        self.sent_interested && self.received_bitfield && self.received_unchoke
+    }
+}   
