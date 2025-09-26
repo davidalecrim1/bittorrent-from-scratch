@@ -483,6 +483,37 @@ impl PieceMessage {
     }
 }
 
+pub struct Piece {
+    index: u32,
+    piece_length: usize,
+    blocks: Vec<Option<Vec<u8>>>,
+}
+
+impl Piece {
+    pub fn new(index: u32, piece_length: usize, blocks_size: usize) -> Self {
+        Self {
+            index,
+            piece_length,
+            blocks: vec![None; blocks_size],
+        }
+    }
+
+    pub fn add_block(&mut self, message: PieceMessage) -> Result<()> {
+        if message.piece_index != self.index {
+            return Err(anyhow!(
+                "the piece index does not match the piece index of the piece"
+            ));
+        }
+
+        self.blocks[message.begin as usize] = Some(message.block);
+        Ok(())
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.blocks.iter().all(|block| block.is_some())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

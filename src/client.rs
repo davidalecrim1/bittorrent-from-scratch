@@ -12,10 +12,10 @@ use crate::encoding::Decoder;
 use crate::encoding::Encoder;
 use crate::types::{
     BencodeTypes, BitfieldMessage, InterestedMessage, Peer, PeerConnection, PeerId, PeerMessage,
-    RequestMessage,
+    Piece, RequestMessage,
 };
 
-const BLOCK_SIZE: usize = 16 * 1024; // 16 KiB
+const DEFAULT_BLOCK_SIZE: usize = 16 * 1024; // 16 KiB
 
 #[derive(Debug)]
 pub struct BitTorrent {
@@ -309,7 +309,7 @@ impl BitTorrent {
 
             let mut download_piece_state = DownloadPieceState::new();
 
-            let piece = {
+            let piece_index = {
                 // Block starts here
                 let peer_bitfield_map = self.peer_bitfield.clone();
                 let peer_bitfield_guard = peer_bitfield_map.lock().await;
@@ -321,6 +321,12 @@ impl BitTorrent {
             }; // Lock is dropped here
 
             let piece_length = self.get_piece_length()?;
+
+            let mut piece = Piece::new(
+                piece_index as u32,
+                piece_length,
+                piece_length / DEFAULT_BLOCK_SIZE,
+            );
 
             // Spawn task to handle messages RECEIVED from peer
             tokio::task::spawn(async move {
@@ -367,7 +373,8 @@ impl BitTorrent {
                                 let mut offset = 0;
                                 let mut block_index = 0;
                                 while offset < piece_length {
-                                    let size = std::cmp::min(BLOCK_SIZE, piece_length - offset);
+                                    let size =
+                                        std::cmp::min(DEFAULT_BLOCK_SIZE, piece_length - offset);
                                     debug!(
                                         "[download_file] Block {}: offset={}, size={}",
                                         block_index, offset, size
@@ -377,7 +384,7 @@ impl BitTorrent {
 
                                     client_to_peer_tx
                                         .send(PeerMessage::Request(RequestMessage {
-                                            piece_index: piece as u32,
+                                            piece_index: piece_index as u32,
                                             begin: offset as u32,
                                             length: size as u32,
                                         }))
@@ -387,8 +394,23 @@ impl BitTorrent {
 
                                 debug!(
                                     "[download_file] send a request message for each block of the piece {}",
-                                    piece
+                                    piece_index
                                 );
+                            }
+                        }
+                        PeerMessage::Piece(message) => {
+                            debug!(
+                                "[download_file] received piece message from peer: {:?}",
+                                &message
+                            );
+
+                            if let Err(e) = piece.add_block(message) {
+                                debug!("[download_file] error adding block to piece: {:?}", e);
+                            }
+
+                            if piece.is_complete() {
+                                debug!("[download_file] piece is complete");
+                                // TODO: Write the piece to the file system.
                             }
                         }
                         _ => {
