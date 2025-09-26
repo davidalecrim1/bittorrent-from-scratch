@@ -30,6 +30,10 @@
     - [x] This seems to be a decoder problem understading the unchoke messages as bitfield ones;
     - [x] This was a problem of not broadcasting the read bytes on the channel.
   - [ ] Send a request message and see if more refactor will be needed to make this work in Rust with the loop;
+    - [x] Start some refactoring to make this work in my codebase;
+    - [x] Create the PieceMessage struct;
+    - [ ] See if the client is sending the RequestMessages and see how to store the PieceMessage in the FileSystem;
+    - [ ] Update that the piece was downloaded successfully;
 - [ ] Add retries to the tracker server given that the peers sometimes return a 503 or a message like this:
   [src/encoding.rs:333:13] &key = "peers"
   [src/encoding.rs:333:13] &val = String(

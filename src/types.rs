@@ -1,18 +1,20 @@
-use std::{collections::BTreeMap};
+use anyhow::{Result, anyhow};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use bytes::Buf;
+use futures_util::{SinkExt, StreamExt};
+use log::debug;
+use std::collections::BTreeMap;
+use std::fmt::Debug;
+use std::io::Cursor;
 use std::net::IpAddr;
 use std::str::FromStr;
-use anyhow::{anyhow, Result};
-use tokio::net::TcpStream;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc;
+use tokio::time::sleep;
 use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder, FramedRead, FramedWrite};
-use futures_util::{StreamExt, SinkExt};
-use std::fmt::Debug;
-use std::time::Duration;
-use tokio::time::sleep;
-use tokio::sync::mpsc;
-use log::debug;
-use bytes::Buf;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum BencodeTypes {
@@ -31,7 +33,10 @@ pub struct Peer {
 
 impl Peer {
     pub fn new(ip: String, port: u16) -> Self {
-        Self { ip: IpAddr::from_str(&ip).unwrap(), port }
+        Self {
+            ip: IpAddr::from_str(&ip).unwrap(),
+            port,
+        }
     }
 
     pub fn get_addr(&self) -> String {
@@ -86,7 +91,7 @@ impl PeerHandshake {
         })
     }
 
-    pub fn get_peer_id(&self) -> [u8; 20] { 
+    pub fn get_peer_id(&self) -> [u8; 20] {
         self.peer_id
     }
 }
@@ -95,7 +100,11 @@ impl Debug for PeerHandshake {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let info_hash = hex::encode(self.info_hash);
         let peer_id = hex::encode(self.peer_id);
-        write!(f, "PeerHandshake {{ info_hash: {:?}, peer_id: {:?} }}", info_hash, peer_id)
+        write!(
+            f,
+            "PeerHandshake {{ info_hash: {:?}, peer_id: {:?} }}",
+            info_hash, peer_id
+        )
     }
 }
 
@@ -109,8 +118,12 @@ pub struct PeerConnection {
 }
 
 impl PeerConnection {
-    pub fn new(peer: Peer) -> Self { 
-        Self { peer, peer_id: None, stream: None }
+    pub fn new(peer: Peer) -> Self {
+        Self {
+            peer,
+            peer_id: None,
+            stream: None,
+        }
     }
 
     pub fn get_peer_id(&self) -> Option<[u8; 20]> {
@@ -119,7 +132,11 @@ impl PeerConnection {
 
     // Opens the connection and performs the handshake.
     // This is the kick off to run the messages loop.
-    pub async fn handshake(&mut self, client_peer_id: [u8; 20], info_hash: [u8; 20]) -> Result<PeerHandshake> {
+    pub async fn handshake(
+        &mut self,
+        client_peer_id: [u8; 20],
+        info_hash: [u8; 20],
+    ) -> Result<PeerHandshake> {
         let handshake = PeerHandshake::new(info_hash, client_peer_id);
         let bytes = handshake.to_bytes();
         let max_retries = 3;
@@ -133,16 +150,23 @@ impl PeerConnection {
                     last_error = Some(e);
                     if attempt < max_retries {
                         let delay = Duration::from_millis(200 * 2_u64.pow(attempt - 1)); // 200ms, 400ms, 800ms ...
-                        debug!("[handshake] attempt {} failed, retrying in {}ms", 
-                               attempt, delay.as_millis());
+                        debug!(
+                            "[handshake] attempt {} failed, retrying in {}ms",
+                            attempt,
+                            delay.as_millis()
+                        );
                         sleep(delay).await;
                     }
                 }
             }
         }
 
-        Err(anyhow!("Failed to handshake with peer {} after {} attempts: {}", 
-                   self.peer.get_addr(), max_retries, last_error.unwrap()))
+        Err(anyhow!(
+            "Failed to handshake with peer {} after {} attempts: {}",
+            self.peer.get_addr(),
+            max_retries,
+            last_error.unwrap()
+        ))
     }
 
     async fn try_handshake(&mut self, handshake_bytes: &[u8]) -> Result<PeerHandshake> {
@@ -155,13 +179,18 @@ impl PeerConnection {
         let response = PeerHandshake::from_bytes(&buffer[..n])?;
         self.peer_id = Some(response.get_peer_id());
         self.stream = Some(stream);
-        
+
         Ok(response)
     }
 
-    // This should block if everthing is working correctly 
+    // This should block if everthing is working correctly
     // for reading and writing messages to the peer over the channels.
-    pub async fn run(&mut self, num_pieces: usize, notify: mpsc::Sender<PeerMessage>, mut rx: mpsc::Receiver<PeerMessage>) -> Result<()> {
+    pub async fn run(
+        &mut self,
+        num_pieces: usize,
+        notify: mpsc::Sender<PeerMessage>,
+        mut rx: mpsc::Receiver<PeerMessage>,
+    ) -> Result<()> {
         if self.stream.is_none() {
             return Err(anyhow!("the stream is not present"));
         }
@@ -170,12 +199,12 @@ impl PeerConnection {
         let (reader, writer) = stream.into_split();
         let mut reader = FramedRead::new(reader, PeerMessageDecoder { num_pieces });
         let mut writer = FramedWrite::new(writer, PeerMessageEncoder { num_pieces });
-        
+
         // Spawn write loop
-        tokio::task::spawn( async move {
-            while let Some(message)= rx.recv().await {
+        tokio::task::spawn(async move {
+            while let Some(message) = rx.recv().await {
                 let _ = writer.send(message).await;
-            }       
+            }
         });
 
         // Spawn read loop
@@ -199,8 +228,9 @@ impl PeerConnection {
 pub enum PeerMessage {
     Unchoke(UnchokeMessage),
     Interested(InterestedMessage),
-    Bitfield(BitfieldMessage), 
+    Bitfield(BitfieldMessage),
     Request(RequestMessage),
+    Piece(PieceMessage),
 }
 
 pub struct PeerMessageDecoder {
@@ -219,14 +249,15 @@ impl Decoder for PeerMessageDecoder {
             }
             Err(e) => {
                 // TODO: See if there is a better way to handle this more like Golang sentinel errors.
-                if e.to_string().contains("incomplete message") || e.to_string().contains("the message has less than 5 bytes") {
+                if e.to_string().contains("incomplete message")
+                    || e.to_string().contains("the message has less than 5 bytes")
+                {
                     Ok(None) // Need more data - this is normal!
                 } else {
                     Err(e)
                 }
             }
         }
-        
     }
 }
 
@@ -252,9 +283,12 @@ impl Encoder<PeerMessage> for PeerMessageEncoder {
 impl PeerMessage {
     pub fn from_bytes(src: &[u8], num_pieces: usize) -> Result<(usize, Self)> {
         if src.len() < 5 {
-            return Err(anyhow!("the message has less than 5 bytes, it has {}", src.len()));
+            return Err(anyhow!(
+                "the message has less than 5 bytes, it has {}",
+                src.len()
+            ));
         }
-       
+
         let length = Self::get_length(src)?;
         debug!("[from_bytes] the message length: {}", length);
         let message_type = src[4];
@@ -262,7 +296,11 @@ impl PeerMessage {
         // Total message size = 4 bytes (length field) + length bytes (payload including message type)
         let total_size = 4 + length;
         if src.len() < total_size {
-            return Err(anyhow!("incomplete message, need {} bytes, got {}", total_size, src.len()));
+            return Err(anyhow!(
+                "incomplete message, need {} bytes, got {}",
+                total_size,
+                src.len()
+            ));
         }
 
         match message_type {
@@ -271,15 +309,18 @@ impl PeerMessage {
                 debug!("[from_bytes] received unchoke message: {:?}", &message);
                 Ok((total_size, Self::Unchoke(message)))
             }
-            5 => { 
+            5 => {
                 // Pass the payload data (excluding length and message type bytes)
                 let payload = &src[5..];
                 let message = BitfieldMessage::from_bytes(payload, num_pieces)?;
                 debug!("[from_bytes] received bitfield message: {:?}", &message);
                 Ok((total_size, Self::Bitfield(message)))
-            } 
+            }
             _ => {
-                debug!("[from_bytes] received invalid message: {:?} with length {}", &message_type, length);
+                debug!(
+                    "[from_bytes] received invalid message: {:?} with length {}",
+                    &message_type, length
+                );
                 return Err(anyhow!("the message type is invalid: {:?}", &message_type));
             }
         }
@@ -287,7 +328,10 @@ impl PeerMessage {
 
     fn get_length(bytes: &[u8]) -> Result<usize> {
         if bytes.len() < 4 {
-            return Err(anyhow!("the provided data has less than 4 bytes, it has {}", bytes.len()));
+            return Err(anyhow!(
+                "the provided data has less than 4 bytes, it has {}",
+                bytes.len()
+            ));
         }
 
         let length = &bytes[0..4];
@@ -300,7 +344,10 @@ impl PeerMessage {
             Self::Interested(message) => Ok(message.to_bytes().to_vec()),
             Self::Request(message) => Ok(message.to_bytes().to_vec()),
             _ => {
-                return Err(anyhow!("the message being encoded is not supported: {:?}", &self));
+                return Err(anyhow!(
+                    "the message being encoded is not supported: {:?}",
+                    &self
+                ));
             }
         }
     }
@@ -341,19 +388,16 @@ impl BitfieldMessage {
             .enumerate()
             .find_map(|(i, &has_piece)| if has_piece { Some(i) } else { None })
     }
-    
 }
 
 impl Debug for BitfieldMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // let bits = self.bitfield.iter()
-        //     .map(|&b| if b { "1" } else { "0" })
-        //     .collect::<String>();
-
-        // write!(f, "BitfieldMessage {{ bits: \"{}\" }}", bits)
-
         let amount_of_bits = self.bitfield.len();
-        write!(f, "BitfieldMessage {{ amount_of_bits: {} }}", amount_of_bits)
+        write!(
+            f,
+            "BitfieldMessage {{ amount_of_bits: {} }}",
+            amount_of_bits
+        )
     }
 }
 
@@ -404,6 +448,41 @@ impl RequestMessage {
     }
 }
 
+#[derive(Debug)]
+pub struct PieceMessage {
+    pub piece_index: u32,
+    pub begin: u32,
+    pub block: Vec<u8>,
+}
+
+impl PieceMessage {
+    pub fn from_bytes(&self, bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < 9 {
+            return Err(anyhow!(
+                "the provided data has less than 9 bytes, it has {}",
+                bytes.len()
+            ));
+        }
+        let mut cursor = Cursor::new(bytes);
+        let _length = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?; // can verify length
+        let msg_id = ReadBytesExt::read_u8(&mut cursor)?;
+        if msg_id != 7 {
+            // 7 = Piece message
+            return Err(anyhow!("the provided data is not a valid piece message"));
+        }
+        let piece_index = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
+        let begin = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
+        let mut block = vec![0u8; bytes.len() - 9];
+        std::io::Read::read_exact(&mut cursor, &mut block)?;
+
+        Ok(PieceMessage {
+            piece_index,
+            begin,
+            block,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,9 +491,9 @@ mod tests {
     fn test_bitfield_message_from_bytes_single_byte() {
         let bytes = vec![0b10101010];
         let num_pieces = 8;
-        
+
         let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
-        
+
         assert!(bitfield.has_piece(0));
         assert!(!bitfield.has_piece(1));
         assert!(bitfield.has_piece(2));
@@ -429,17 +508,25 @@ mod tests {
     fn test_bitfield_message_from_bytes_multiple_bytes() {
         let bytes = vec![0b11110000, 0b00001111];
         let num_pieces = 16;
-        
+
         let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
-        
+
         for i in 0..4 {
             assert!(bitfield.has_piece(i), "Piece {} should be available", i);
         }
         for i in 4..8 {
-            assert!(!bitfield.has_piece(i), "Piece {} should not be available", i);
+            assert!(
+                !bitfield.has_piece(i),
+                "Piece {} should not be available",
+                i
+            );
         }
         for i in 8..12 {
-            assert!(!bitfield.has_piece(i), "Piece {} should not be available", i);
+            assert!(
+                !bitfield.has_piece(i),
+                "Piece {} should not be available",
+                i
+            );
         }
         for i in 12..16 {
             assert!(bitfield.has_piece(i), "Piece {} should be available", i);
@@ -450,13 +537,13 @@ mod tests {
     fn test_bitfield_message_fewer_pieces_than_bits() {
         let bytes = vec![0b11111111];
         let num_pieces = 5;
-        
+
         let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
-        
+
         for i in 0..5 {
             assert!(bitfield.has_piece(i), "Piece {} should be available", i);
         }
-        
+
         assert!(!bitfield.has_piece(5));
         assert!(!bitfield.has_piece(6));
         assert!(!bitfield.has_piece(7));
@@ -466,9 +553,9 @@ mod tests {
     fn test_bitfield_message_all_pieces_available() {
         let bytes = vec![0b11111111, 0b11111111];
         let num_pieces = 16;
-        
+
         let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
-        
+
         for i in 0..16 {
             assert!(bitfield.has_piece(i), "Piece {} should be available", i);
         }
@@ -478,11 +565,15 @@ mod tests {
     fn test_bitfield_message_no_pieces_available() {
         let bytes = vec![0b00000000, 0b00000000];
         let num_pieces = 16;
-        
+
         let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
-        
+
         for i in 0..16 {
-            assert!(!bitfield.has_piece(i), "Piece {} should not be available", i);
+            assert!(
+                !bitfield.has_piece(i),
+                "Piece {} should not be available",
+                i
+            );
         }
     }
 
@@ -490,9 +581,9 @@ mod tests {
     fn test_bitfield_message_has_piece_out_of_bounds() {
         let bytes = vec![0b10101010];
         let num_pieces = 4;
-        
+
         let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
-        
+
         assert!(!bitfield.has_piece(100));
         assert!(!bitfield.has_piece(8));
     }
@@ -501,9 +592,9 @@ mod tests {
     fn test_bitfield_message_empty_bytes() {
         let bytes = vec![];
         let num_pieces = 0;
-        
+
         let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
-        
+
         assert!(!bitfield.has_piece(0));
     }
 
@@ -511,12 +602,16 @@ mod tests {
     fn test_bitfield_message_msb_ordering() {
         let bytes = vec![0b10000000];
         let num_pieces = 8;
-        
+
         let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
-        
+
         assert!(bitfield.has_piece(0));
         for i in 1..8 {
-            assert!(!bitfield.has_piece(i), "Piece {} should not be available", i);
+            assert!(
+                !bitfield.has_piece(i),
+                "Piece {} should not be available",
+                i
+            );
         }
     }
 
@@ -524,22 +619,25 @@ mod tests {
     fn test_bitfield_message_realistic_scenario() {
         let bytes = vec![0b11010100, 0b10110000, 0b00000001];
         let num_pieces = 20;
-        
+
         let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
-        
+
         let expected = [
-            true, true, false, true, false, true, false, false,
-            true, false, true, true, false, false, false, false,
-            false, false, false, true
+            true, true, false, true, false, true, false, false, true, false, true, true, false,
+            false, false, false, false, false, false, true,
         ];
-        
+
         for (i, &expected_value) in expected.iter().enumerate() {
             assert_eq!(
-                bitfield.has_piece(i), 
-                expected_value, 
-                "Piece {} should be {}", 
-                i, 
-                if expected_value { "available" } else { "not available" }
+                bitfield.has_piece(i),
+                expected_value,
+                "Piece {} should be {}",
+                i,
+                if expected_value {
+                    "available"
+                } else {
+                    "not available"
+                }
             );
         }
     }
@@ -548,15 +646,18 @@ mod tests {
     fn test_bitfield_message_insufficient_bytes() {
         let bytes = vec![0b11110000];
         let num_pieces = 12;
-        
+
         let bitfield = BitfieldMessage::from_bytes(&bytes, num_pieces).unwrap();
-        
+
         for i in 0..4 {
             assert!(bitfield.has_piece(i), "Piece {} should be available", i);
         }
         for i in 4..12 {
-            assert!(!bitfield.has_piece(i), "Piece {} should not be available", i);
+            assert!(
+                !bitfield.has_piece(i),
+                "Piece {} should not be available",
+                i
+            );
         }
     }
 }
-
