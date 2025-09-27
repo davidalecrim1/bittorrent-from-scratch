@@ -80,7 +80,7 @@ impl BitTorrent {
 
     fn get_info_hash_as_url_encoded(&self) -> Result<String> {
         let hash = self.get_info_hash_as_hex()?;
-        let raw_bytes: Vec<u8> = hex::decode(hash).unwrap();
+        let raw_bytes: Vec<u8> = hex::decode(hash)?;
 
         let formatted: String = raw_bytes
             .iter()
@@ -139,7 +139,7 @@ impl BitTorrent {
         let mut url = Url::parse(endpoint)?;
         url.set_query(Some(&raw_query)); // <- keeps it as-is, no re-encoding
 
-        let req = self.http_client.get(url).build().unwrap();
+        let req = self.http_client.get(url).build()?;
 
         let res = self.http_client.execute(req).await;
         let val: BencodeTypes = match res {
@@ -150,7 +150,7 @@ impl BitTorrent {
                         res.status()
                     ));
                 }
-                let body = res.bytes().await.unwrap();
+                let body = res.bytes().await?;
                 debug!("[get_peers] body: {}", String::from_utf8_lossy(&body));
                 let (_, val) = self.decoder.from_bytes(&body)?;
                 val
@@ -234,7 +234,7 @@ impl BitTorrent {
             .get("pieces")
             .ok_or(anyhow!("the num pieces is not present"))?
         {
-            BencodeTypes::Integer(i) => *i as usize,
+            BencodeTypes::List(i) => i.len(),
             _ => return Err(anyhow!("the num pieces is not a string")),
         };
         Ok(num_pieces)
@@ -309,24 +309,16 @@ impl BitTorrent {
 
             let mut download_piece_state = DownloadPieceState::new();
 
-            let piece_index = {
-                // Block starts here
-                let peer_bitfield_map = self.peer_bitfield.clone();
-                let peer_bitfield_guard = peer_bitfield_map.lock().await;
-                peer_bitfield_guard
-                    .get(&peer_id)
-                    .ok_or(anyhow!("the bitfield is not present in the map"))?
-                    .get_first_available_piece()
-                    .ok_or(anyhow!("no available pieces found"))?
-            }; // Lock is dropped here
-
             let piece_length = self.get_piece_length()?;
 
-            let mut piece = Piece::new(
-                piece_index as u32,
+            let piece = Arc::new(tokio::sync::Mutex::new(Piece::new(
+                0,
                 piece_length,
                 piece_length / DEFAULT_BLOCK_SIZE,
-            );
+            )));
+
+            // Clone Arc references needed in the spawned task
+            let peer_bitfield_clone = self.peer_bitfield.clone();
 
             // Spawn task to handle messages RECEIVED from peer
             tokio::task::spawn(async move {
@@ -340,11 +332,22 @@ impl BitTorrent {
                                 &bitfield
                             );
 
-                            client_to_peer_tx
+                            if let Err(e) = client_to_peer_tx
                                 .send(PeerMessage::Interested(InterestedMessage {}))
                                 .await
-                                .unwrap();
+                            {
+                                debug!(
+                                    "[download_file] failed to send interested message: {:?}",
+                                    e
+                                );
+                                return;
+                            }
+
                             download_piece_state.sent_interested = true;
+
+                            // Store the bitfield message in the map.
+                            peer_bitfield_clone.lock().await.insert(peer_id, bitfield);
+
                             debug!("[download_file] sent interested message to peer");
                         }
                         PeerMessage::Unchoke(unchoke) => {
@@ -370,6 +373,31 @@ impl BitTorrent {
                                 // Consider using an Arc here for self to help with this.
 
                                 // TODO: Make this async to not block the read of messages from the peer.
+                                let piece_index = {
+                                    let bitfield_map = peer_bitfield_clone.lock().await;
+                                    match bitfield_map.get(&peer_id) {
+                                        Some(bitfield) => {
+                                            match bitfield.get_first_available_piece() {
+                                                Some(index) => index,
+                                                None => {
+                                                    debug!(
+                                                        "[download_file] no available pieces from peer"
+                                                    );
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            debug!("[download_file] peer bitfield not found");
+                                            return;
+                                        }
+                                    }
+                                }; // Lock is dropped here
+
+                                {
+                                    piece.lock().await.update_idx(piece_index as u32);
+                                } // Lock is dropped here
+
                                 let mut offset = 0;
                                 let mut block_index = 0;
                                 while offset < piece_length {
@@ -382,14 +410,20 @@ impl BitTorrent {
                                     offset += size;
                                     block_index += 1;
 
-                                    client_to_peer_tx
+                                    if let Err(e) = client_to_peer_tx
                                         .send(PeerMessage::Request(RequestMessage {
                                             piece_index: piece_index as u32,
                                             begin: offset as u32,
                                             length: size as u32,
                                         }))
                                         .await
-                                        .unwrap();
+                                    {
+                                        debug!(
+                                            "[download_file] failed to send request message: {:?}",
+                                            e
+                                        );
+                                        return;
+                                    }
                                 }
 
                                 debug!(
@@ -404,13 +438,17 @@ impl BitTorrent {
                                 &message
                             );
 
-                            if let Err(e) = piece.add_block(message) {
-                                debug!("[download_file] error adding block to piece: {:?}", e);
-                            }
+                            {
+                                let mut p = piece.lock().await;
 
-                            if piece.is_complete() {
-                                debug!("[download_file] piece is complete");
-                                // TODO: Write the piece to the file system.
+                                if let Err(e) = p.add_block(message) {
+                                    debug!("[download_file] error adding block to piece: {:?}", e);
+                                }
+
+                                if p.is_complete() {
+                                    debug!("[download_file] piece is complete");
+                                    // TODO: Write the piece to the file system.
+                                }
                             }
                         }
                         _ => {

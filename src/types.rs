@@ -306,15 +306,20 @@ impl PeerMessage {
         match message_type {
             1 => {
                 let message = UnchokeMessage::from_bytes(src)?;
-                debug!("[from_bytes] received unchoke message: {:?}", &message);
+                debug!("[from_bytes] received `unchoke` message: {:?}", &message);
                 Ok((total_size, Self::Unchoke(message)))
             }
             5 => {
                 // Pass the payload data (excluding length and message type bytes)
                 let payload = &src[5..];
                 let message = BitfieldMessage::from_bytes(payload, num_pieces)?;
-                debug!("[from_bytes] received bitfield message: {:?}", &message);
+                debug!("[from_bytes] received `bitfield` message: {:?}", &message);
                 Ok((total_size, Self::Bitfield(message)))
+            }
+            7 => {
+                let message = PieceMessage::from_bytes(src)?;
+                debug!("[from_bytes] received `piece` message`: {:?}", &message);
+                Ok((total_size, Self::Piece(message)))
             }
             _ => {
                 debug!(
@@ -448,7 +453,6 @@ impl RequestMessage {
     }
 }
 
-#[derive(Debug)]
 pub struct PieceMessage {
     pub piece_index: u32,
     pub begin: u32,
@@ -456,7 +460,7 @@ pub struct PieceMessage {
 }
 
 impl PieceMessage {
-    pub fn from_bytes(&self, bytes: &[u8]) -> Result<Self> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < 9 {
             return Err(anyhow!(
                 "the provided data has less than 9 bytes, it has {}",
@@ -473,13 +477,26 @@ impl PieceMessage {
         let piece_index = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
         let begin = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
         let mut block = vec![0u8; bytes.len() - 9];
-        std::io::Read::read_exact(&mut cursor, &mut block)?;
+        if let Err(e) = std::io::Read::read_exact(&mut cursor, &mut block) {
+            debug!("[from_bytes] error reading block: {:?}", e);
+            std::io::Read::read_to_end(&mut cursor, &mut block)?;
+        }
 
         Ok(PieceMessage {
             piece_index,
             begin,
             block,
         })
+    }
+}
+
+impl Debug for PieceMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PieceMessage {{ piece_index: {}, begin: {} }}",
+            self.piece_index, self.begin
+        )
     }
 }
 
@@ -511,6 +528,10 @@ impl Piece {
 
     pub fn is_complete(&self) -> bool {
         self.blocks.iter().all(|block| block.is_some())
+    }
+
+    pub fn update_idx(&mut self, index: u32) {
+        self.index = index
     }
 }
 
