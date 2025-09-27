@@ -31,9 +31,13 @@
     - [x] This was a problem of not broadcasting the read bytes on the channel.
   - [ ] Send a request message and see if more refactor will be needed to make this work in Rust with the loop;
     - [x] Start some refactoring to make this work in my codebase;
-    - [x] Create the PieceMessage struct;
+    - [x] Create the PieceMessage struct;\
+    - [ ] Solve this bug
+      thread 'main' panicked at src/main.rs:27:35:
+      called `Result::unwrap()` on an `Err` value: error receiving message: failed to fill whole buffer
     - [ ] See if the client is sending the RequestMessages and see how to store the PieceMessage in the FileSystem;
     - [ ] Update that the piece was downloaded successfully;
+- [ ] Refactor the codebase to better handle how to read and write from the TCP connection in a better more maintainable way. Today is too spaghetti.
 - [ ] Add retries to the tracker server given that the peers sometimes return a 503 or a message like this:
   [src/encoding.rs:333:13] &key = "peers"
   [src/encoding.rs:333:13] &val = String(
