@@ -1,12 +1,16 @@
-use crate::types::BencodeTypes;
-use anyhow::{anyhow, Result};
-use std::collections::BTreeMap;
+#![allow(dead_code)]
+
+use anyhow::{Result, anyhow};
 use log::debug;
+use std::collections::BTreeMap;
+
+use crate::types::BencodeTypes;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Encoder {}
 
 impl Encoder {
+    #[allow(clippy::wrong_self_convention)]
     pub fn from_bencode_types(&self, input: BencodeTypes) -> Result<Vec<u8>> {
         match input {
             BencodeTypes::String(s) => {
@@ -25,22 +29,23 @@ impl Encoder {
                 let res = self.from_dictionary(d)?;
                 Ok(res)
             }
-            BencodeTypes::Raw(r) => {
-                Ok(r)
-            }
+            BencodeTypes::Raw(r) => Ok(r),
         }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn from_string(&self, input: String) -> Result<Vec<u8>> {
         let output = format!("{}:{}", input.len(), input);
         Ok(output.as_bytes().to_vec())
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn from_integer(&self, input: isize) -> Result<Vec<u8>> {
         let output = format!("i{}e", input);
         Ok(output.as_bytes().to_vec())
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn from_list(&self, input: Vec<BencodeTypes>) -> Result<Vec<u8>> {
         let mut raw = Vec::new();
         raw.push(b'l');
@@ -52,6 +57,7 @@ impl Encoder {
         Ok(raw)
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn from_dictionary(&self, input: BTreeMap<String, BencodeTypes>) -> Result<Vec<u8>> {
         let mut raw = Vec::new();
         raw.push(b'd');
@@ -67,7 +73,7 @@ impl Encoder {
 
             raw.extend(val);
         }
-        
+
         raw.push(b'e');
         Ok(raw)
     }
@@ -77,7 +83,7 @@ impl Encoder {
             BencodeTypes::List(l) => {
                 let mut len = 0;
                 let mut data = Vec::new();
-        
+
                 for item in l {
                     if let BencodeTypes::String(s) = item {
                         let value = hex::decode(s)?;
@@ -87,12 +93,12 @@ impl Encoder {
                         return Err(anyhow!("the provided data is not a string"));
                     }
                 }
-        
+
                 let prefix = format!("{}:", len).into_bytes();
                 let mut res = Vec::with_capacity(prefix.len() + data.len());
                 res.extend_from_slice(&prefix);
                 res.extend_from_slice(&data);
-                
+
                 debug!("[encode_pieces] encoded pieces length: {:?}", len);
                 Ok(res)
             }
@@ -102,7 +108,7 @@ impl Encoder {
                 let mut res = Vec::with_capacity(prefix.len() + s.len());
                 res.extend_from_slice(&prefix);
                 res.extend_from_slice(&s);
-        
+
                 debug!("[encode_pieces] encoded pieces length: {:?}", &len);
                 Ok(res)
             }
@@ -117,11 +123,12 @@ pub struct Decoder {}
 
 impl Decoder {
     // Returns the number of bytes read and the decoded type
-    pub fn from_bytes(&self, bytes: &[u8]) -> Result<(usize, BencodeTypes)>{
+    #[allow(clippy::wrong_self_convention)]
+    pub fn from_bytes(&self, bytes: &[u8]) -> Result<(usize, BencodeTypes)> {
         if self.is_list(bytes) {
             let (n, val) = self.decode_list(bytes)?;
             return Ok((n, BencodeTypes::List(val)));
-        } 
+        }
 
         if self.is_dictionary(bytes) {
             let (n, val) = self.decode_dictionary(bytes)?;
@@ -129,7 +136,7 @@ impl Decoder {
         }
 
         let (n, val) = self.decode_primitive(bytes)?;
-        return Ok((n, val));
+        Ok((n, val))
     }
 
     fn decode_primitive(&self, bytes: &[u8]) -> Result<(usize, BencodeTypes)> {
@@ -177,8 +184,8 @@ impl Decoder {
 
         curr_idx += 1; // ignore the colon in the string
 
-        let input = &bytes[curr_idx..len+curr_idx]; 
-        Ok((len+curr_idx, BencodeTypes::Raw(input.to_vec())))
+        let input = &bytes[curr_idx..len + curr_idx];
+        Ok((len + curr_idx, BencodeTypes::Raw(input.to_vec())))
     }
 
     fn get_next_data_len(&self, bytes: &[u8]) -> Result<(usize, usize)> {
@@ -188,9 +195,9 @@ impl Decoder {
             if b == b':' {
                 break;
             }
-    
+
             // Only allow digits before colon
-            if !(b'0'..=b'9').contains(&b) {
+            if !b.is_ascii_digit() {
                 return Err(anyhow!("the provided data is not a string"));
             }
             curr_idx += 1;
@@ -202,7 +209,6 @@ impl Decoder {
         Ok((curr_idx, len))
     }
 
-
     fn decode_pieces_hashes(&self, bytes: &[u8]) -> Result<(usize, Vec<BencodeTypes>)> {
         let (n, len) = self.get_next_data_len(bytes)?;
         if len % 20 != 0 {
@@ -212,7 +218,7 @@ impl Decoder {
         let mut curr_idx = n + 1; // +1 because the curr_idx is in the colon
         let mut hashes = Vec::new();
         while curr_idx < len {
-            let hash = &bytes[curr_idx..curr_idx+20];
+            let hash = &bytes[curr_idx..curr_idx + 20];
             hashes.push(BencodeTypes::String(hex::encode(hash)));
             curr_idx += 20;
         }
@@ -225,7 +231,10 @@ impl Decoder {
     fn decode_string(&self, bytes: &[u8]) -> Result<(usize, String)> {
         if !self.is_string(bytes) {
             let str = String::from_utf8_lossy(bytes).to_string();
-            debug!("[decode_string] the provided data is not a string: {:?}", &str);
+            debug!(
+                "[decode_string] the provided data is not a string: {:?}",
+                &str
+            );
             return Err(anyhow!("the provided data is not a string"));
         }
 
@@ -241,7 +250,7 @@ impl Decoder {
         let len: usize = str_len_str.parse()?;
 
         curr_idx += 1; // ignore the colon in the string
-        let input = &bytes[curr_idx..len+curr_idx];
+        let input = &bytes[curr_idx..len + curr_idx];
         let str = String::from_utf8_lossy(input).to_string();
 
         debug!("[decode_string] extracted string: {:?}", &str);
@@ -249,7 +258,7 @@ impl Decoder {
         let n = len + curr_idx; // considers the len of the string in the message and the colon
         Ok((n, str.to_string()))
     }
-    
+
     fn decode_integer(&self, bytes: &[u8]) -> Result<(usize, isize)> {
         if !self.is_integer(bytes) {
             return Err(anyhow!("the provided data is not a integer"));
@@ -257,31 +266,32 @@ impl Decoder {
 
         let mut end = 0;
         loop {
-            if bytes[end] as char == 'e'{
+            if bytes[end] as char == 'e' {
                 break;
             }
-            end+=1
+            end += 1
         }
-    
+
         let input = &bytes[1..end];
         let str = std::str::from_utf8(input).expect("Invalid UTF-8 string");
         let number = str.parse::<isize>()?;
         let n = 1 + end; // 1 because if the 'i'. The end already considers the 'e'.
         Ok((n, number))
     }
-    
+
     fn decode_list(&self, bytes: &[u8]) -> Result<(usize, Vec<BencodeTypes>)> {
         if !self.is_list(bytes) {
             return Err(anyhow!("the provided data is not a list"));
         }
-    
+
         let mut curr_idx = 0;
         curr_idx += 1; // ignore the 'l' in the provided bytes
-    
+
         let mut result = Vec::new();
 
         while curr_idx < bytes.len() {
-            if bytes[curr_idx] as char == 'e' { // reached the end of this list
+            if bytes[curr_idx] as char == 'e' {
+                // reached the end of this list
                 break;
             }
 
@@ -312,7 +322,7 @@ impl Decoder {
             }
 
             let (n, key) = self.decode_string(&input[curr_idx..])?;
-            curr_idx+=n;
+            curr_idx += n;
 
             // the pieces key has special caracters that are not valid UTF-8 characters, so we need to handle it as raw.
             let val: BencodeTypes = if key == "pieces" {
@@ -331,26 +341,29 @@ impl Decoder {
                 v
             };
 
-            debug!("[decode_dictionary] adding the key: {:?} with the value: {:?}", &key, &val);
+            debug!(
+                "[decode_dictionary] adding the key: {:?} with the value: {:?}",
+                &key, &val
+            );
             hm.insert(key, val);
         }
 
-        Ok((curr_idx+2, hm)) // +2 because of the 'd' and the 'e' in the provided bytes
+        Ok((curr_idx + 2, hm)) // +2 because of the 'd' and the 'e' in the provided bytes
     }
 
     fn is_list(&self, bytes: &[u8]) -> bool {
-        return bytes.len() >= 2 && bytes[0] as char == 'l' && bytes[bytes.len()-1] as char == 'e'
+        bytes.len() >= 2 && bytes[0] as char == 'l' && bytes[bytes.len() - 1] as char == 'e'
     }
-    
-    fn is_string(&self,bytes: &[u8]) -> bool {
+
+    fn is_string(&self, bytes: &[u8]) -> bool {
         if self.get_next_data_len(bytes).is_ok() {
             let (n, _) = self.get_next_data_len(bytes).unwrap();
-            return n > 0 && n < bytes.len() && bytes[n] == b':';
-        } 
-        
-        return false;
+            n > 0 && n < bytes.len() && bytes[n] == b':'
+        } else {
+            false
+        }
     }
-    
+
     fn is_integer(&self, bytes: &[u8]) -> bool {
         let mut curr_idx = 0;
         while curr_idx < bytes.len() {
@@ -359,15 +372,14 @@ impl Decoder {
             }
             curr_idx += 1;
         }
-    
-        return bytes.len() >= 2 && bytes[0] as char =='i' && curr_idx < bytes.len()
+
+        bytes.len() >= 2 && bytes[0] as char == 'i' && curr_idx < bytes.len()
     }
-    
-    fn is_dictionary(&self,bytes: &[u8]) -> bool {
-        return bytes.len() >= 2 && bytes[0] as char == 'd' && bytes[bytes.len()-1] as char == 'e'
+
+    fn is_dictionary(&self, bytes: &[u8]) -> bool {
+        bytes.len() >= 2 && bytes[0] as char == 'd' && bytes[bytes.len() - 1] as char == 'e'
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -395,19 +407,23 @@ mod tests {
                 "04 - longer string with len greater than 10",
                 "35:https://torrent.ubuntu.com/announce".as_bytes().to_vec(),
                 Ok((38, String::from("https://torrent.ubuntu.com/announce"))),
-            )
+            ),
         ];
 
         for (name, input, expected) in test_cases {
             println!("{}", name);
 
             let decoder = Decoder {};
-            let res= decoder.decode_string(&input);
+            let res = decoder.decode_string(&input);
 
             if res.is_ok() && expected.is_ok() {
                 assert_eq!(res.unwrap(), expected.unwrap());
             } else if res.is_err() && expected.is_err() {
-                assert!(res.unwrap_err().to_string().contains(&expected.unwrap_err().to_string()));
+                assert!(
+                    res.unwrap_err()
+                        .to_string()
+                        .contains(&expected.unwrap_err().to_string())
+                );
             } else {
                 panic!("Result variants did not match");
             }
@@ -443,7 +459,11 @@ mod tests {
             if res.is_ok() && expected.is_ok() {
                 assert_eq!(res.unwrap(), expected.unwrap());
             } else if res.is_err() && expected.is_err() {
-                assert!(res.unwrap_err().to_string().contains(&expected.unwrap_err().to_string()));
+                assert!(
+                    res.unwrap_err()
+                        .to_string()
+                        .contains(&expected.unwrap_err().to_string())
+                );
             } else {
                 panic!("Result variants did not match");
             }
@@ -456,17 +476,27 @@ mod tests {
             (
                 "01 - simple list",
                 "l4:rust6:golangi40ei-60ee".as_bytes().to_vec(),
-                Ok::<_, anyhow::Error>((25, vec![BencodeTypes::String(String::from("rust")), BencodeTypes::String(String::from("golang")), BencodeTypes::Integer(40), BencodeTypes::Integer(-60)])),
+                Ok::<_, anyhow::Error>((
+                    25,
+                    vec![
+                        BencodeTypes::String(String::from("rust")),
+                        BencodeTypes::String(String::from("golang")),
+                        BencodeTypes::Integer(40),
+                        BencodeTypes::Integer(-60),
+                    ],
+                )),
             ),
-            (
-                "02 - empty list",
-                "le".as_bytes().to_vec(),
-                Ok((2, vec![])),
-            ),
+            ("02 - empty list", "le".as_bytes().to_vec(), Ok((2, vec![]))),
             (
                 "03 - list with a single string",
                 "l5:helloi52ee".as_bytes().to_vec(),
-                Ok((13, vec![BencodeTypes::String(String::from("hello")), BencodeTypes::Integer(52)])),
+                Ok((
+                    13,
+                    vec![
+                        BencodeTypes::String(String::from("hello")),
+                        BencodeTypes::Integer(52),
+                    ],
+                )),
             ),
             (
                 "04 - list with a single integer",
@@ -476,29 +506,32 @@ mod tests {
             (
                 "05 - list within a list",
                 "ll5:helloel5:worldee".as_bytes().to_vec(),
-                Ok((20, vec![
-                    BencodeTypes::List(vec![BencodeTypes::String(String::from("hello"))]), 
-                    BencodeTypes::List(vec![BencodeTypes::String(String::from("world"))])]
+                Ok((
+                    20,
+                    vec![
+                        BencodeTypes::List(vec![BencodeTypes::String(String::from("hello"))]),
+                        BencodeTypes::List(vec![BencodeTypes::String(String::from("world"))]),
+                    ],
                 )),
             ),
-            (
-                "06 - empty list",
-                "le".as_bytes().to_vec(),
-                Ok((2, vec![])),
-            ),
+            ("06 - empty list", "le".as_bytes().to_vec(), Ok((2, vec![]))),
             (
                 "07 - list with multiple dictionaries",
                 "ld3:foo3:bared3:baz3:quxee".as_bytes().to_vec(),
-                Ok::<_, anyhow::Error>((26, vec![
-                        BencodeTypes::Dictionary(
-                            BTreeMap::from([(String::from("foo"), BencodeTypes::String(String::from("bar")))]),
-                        ),
-                        BencodeTypes::Dictionary(
-                            BTreeMap::from([(String::from("baz"), BencodeTypes::String(String::from("qux")))]),
-                        )
-                    ])
-                ),
-            )
+                Ok::<_, anyhow::Error>((
+                    26,
+                    vec![
+                        BencodeTypes::Dictionary(BTreeMap::from([(
+                            String::from("foo"),
+                            BencodeTypes::String(String::from("bar")),
+                        )])),
+                        BencodeTypes::Dictionary(BTreeMap::from([(
+                            String::from("baz"),
+                            BencodeTypes::String(String::from("qux")),
+                        )])),
+                    ],
+                )),
+            ),
         ];
 
         for (name, input, expected) in test_cases {
@@ -510,7 +543,11 @@ mod tests {
             if res.is_ok() && expected.is_ok() {
                 assert_eq!(res.unwrap(), expected.unwrap());
             } else if res.is_err() && expected.is_err() {
-                assert!(res.unwrap_err().to_string().contains(&expected.unwrap_err().to_string()));
+                assert!(
+                    res.unwrap_err()
+                        .to_string()
+                        .contains(&expected.unwrap_err().to_string())
+                );
             } else {
                 panic!("Result variants did not match");
             }
@@ -519,18 +556,20 @@ mod tests {
 
     #[test]
     fn test_decode_dictionary() {
-        let test_cases = vec![
-            (
-                "01 - simple dictionary",
-                "d3:foo3:bar5:helloi52ee".as_bytes().to_vec(),
-                Ok::<_, anyhow::Error>((23, BTreeMap::from(
-                    [
-                        (String::from("foo"), BencodeTypes::String(String::from("bar"))), 
-                        (String::from("hello"), BencodeTypes::Integer(52)),
-                    ])
-                )),
-            ),
-        ];
+        let test_cases = vec![(
+            "01 - simple dictionary",
+            "d3:foo3:bar5:helloi52ee".as_bytes().to_vec(),
+            Ok::<_, anyhow::Error>((
+                23,
+                BTreeMap::from([
+                    (
+                        String::from("foo"),
+                        BencodeTypes::String(String::from("bar")),
+                    ),
+                    (String::from("hello"), BencodeTypes::Integer(52)),
+                ]),
+            )),
+        )];
 
         for (name, input, expected) in test_cases {
             println!("{}", name);
@@ -541,7 +580,11 @@ mod tests {
             if res.is_ok() && expected.is_ok() {
                 assert_eq!(res.unwrap(), expected.unwrap());
             } else if res.is_err() && expected.is_err() {
-                assert!(res.unwrap_err().to_string().contains(&expected.unwrap_err().to_string()));
+                assert!(
+                    res.unwrap_err()
+                        .to_string()
+                        .contains(&expected.unwrap_err().to_string())
+                );
             } else {
                 panic!("Result variants did not match");
             }
@@ -550,24 +593,26 @@ mod tests {
 
     #[test]
     fn test_encode_bencode_string() {
-        let test_cases = vec![
-            (
-                "01 - simple string",
-                BencodeTypes::String(String::from("hello")),
-                Ok::<_, anyhow::Error>(Vec::from("5:hello")),
-            ),
-        ];
+        let test_cases = vec![(
+            "01 - simple string",
+            BencodeTypes::String(String::from("hello")),
+            Ok::<_, anyhow::Error>(Vec::from("5:hello")),
+        )];
 
         for (name, input, expected) in test_cases {
             println!("{}", name);
 
             let encoder = Encoder {};
             let res = encoder.from_bencode_types(input);
-            
+
             if res.is_ok() && expected.is_ok() {
                 assert_eq!(res.unwrap(), expected.unwrap());
             } else if res.is_err() && expected.is_err() {
-                assert!(res.unwrap_err().to_string().contains(&expected.unwrap_err().to_string()));
+                assert!(
+                    res.unwrap_err()
+                        .to_string()
+                        .contains(&expected.unwrap_err().to_string())
+                );
             } else {
                 panic!("Result variants did not match");
             }
@@ -598,7 +643,11 @@ mod tests {
             if res.is_ok() && expected.is_ok() {
                 assert_eq!(res.unwrap(), expected.unwrap());
             } else if res.is_err() && expected.is_err() {
-                assert!(res.unwrap_err().to_string().contains(&expected.unwrap_err().to_string()));
+                assert!(
+                    res.unwrap_err()
+                        .to_string()
+                        .contains(&expected.unwrap_err().to_string())
+                );
             } else {
                 panic!("Result variants did not match");
             }
@@ -611,7 +660,7 @@ mod tests {
             (
                 "01 - simple list",
                 BencodeTypes::List(vec![
-                    BencodeTypes::String(String::from("hello")), 
+                    BencodeTypes::String(String::from("hello")),
                     BencodeTypes::Integer(42),
                 ]),
                 Ok::<_, anyhow::Error>(Vec::from("l5:helloi42ee")),
@@ -619,12 +668,12 @@ mod tests {
             (
                 "02 - list within a list",
                 BencodeTypes::List(vec![
-                    BencodeTypes::String(String::from("hello")), 
+                    BencodeTypes::String(String::from("hello")),
                     BencodeTypes::Integer(42),
                     BencodeTypes::List(vec![BencodeTypes::String(String::from("world"))]),
                 ]),
                 Ok::<_, anyhow::Error>(Vec::from("l5:helloi42el5:worldee")),
-            )
+            ),
         ];
 
         for (name, input, expected) in test_cases {
@@ -636,7 +685,11 @@ mod tests {
             if res.is_ok() && expected.is_ok() {
                 assert_eq!(res.unwrap(), expected.unwrap());
             } else if res.is_err() && expected.is_err() {
-                assert!(res.unwrap_err().to_string().contains(&expected.unwrap_err().to_string()));
+                assert!(
+                    res.unwrap_err()
+                        .to_string()
+                        .contains(&expected.unwrap_err().to_string())
+                );
             } else {
                 panic!("Result variants did not match");
             }
@@ -645,14 +698,15 @@ mod tests {
 
     #[test]
     fn test_encode_bencode_dictionary() {
-        let test_cases = vec![
-            (
-                "01 - simple dictionary",
-                BencodeTypes::Dictionary(BTreeMap::from([(String::from("foo"), BencodeTypes::String(String::from("bar")))])),
-                Ok::<_, anyhow::Error>(Vec::from("d3:foo3:bare")),
-            ),
-        ];
-    
+        let test_cases = vec![(
+            "01 - simple dictionary",
+            BencodeTypes::Dictionary(BTreeMap::from([(
+                String::from("foo"),
+                BencodeTypes::String(String::from("bar")),
+            )])),
+            Ok::<_, anyhow::Error>(Vec::from("d3:foo3:bare")),
+        )];
+
         for (name, input, expected) in test_cases {
             println!("{}", name);
 
@@ -662,7 +716,11 @@ mod tests {
             if res.is_ok() && expected.is_ok() {
                 assert_eq!(res.unwrap(), expected.unwrap());
             } else if res.is_err() && expected.is_err() {
-                assert!(res.unwrap_err().to_string().contains(&expected.unwrap_err().to_string()));
+                assert!(
+                    res.unwrap_err()
+                        .to_string()
+                        .contains(&expected.unwrap_err().to_string())
+                );
             } else {
                 panic!("Result variants did not match");
             }

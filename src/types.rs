@@ -1,9 +1,12 @@
+#![allow(dead_code)]
+
 use anyhow::{Result, anyhow};
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{BigEndian, ReadBytesExt};
 use bytes::Buf;
 use futures_util::{SinkExt, StreamExt};
 use log::debug;
-use std::collections::BTreeMap;
+use sha1::{Digest, Sha1};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Debug;
 use std::io::Cursor;
 use std::net::IpAddr;
@@ -15,6 +18,52 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder, FramedRead, FramedWrite};
+
+// Piece download constants
+#[allow(dead_code)]
+const DEFAULT_BLOCK_SIZE: usize = 16 * 1024; // 16 KiB per BitTorrent spec
+#[allow(dead_code)]
+const BLOCK_PIPELINE_SIZE: usize = 5; // Request 5 blocks ahead
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct PieceDownloadRequest {
+    pub piece_index: u32,
+    pub piece_length: usize,
+    pub expected_hash: [u8; 20], // SHA1 hash for verification
+}
+
+#[derive(Debug, Clone)]
+pub struct PeerManagerConfig {
+    pub info_hash: [u8; 20],
+    pub client_peer_id: [u8; 20],
+    pub file_size: usize,
+    pub num_pieces: usize,
+    pub max_peers: usize,
+}
+
+#[derive(Debug)]
+pub struct ConnectedPeer {
+    pub peer: Peer,
+    pub peer_id: [u8; 20],
+    pub download_request_tx: mpsc::Sender<PieceDownloadRequest>,
+    pub bitfield: Vec<bool>,
+    pub active_downloads: HashSet<u32>,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct CompletedPiece {
+    pub piece_index: u32,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct FailedPiece {
+    pub piece_index: u32,
+    pub reason: String, // "hash_mismatch" or "peer_disconnected"
+}
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum BencodeTypes {
@@ -72,7 +121,7 @@ impl PeerHandshake {
         // peer_id (20 bytes)
         bytes.extend_from_slice(&self.peer_id);
 
-        return bytes;
+        bytes
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
@@ -111,19 +160,164 @@ impl Debug for PeerHandshake {
 pub type PeerId = [u8; 20];
 
 #[derive(Debug)]
+struct DownloadState {
+    piece_index: u32,
+    piece_length: usize,
+    block_size: usize,
+    total_blocks: usize,
+    expected_hash: [u8; 20],
+    received_blocks: HashMap<u32, Vec<u8>>, // key: offset, value: data
+    pending_blocks: HashSet<u32>,           // offsets we've requested
+}
+
+impl DownloadState {
+    fn new(
+        piece_index: u32,
+        piece_length: usize,
+        block_size: usize,
+        expected_hash: [u8; 20],
+    ) -> Self {
+        let total_blocks = piece_length.div_ceil(block_size);
+
+        Self {
+            piece_index,
+            piece_length,
+            block_size,
+            total_blocks,
+            expected_hash,
+            received_blocks: HashMap::new(),
+            pending_blocks: HashSet::new(),
+        }
+    }
+
+    fn add_block(&mut self, begin: u32, data: Vec<u8>) -> Result<()> {
+        if self.received_blocks.contains_key(&begin) {
+            debug!("[DownloadState] Duplicate block at offset {}", begin);
+            return Ok(()); // Ignore duplicate
+        }
+
+        self.received_blocks.insert(begin, data);
+        self.pending_blocks.remove(&begin);
+        Ok(())
+    }
+
+    fn is_complete(&self) -> bool {
+        self.received_blocks.len() == self.total_blocks
+    }
+
+    fn assemble_piece(&self) -> Result<Vec<u8>> {
+        if !self.is_complete() {
+            return Err(anyhow!("Cannot assemble incomplete piece"));
+        }
+
+        let mut piece_data = Vec::with_capacity(self.piece_length);
+        let mut offset = 0u32;
+
+        for _ in 0..self.total_blocks {
+            let block = self
+                .received_blocks
+                .get(&offset)
+                .ok_or_else(|| anyhow!("Missing block at offset {}", offset))?;
+
+            piece_data.extend_from_slice(block);
+            offset += self.block_size as u32;
+        }
+
+        // Trim to exact piece length (last block may be padded)
+        piece_data.truncate(self.piece_length);
+        Ok(piece_data)
+    }
+
+    fn verify_hash(&self, data: &[u8]) -> Result<bool> {
+        let mut hasher = Sha1::new();
+        hasher.update(data);
+        let computed_hash = hasher.finalize();
+        Ok(computed_hash.as_slice() == self.expected_hash)
+    }
+
+    fn get_next_block_to_request(&mut self) -> Option<(u32, u32)> {
+        let mut offset = 0u32;
+
+        for _ in 0..self.total_blocks {
+            if !self.received_blocks.contains_key(&offset) && !self.pending_blocks.contains(&offset)
+            {
+                let remaining = self.piece_length.saturating_sub(offset as usize);
+                let length = std::cmp::min(self.block_size, remaining) as u32;
+
+                self.pending_blocks.insert(offset);
+                return Some((offset, length));
+            }
+            offset += self.block_size as u32;
+        }
+
+        None
+    }
+}
+
+#[derive(Debug)]
 pub struct PeerConnection {
     peer: Peer,
     peer_id: Option<PeerId>,
+
+    // Stream is only present after handshake
     stream: Option<TcpStream>,
+
+    // Outbound messages the actor will write to the wire
+    outbound_tx: mpsc::Sender<PeerMessage>,
+    outbound_rx: Option<mpsc::Receiver<PeerMessage>>,
+
+    // Inbound messages read from the wire and sent out
+    inbound_tx: mpsc::Sender<PeerMessage>,
+    inbound_rx: Option<mpsc::Receiver<PeerMessage>>,
+
+    // Piece download channels
+    download_request_tx: mpsc::Sender<PieceDownloadRequest>,
+    download_request_rx: Option<mpsc::Receiver<PieceDownloadRequest>>,
+    piece_completion_tx: mpsc::Sender<CompletedPiece>,
+    piece_failure_tx: mpsc::Sender<FailedPiece>,
+
+    // Peer Status
+    is_choking: bool,
+    is_interested: bool,
+
+    // Peer Information
+    bitfield: Vec<bool>,
+
+    // Download state
+    current_download: Option<DownloadState>,
 }
 
+// Creates a connection with the Peer provided and wraps it within
+// It will rely on the inbound_tx and outbound_rx channels to communicate with the peer connection.
 impl PeerConnection {
-    pub fn new(peer: Peer) -> Self {
-        Self {
+    pub fn new(
+        peer: Peer,
+        piece_completion_tx: mpsc::Sender<CompletedPiece>,
+        piece_failure_tx: mpsc::Sender<FailedPiece>,
+    ) -> (Self, mpsc::Sender<PieceDownloadRequest>) {
+        let (outbound_tx, outbound_rx) = mpsc::channel(10);
+        let (inbound_tx, inbound_rx) = mpsc::channel(10);
+        let (download_request_tx, download_request_rx) = mpsc::channel(10);
+
+        let peer_conn = Self {
             peer,
             peer_id: None,
             stream: None,
-        }
+            outbound_tx,
+            outbound_rx: Some(outbound_rx),
+            inbound_tx,
+            inbound_rx: Some(inbound_rx),
+            download_request_tx: download_request_tx.clone(),
+            download_request_rx: Some(download_request_rx),
+            piece_completion_tx,
+            piece_failure_tx,
+            is_choking: false,
+            is_interested: false,
+            bitfield: Vec::new(),
+            current_download: None,
+        };
+
+        (peer_conn, download_request_tx)
     }
 
     pub fn get_peer_id(&self) -> Option<[u8; 20]> {
@@ -145,7 +339,9 @@ impl PeerConnection {
 
         for attempt in 1..=max_retries {
             match self.try_handshake(&bytes).await {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    return Ok(response);
+                }
                 Err(e) => {
                     last_error = Some(e);
                     if attempt < max_retries {
@@ -183,39 +379,336 @@ impl PeerConnection {
         Ok(response)
     }
 
-    // This should block if everthing is working correctly
-    // for reading and writing messages to the peer over the channels.
-    pub async fn run(
-        &mut self,
-        num_pieces: usize,
-        notify: mpsc::Sender<PeerMessage>,
-        mut rx: mpsc::Receiver<PeerMessage>,
-    ) -> Result<()> {
-        if self.stream.is_none() {
-            return Err(anyhow!("the stream is not present"));
-        }
-
-        let stream = self.stream.take().unwrap();
+    pub async fn start(mut self, num_pieces: usize) -> Result<()> {
+        let stream = self
+            .stream
+            .take()
+            .ok_or_else(|| anyhow!("handshake not done"))?;
         let (reader, writer) = stream.into_split();
-        let mut reader = FramedRead::new(reader, PeerMessageDecoder { num_pieces });
-        let mut writer = FramedWrite::new(writer, PeerMessageEncoder { num_pieces });
 
-        // Spawn write loop
-        tokio::task::spawn(async move {
-            while let Some(message) = rx.recv().await {
-                let _ = writer.send(message).await;
+        let decoder = PeerMessageDecoder { num_pieces };
+        let encoder = PeerMessageEncoder { num_pieces };
+
+        let mut reader = FramedRead::new(reader, decoder);
+        let mut writer = FramedWrite::new(writer, encoder);
+
+        // Take the receivers out of self
+        let mut outbound_rx = self.outbound_rx.take().unwrap();
+        let inbound_tx = self.inbound_tx.clone();
+
+        // Spawn writer task
+        tokio::spawn(async move {
+            while let Some(msg) = outbound_rx.recv().await {
+                let _ = writer.send(msg).await;
             }
         });
 
-        // Spawn read loop
-        while let Some(item) = reader.next().await {
-            match item {
-                Ok(msg) => {
-                    let _ = notify.send(msg).await;
+        // Spawn reader task
+        tokio::spawn(async move {
+            while let Some(result) = reader.next().await {
+                match result {
+                    Ok(msg) => {
+                        let _ = inbound_tx.send(msg).await;
+                    }
+                    Err(err) => {
+                        // TODO: How to let the peer manager now this is disconnected and should be dropped?
+                        debug!("read error: {}", err);
+                        break;
+                    }
                 }
-                Err(e) => {
-                    debug!("[run] error receiving message: {}", &e);
-                    return Err(anyhow!("error receiving message: {}", e));
+            }
+        });
+
+        self.send_interested_message().await;
+        self.handle_incoming_messages();
+
+        Ok(())
+    }
+
+    fn handle_incoming_messages(mut self) {
+        let mut inbound_rx = self.inbound_rx.take().unwrap();
+        let mut download_request_rx = self.download_request_rx.take().unwrap();
+
+        tokio::task::spawn(async move {
+            loop {
+                tokio::select! {
+                    Some(msg) = inbound_rx.recv() => {
+                        if let Err(e) = self.handle_peer_message(msg).await {
+                            debug!("[handle_incoming_messages] Error handling peer message: {}", e);
+                            break;
+                        }
+                    }
+                    Some(request) = download_request_rx.recv() => {
+                        let piece_index = request.piece_index;
+                        if let Err(e) = self.start_piece_download(request).await {
+                            debug!("[handle_incoming_messages] Error starting download: {}", e);
+                            // Send failure to manager but continue
+                            let _ = self.piece_failure_tx.send(FailedPiece {
+                                piece_index,
+                                reason: e.to_string(),
+                            }).await;
+                        }
+                    }
+                    else => break,
+                }
+            }
+            debug!("[handle_incoming_messages] Message handler exiting");
+        });
+    }
+
+    async fn handle_peer_message(&mut self, msg: PeerMessage) -> Result<()> {
+        match msg {
+            PeerMessage::Bitfield(bitfield) => {
+                self.bitfield = bitfield.bitfield;
+                debug!(
+                    "[handle_peer_message] Received bitfield with {} pieces",
+                    self.bitfield.len()
+                );
+            }
+
+            PeerMessage::Unchoke(_) => {
+                self.is_choking = false;
+                debug!("[handle_peer_message] Peer unchoked us");
+
+                // If we have a pending download, start requesting blocks
+                if self.current_download.is_some() {
+                    self.handle_piece_download().await?;
+                }
+            }
+
+            PeerMessage::Interested(_) => {
+                self.is_interested = true;
+            }
+
+            PeerMessage::Request(_request) => {
+                // We don't support uploading yet
+                debug!("[handle_peer_message] Ignoring request message (upload not implemented)");
+            }
+
+            PeerMessage::Piece(piece) => {
+                self.handle_piece_block(piece).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_piece_block(&mut self, piece_msg: PieceMessage) -> Result<()> {
+        let download_state = match self.current_download.as_mut() {
+            Some(state) => state,
+            None => {
+                debug!(
+                    "[handle_piece_block] Received unexpected piece block for piece {}, no active download",
+                    piece_msg.piece_index
+                );
+                return Ok(());
+            }
+        };
+
+        // Verify this block belongs to our current download
+        if piece_msg.piece_index != download_state.piece_index {
+            debug!(
+                "[handle_piece_block] Received block for piece {}, but downloading piece {}",
+                piece_msg.piece_index, download_state.piece_index
+            );
+            return Ok(());
+        }
+
+        // Add block to our state
+        download_state.add_block(piece_msg.begin, piece_msg.block)?;
+
+        debug!(
+            "[handle_piece_block] Received block: piece={}, begin={}, blocks={}/{}",
+            piece_msg.piece_index,
+            piece_msg.begin,
+            download_state.received_blocks.len(),
+            download_state.total_blocks
+        );
+
+        if download_state.is_complete() {
+            self.finish_piece_download().await?;
+        } else {
+            self.handle_piece_download().await?;
+        }
+
+        Ok(())
+    }
+
+    async fn start_piece_download(&mut self, request: PieceDownloadRequest) -> Result<()> {
+        if !self.has_piece(request.piece_index as usize) {
+            return Err(anyhow!("Peer does not have piece {}", request.piece_index));
+        }
+
+        if !self.can_download_pieces() {
+            return Err(anyhow!(
+                "Peer not ready for download (choking={}, interested={}, bitfield={})",
+                self.is_choking,
+                self.is_interested,
+                self.bitfield.is_empty()
+            ));
+        }
+
+        if self.current_download.is_some() {
+            return Err(anyhow!(
+                "Already downloading a piece, cannot start new download"
+            ));
+        }
+
+        debug!(
+            "[start_piece_download] Starting download of piece {}, length={}",
+            request.piece_index, request.piece_length
+        );
+
+        self.current_download = Some(DownloadState::new(
+            request.piece_index,
+            request.piece_length,
+            DEFAULT_BLOCK_SIZE,
+            request.expected_hash,
+        ));
+
+        self.handle_piece_download().await?;
+
+        Ok(())
+    }
+
+    async fn finish_piece_download(&mut self) -> Result<()> {
+        let download_state = self
+            .current_download
+            .take()
+            .ok_or_else(|| anyhow!("No active download to finish"))?;
+
+        debug!(
+            "[finish_piece_download] Piece {} complete, assembling data",
+            download_state.piece_index
+        );
+
+        let piece_data = download_state.assemble_piece()?;
+
+        match download_state.verify_hash(&piece_data)? {
+            true => {
+                let completed = CompletedPiece {
+                    piece_index: download_state.piece_index,
+                    data: piece_data,
+                };
+
+                self.piece_completion_tx
+                    .send(completed)
+                    .await
+                    .map_err(|_| anyhow!("Failed to send completed piece to manager"))?;
+
+                debug!(
+                    "[finish_piece_download] Sent completed piece {} to manager",
+                    download_state.piece_index
+                );
+            }
+            false => {
+                let failed = FailedPiece {
+                    piece_index: download_state.piece_index,
+                    reason: "hash_mismatch".to_string(),
+                };
+
+                self.piece_failure_tx
+                    .send(failed)
+                    .await
+                    .map_err(|_| anyhow!("Failed to send failed piece to manager"))?;
+
+                debug!(
+                    "[finish_piece_download] Hash mismatch for piece {}, notified manager",
+                    download_state.piece_index
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn is_ready_to_download_piece(&self) -> bool {
+        debug!(
+            "[PeerConnection] peer_id: {:?}, is_interested: {:?}, bitfield_len: {:?}, is_choking: {:?}",
+            self.peer_id,
+            self.is_interested,
+            self.bitfield.len(),
+            self.is_choking
+        );
+
+        self.is_interested && !self.bitfield.is_empty() && !self.is_choking
+    }
+
+    fn fetch_piece(&self) -> Result<usize> {
+        for (idx, has_piece) in self.bitfield.iter().enumerate() {
+            if *has_piece {
+                return Ok(idx);
+            }
+        }
+
+        Err(anyhow!(
+            "No pieces available in peer connection for peer {:?}",
+            self.peer_id
+        ))
+    }
+
+    pub fn has_piece(&self, piece_index: usize) -> bool {
+        self.bitfield.get(piece_index).copied().unwrap_or(false)
+    }
+
+    pub fn can_download_pieces(&self) -> bool {
+        !self.is_choking && self.is_interested && !self.bitfield.is_empty()
+    }
+
+    pub fn get_bitfield(&self) -> &[bool] {
+        &self.bitfield
+    }
+
+    async fn send_interested_message(&self) {
+        let outbound_tx = self.outbound_tx.clone();
+
+        match outbound_tx
+            .send(PeerMessage::Interested(InterestedMessage {}))
+            .await
+        {
+            Ok(_) => {}
+            Err(err) => {
+                debug!(
+                    "Failed to send interested message to peer {:?}: {}",
+                    self.peer_id, err
+                );
+            }
+        }
+    }
+
+    async fn handle_piece_download(&mut self) -> Result<()> {
+        // Check if we have an active download
+        let download_state = match self.current_download.as_mut() {
+            Some(state) => state,
+            None => {
+                debug!("[handle_piece_download] No active download");
+                return Ok(());
+            }
+        };
+
+        // Request blocks in pipeline fashion
+        let mut requests_sent = 0;
+        while requests_sent < BLOCK_PIPELINE_SIZE {
+            match download_state.get_next_block_to_request() {
+                Some((begin, length)) => {
+                    let request = RequestMessage {
+                        piece_index: download_state.piece_index,
+                        begin,
+                        length,
+                    };
+
+                    debug!(
+                        "[handle_piece_download] Requesting block: piece={}, begin={}, length={}",
+                        download_state.piece_index, begin, length
+                    );
+
+                    self.outbound_tx.send(PeerMessage::Request(request)).await?;
+
+                    requests_sent += 1;
+                }
+                None => {
+                    // No more blocks to request
+                    break;
                 }
             }
         }
@@ -326,7 +819,7 @@ impl PeerMessage {
                     "[from_bytes] received invalid message: {:?} with length {}",
                     &message_type, length
                 );
-                return Err(anyhow!("the message type is invalid: {:?}", &message_type));
+                Err(anyhow!("the message type is invalid: {:?}", &message_type))
             }
         }
     }
@@ -348,12 +841,10 @@ impl PeerMessage {
         match self {
             Self::Interested(message) => Ok(message.to_bytes().to_vec()),
             Self::Request(message) => Ok(message.to_bytes().to_vec()),
-            _ => {
-                return Err(anyhow!(
-                    "the message being encoded is not supported: {:?}",
-                    &self
-                ));
-            }
+            _ => Err(anyhow!(
+                "the message being encoded is not supported: {:?}",
+                &self
+            )),
         }
     }
 }
@@ -427,7 +918,7 @@ impl UnchokeMessage {
         bytes
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+    pub fn from_bytes(_bytes: &[u8]) -> Result<Self> {
         // Just ignore the bytes for now since it's just an empty message
         Ok(Self {})
     }
@@ -500,39 +991,66 @@ impl Debug for PieceMessage {
     }
 }
 
+// pub struct Piece {
+//     index: u32,
+//     piece_length: usize,
+//     blocks: Vec<Option<Vec<u8>>>,
+// }
+
+// impl Piece {
+//     pub fn new(index: u32, piece_length: usize, blocks_size: usize) -> Self {
+//         Self {
+//             index,
+//             piece_length,
+//             blocks: vec![None; blocks_size],
+//         }
+//     }
+
+//     pub fn add_block(&mut self, message: PieceMessage) -> Result<()> {
+//         if message.piece_index != self.index {
+//             return Err(anyhow!(
+//                 "the piece index does not match the piece index of the piece"
+//             ));
+//         }
+
+//         self.blocks[message.begin as usize] = Some(message.block);
+//         Ok(())
+//     }
+
+//     pub fn is_complete(&self) -> bool {
+//         self.blocks.iter().all(|block| block.is_some())
+//     }
+
+//     pub fn update_idx(&mut self, index: u32) {
+//         self.index = index
+//     }
+// }
+
+#[derive(Debug)]
 pub struct Piece {
-    index: u32,
-    piece_length: usize,
-    blocks: Vec<Option<Vec<u8>>>,
+    index: usize,
+    status: PieceStatus,
 }
 
 impl Piece {
-    pub fn new(index: u32, piece_length: usize, blocks_size: usize) -> Self {
-        Self {
-            index,
-            piece_length,
-            blocks: vec![None; blocks_size],
-        }
+    pub fn new(index: usize, status: PieceStatus) -> Self {
+        Self { index, status }
     }
 
-    pub fn add_block(&mut self, message: PieceMessage) -> Result<()> {
-        if message.piece_index != self.index {
-            return Err(anyhow!(
-                "the piece index does not match the piece index of the piece"
-            ));
-        }
-
-        self.blocks[message.begin as usize] = Some(message.block);
-        Ok(())
+    pub fn set_status(&mut self, status: PieceStatus) {
+        self.status = status;
     }
 
-    pub fn is_complete(&self) -> bool {
-        self.blocks.iter().all(|block| block.is_some())
+    pub fn get_status(&self) -> &PieceStatus {
+        &self.status
     }
+}
 
-    pub fn update_idx(&mut self, index: u32) {
-        self.index = index
-    }
+#[derive(Debug)]
+pub enum PieceStatus {
+    Pending,
+    Downloading,
+    Completed,
 }
 
 #[cfg(test)]

@@ -1,51 +1,47 @@
-- [x] Decode bencoded strings from the bencode protocol of BitTorrent;
-- [x] Decode integers;
-- [x] Decode the lists;
-- [x] Refactor the tests for this new logic of decoding;
-- [x] Decode dictionaries;
-- [x] Parse a torrent file and store its information about the server (a.k.a tracker) with the peers;
-    - [x] Understand the problem of announce list.
-    - [x] Add the feature of a list within a list.
-    - [x] Add the feature of a dictionary within a dictionary (I will need to refactor things).
-    - [x] Handle the pieces keyword to parse things as raw instead of string because of invalid UTF-8.
-- [ ] Change the file parsing to a test instead of the main function.
-- [x] Create a function to return the hash of the info.
-- [x] Parse the pieces length and it's hashes into the bittorrent client.
-- [x] Debug the request for the tracker to work on Postman.
-- [x] Create the request for the tracker server.
-- [x] Validate if my info hash is right using serde bencode.
-- [x] Fix bug in list parsing with the end of a list.
-- [x] Send a message to a peer and return the hash of the connection.
-- [x] Start spliting into multiple files based on how rust manages modules.
-- [ ] Download a piece of the file.
-  - [x] Refactor the code structure to persist the connection and reuse it.
-  - [x] Reuse the connection to write another message after a handshake.
-  - [x] Parse the bitfield message into a struct to know which piece does the peer have;
-  - [x] Add a test to make this parsing clear in the future;
-  - [x] Send an interested message;
-  - [x] Refactor the read messages using a channel to fix the ownership problem between two tasks in Rust;
-    - [x] This should look like in Go with channels and a select. This seems the way to do it.
-  - [x] Finish the refactor to ensure I found the best model for this concurrency model given the I/O operations;
-  - [x] Understand the infinite loop that is happening with the bitfield message;
-    - [x] This seems to be a decoder problem understading the unchoke messages as bitfield ones;
-    - [x] This was a problem of not broadcasting the read bytes on the channel.
-  - [ ] Send a request message and see if more refactor will be needed to make this work in Rust with the loop;
-    - [x] Start some refactoring to make this work in my codebase;
-    - [x] Create the PieceMessage struct;\
-    - [ ] Solve this bug
-      thread 'main' panicked at src/main.rs:27:35:
-      called `Result::unwrap()` on an `Err` value: error receiving message: failed to fill whole buffer
-    - [ ] See if the client is sending the RequestMessages and see how to store the PieceMessage in the FileSystem;
-    - [ ] Update that the piece was downloaded successfully;
-- [ ] Refactor the codebase to better handle how to read and write from the TCP connection in a better more maintainable way. Today is too spaghetti.
-- [ ] Add retries to the tracker server given that the peers sometimes return a 503 or a message like this:
-  [src/encoding.rs:333:13] &key = "peers"
-  [src/encoding.rs:333:13] &val = String(
-      "�}�;\u{1b}\u{1a}",
-  )
-- [ ] Add retries to the peer server given it sometimes refuses a connection;
-- [ ] Improve the printing of the logs because its too verbose and breaking line for vectors;
-- [ ] Move the download file logic to the BitTorrent to orchestrate the messages with the peers;
-- [ ] Create a excalidraw diagram of this whole program;
-- [ ] Refactor the types file to split more the logic given it's too big;
-- [ ] Improve error handling to do not rely on error return using contains of text.
+# BitTorrent Client - Pending Tasks
+
+This file tracks pending tasks and improvements identified in the codebase.
+
+## High Priority
+
+### Error Handling
+- [ ] **Refactor error handling in types.rs:726**: Replace string matching for incomplete messages with proper error types/sentinel errors (similar to Golang patterns)
+
+### Orchestration Layer
+- [ ] **Implement peer connection management in peer_manager.rs:275**: Add `connect_with_peers()` method to connect to available peers up to a configurable limit
+- [ ] **Implement piece download orchestration in peer_manager.rs:282**: Add `download_piece()` method to request pieces from available peers
+- [ ] **Add connected peers tracking in peer_manager.rs:26**: Populate `connected_peers` field with ConnectedPeer struct as part of orchestration layer
+
+### Peer Management
+- [ ] **Handle peer disconnection in types.rs:396**: Implement mechanism to notify peer manager when a peer disconnects and should be dropped from the pool
+
+## Medium Priority
+
+### Logging and Observability
+- [ ] **Improve logging clarity across codebase**: Review and refactor all debug logging to keep only useful messages that help understand the application's internal workings. Remove verbose/redundant logs and ensure log messages are clear and actionable.
+
+### Multi-Peer Download
+- [ ] **Evolve download to use multiple peers in file_manager.rs:473**: Currently downloads pieces sequentially; enhance to download from multiple peers simultaneously (note: current implementation already supports this to some degree with max 5 peers)
+
+### Encoding/Decoding
+- [ ] **Review unknown field handling in encoding.rs:167**: Evaluate if there's a better approach than marking everything as unknown when parsing fails
+- [ ] **Review pieces hash format in encoding.rs:329**: Consider whether to keep pieces as raw bytes or convert to string format
+
+## Low Priority / Code Cleanup
+
+### Deprecated Code Review
+- [ ] **Review commented bitfield reading in file_manager.rs:555**: Evaluate if the old bitfield reading logic should be removed or preserved
+- [ ] **Review async download blocking in file_manager.rs:565**: Consider if the commented async download logic should be implemented
+- [ ] **Review piece writing in file_manager.rs:640**: Evaluate the commented file system writing logic
+
+## Completed
+- [x] Add hash verification after file download
+- [x] Implement periodic tracker announcements (watch_tracker integration)
+
+---
+
+## Notes
+
+- The codebase is mid-refactoring with some old implementation preserved in comments
+- Current focus should be on completing the orchestration layer for robust multi-peer downloads
+- Error handling improvements are crucial for production readiness
