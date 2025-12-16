@@ -5,15 +5,15 @@ This file tracks pending tasks and improvements identified in the codebase.
 ## High Priority
 
 ### Error Handling
-- [ ] **Refactor error handling in types.rs:726**: Replace string matching for incomplete messages with proper error types/sentinel errors (similar to Golang patterns)
+- [x] **Refactor error handling in types.rs:726**: Replace string matching for incomplete messages with proper error types/sentinel errors (similar to Golang patterns)
 
 ### Orchestration Layer
-- [ ] **Implement peer connection management in peer_manager.rs:275**: Add `connect_with_peers()` method to connect to available peers up to a configurable limit
-- [ ] **Implement piece download orchestration in peer_manager.rs:282**: Add `download_piece()` method to request pieces from available peers
-- [ ] **Add connected peers tracking in peer_manager.rs:26**: Populate `connected_peers` field with ConnectedPeer struct as part of orchestration layer
+- [x] **Implement peer connection management in peer_manager.rs:519**: Add `connect_with_peers()` method to connect to available peers up to a configurable limit
+- [x] **Implement piece download orchestration in peer_manager.rs:562**: Add `download_piece()` method to request pieces from available peers
+- [x] **Add connected peers tracking in peer_manager.rs:32**: Populate `connected_peers` field with ConnectedPeer struct as part of orchestration layer (already implemented in background task)
 
 ### Peer Management
-- [ ] **Handle peer disconnection in types.rs:396**: Implement mechanism to notify peer manager when a peer disconnects and should be dropped from the pool
+- [x] **Handle peer disconnection in types.rs:396**: Implement mechanism to notify peer manager when a peer disconnects and should be dropped from the pool
 
 ## Medium Priority
 
@@ -33,6 +33,7 @@ This file tracks pending tasks and improvements identified in the codebase.
 - [ ] **Review commented bitfield reading in file_manager.rs:555**: Evaluate if the old bitfield reading logic should be removed or preserved
 - [ ] **Review async download blocking in file_manager.rs:565**: Consider if the commented async download logic should be implemented
 - [ ] **Review piece writing in file_manager.rs:640**: Evaluate the commented file system writing logic
+- [ ] **Improve the README file**: Mae sure to create a conciser version of the README file explaning this is an MVP of a BitTorrent client.
 
 ## Completed
 - [x] Add hash verification after file download

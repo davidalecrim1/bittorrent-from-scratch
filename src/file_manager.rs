@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use anyhow::{Result, anyhow};
 use log::debug;
 use sha1::{Digest, Sha1};
@@ -20,7 +18,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::mpsc;
 
-const DEFAULT_BLOCK_SIZE: usize = 16 * 1024; // 16 KiB
+const MAX_FAILED_PIECE_RETRY: usize = 3;
 
 #[derive(Debug)]
 pub struct BitTorrent {
@@ -103,20 +101,6 @@ impl BitTorrent {
             .encoder
             .from_bencode_types(BencodeTypes::Dictionary(info_dict.clone()))?;
         Ok(Sha1::new().chain_update(&bytes).finalize().to_vec())
-    }
-
-    fn get_info_hash_as_url_encoded(&self) -> Result<String> {
-        let hash = self.get_info_hash_as_hex()?;
-        let raw_bytes: Vec<u8> = hex::decode(hash)?;
-
-        let formatted: String = raw_bytes
-            .iter()
-            .map(|b| format!("%{:02X}", b))
-            .collect::<Vec<_>>()
-            .join("")
-            .to_lowercase();
-
-        Ok(formatted)
     }
 
     fn get_file_size(&self) -> Result<usize> {
@@ -204,7 +188,7 @@ impl BitTorrent {
             client_peer_id,
             file_size,
             num_pieces,
-            max_peers: 5,
+            max_peers: 10,
         };
 
         Arc::get_mut(&mut self.peer_manager)
@@ -270,11 +254,18 @@ impl BitTorrent {
                     let attempts = failed_attempts.entry(failed.piece_index).or_insert(0);
                     *attempts += 1;
 
-                    if *attempts >= 3 {
-                        return Err(anyhow!("Failed to download piece {} after 3 attempts", failed.piece_index));
+                    if *attempts >= MAX_FAILED_PIECE_RETRY {
+                        return Err(anyhow!("Failed to download piece {} after {} attempts", failed.piece_index, MAX_FAILED_PIECE_RETRY));
                     }
 
-                    debug!("[download_file] Piece {} failed, will retry", failed.piece_index);
+                    let piece_hash = pieces_hashes[failed.piece_index as usize];
+                    let retry_request = PieceDownloadRequest {
+                        piece_index: failed.piece_index,
+                        piece_length,
+                        expected_hash: piece_hash,
+                    };
+
+                    self.peer_manager.request_pieces(vec![retry_request]).await?;
                 }
             }
         }
@@ -392,196 +383,4 @@ impl BitTorrent {
             _ => Err(anyhow!("pieces field is not a list")),
         }
     }
-
-}
-    //     let peers = self.get_peers().await?;
-    //     debug!("[download_file] torrent peers: {:?}", &peers);
-
-    //     let client_peer_id = *b"postman-000000000001";
-
-    //     for peer in peers {
-    //         let mut conn = match self.create_peer_connection(client_peer_id, &peer).await {
-    //             Ok(conn) => conn,
-    //             Err(e) => {
-    //                 debug!("[download_file] failed to create peer connection: {:?}", e);
-    //                 continue;
-    //             }
-    //         };
-
-    //         let peer_id: [u8; 20] = conn
-    //             .get_peer_id()
-    //             .ok_or(anyhow!("the peer id is not present"))?;
-    //         debug!("[download_file] peer connection success: {:?}", &peer_id);
-
-    //         // Channel for receiving messages FROM the peer
-    //         let (peer_to_client_tx, mut peer_to_client_rx) = mpsc::channel::<PeerMessage>(100);
-    //         // Channel for sending messages TO the peer
-    //         let (client_to_peer_tx, client_to_peer_rx) = mpsc::channel::<PeerMessage>(100);
-
-    //         let mut download_piece_state = DownloadPieceState::new();
-
-    //         let piece_length = self.get_piece_length()?;
-
-    //         let piece = Arc::new(tokio::sync::Mutex::new(Piece::new(
-    //             0,
-    //             piece_length,
-    //             piece_length / DEFAULT_BLOCK_SIZE,
-    //         )));
-
-    //         // Clone Arc references needed in the spawned task
-    //         let peer_bitfield_clone = self.peer_bitfield.clone();
-
-    //         // Spawn task to handle messages RECEIVED from peer
-    //         tokio::task::spawn(async move {
-    //             while let Some(message) = peer_to_client_rx.recv().await {
-    //                 debug!("[download_file] received message from peer: {:?}", &message);
-    //                 match message {
-    //                     PeerMessage::Bitfield(bitfield) => {
-    //                         download_piece_state.received_bitfield = true;
-    //                         debug!(
-    //                             "[download_file] received bitfield message from peer: {:?}",
-    //                             &bitfield
-    //                         );
-
-    //                         if let Err(e) = client_to_peer_tx
-    //                             .send(PeerMessage::Interested(InterestedMessage {}))
-    //                             .await
-    //                         {
-    //                             debug!(
-    //                                 "[download_file] failed to send interested message: {:?}",
-    //                                 e
-    //                             );
-    //                             return;
-    //                         }
-
-    //                         download_piece_state.sent_interested = true;
-
-    //                         // Store the bitfield message in the map.
-    //                         peer_bitfield_clone.lock().await.insert(peer_id, bitfield);
-
-    //                         debug!("[download_file] sent interested message to peer");
-    //                     }
-    //                     PeerMessage::Unchoke(unchoke) => {
-    //                         debug!(
-    //                             "[download_file] received unchoke message from peer: {:?}",
-    //                             &unchoke
-    //                         );
-
-    //                         download_piece_state.received_unchoke = true;
-    //                         if download_piece_state.is_ready_for_download() {
-    //                             debug!(
-    //                                 "[download_file] is ready for downloading pieces from the peer"
-    //                             );
-
-    //                             // TODO: Read the bitfield message from the client
-    //                             // Copy into this task
-    //                             // Use it to download a piece
-    //                             // Once I receive the chunk of the piece, have some kind of Arc to store it in the FS.
-    //                             // Do this for all chunks
-    //                             // Use the Arc for the downloaded piece state to tell the piece is downloaded.
-
-    //                             // All that the task needs here must come from an Arc to avoid ownership problems.
-    //                             // Consider using an Arc here for self to help with this.
-
-    //                             // TODO: Make this async to not block the read of messages from the peer.
-    //                             let piece_index = {
-    //                                 let bitfield_map = peer_bitfield_clone.lock().await;
-    //                                 match bitfield_map.get(&peer_id) {
-    //                                     Some(bitfield) => {
-    //                                         match bitfield.get_first_available_piece() {
-    //                                             Some(index) => index,
-    //                                             None => {
-    //                                                 debug!(
-    //                                                     "[download_file] no available pieces from peer"
-    //                                                 );
-    //                                                 return;
-    //                                             }
-    //                                         }
-    //                                     }
-    //                                     None => {
-    //                                         debug!("[download_file] peer bitfield not found");
-    //                                         return;
-    //                                     }
-    //                                 }
-    //                             }; // Lock is dropped here
-
-    //                             {
-    //                                 piece.lock().await.update_idx(piece_index as u32);
-    //                             } // Lock is dropped here
-
-    //                             let mut offset = 0;
-    //                             let mut block_index = 0;
-    //                             while offset < piece_length {
-    //                                 let size =
-    //                                     std::cmp::min(DEFAULT_BLOCK_SIZE, piece_length - offset);
-    //                                 debug!(
-    //                                     "[download_file] Block {}: offset={}, size={}",
-    //                                     block_index, offset, size
-    //                                 );
-    //                                 offset += size;
-    //                                 block_index += 1;
-
-    //                                 if let Err(e) = client_to_peer_tx
-    //                                     .send(PeerMessage::Request(RequestMessage {
-    //                                         piece_index: piece_index as u32,
-    //                                         begin: offset as u32,
-    //                                         length: size as u32,
-    //                                     }))
-    //                                     .await
-    //                                 {
-    //                                     debug!(
-    //                                         "[download_file] failed to send request message: {:?}",
-    //                                         e
-    //                                     );
-    //                                     return;
-    //                                 }
-    //                             }
-
-    //                             debug!(
-    //                                 "[download_file] send a request message for each block of the piece {}",
-    //                                 piece_index
-    //                             );
-    //                         }
-    //                     }
-    //                     PeerMessage::Piece(message) => {
-    //                         debug!(
-    //                             "[download_file] received piece message from peer: {:?}",
-    //                             &message
-    //                         );
-
-    //                         {
-    //                             let mut p = piece.lock().await;
-
-    //                             if let Err(e) = p.add_block(message) {
-    //                                 debug!("[download_file] error adding block to piece: {:?}", e);
-    //                             }
-
-    //                             if p.is_complete() {
-    //                                 debug!("[download_file] piece is complete");
-    //                                 // TODO: Write the piece to the file system.
-    //                             }
-    //                         }
-    //                     }
-    //                     _ => {
-    //                         debug!(
-    //                             "[download_file] received invalid message from peer: {:?}",
-    //                             &message
-    //                         );
-    //                     }
-    //                 }
-    //             }
-    //         });
-
-    //         let num_pieces = self.get_num_pieces()?;
-
-    //         // Run the peer connection in a separate task
-    //         // Writes will be handled here when sent through the `client_to_peer_tx` channel.
-    //         // Reads will be notified in the channel `peer_to_client_tx` that is read above.
-    //         conn.run(num_pieces, peer_to_client_tx, client_to_peer_rx)
-    //             .await?;
-    //         break; // For now just find one peer that accepts the connection.
-    //     }
-
-    //     Ok(())
-    // }
 }

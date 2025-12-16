@@ -2,14 +2,18 @@ use clap::Parser;
 use reqwest::Client;
 
 mod cli;
+mod download_state;
 mod encoding;
+pub mod error;
 mod file_manager;
+mod messages;
 mod peer_manager;
 mod types;
 
 use cli::Args;
 use encoding::Decoder;
 use encoding::Encoder;
+use error::AppError;
 use file_manager::BitTorrent;
 use log::debug;
 use peer_manager::PeerManager;
@@ -21,7 +25,7 @@ async fn main() {
         .init();
 
     let http_client = Client::new();
-    let peer_manager = PeerManager::new(Decoder {}, Encoder {}, http_client);
+    let peer_manager = PeerManager::new(Decoder {}, http_client);
 
     let args = Args::parse();
     let mut torrent_client =
@@ -36,28 +40,29 @@ async fn main() {
         Ok(_) => {
             debug!("[main] File downloaded successfully!");
         }
-        Err(e) => {
-            let error_msg = e.to_string();
-            if error_msg.contains("Tracker rejected request") {
-                eprintln!("\n❌ Tracker Error: {}\n", error_msg);
+        Err(e) => match e.downcast_ref::<AppError>() {
+            Some(AppError::TrackerRejected(reason)) => {
+                eprintln!("\n❌ Tracker Error: {}\n", reason);
                 eprintln!("This torrent is not authorized for use with this tracker.");
                 eprintln!("Possible reasons:");
                 eprintln!("  - The torrent may be private and requires registration");
                 eprintln!("  - You may need to use a different tracker");
                 eprintln!("  - The torrent file may be invalid or expired");
                 std::process::exit(1);
-            } else if error_msg.contains("No peers available") {
-                eprintln!("\n❌ No Peers Found: {}\n", error_msg);
+            }
+            Some(AppError::NoPeersAvailable) => {
+                eprintln!("\n❌ No Peers Found\n");
                 eprintln!("The tracker did not return any peers.");
                 eprintln!("Possible reasons:");
                 eprintln!("  - No one is currently seeding this torrent");
                 eprintln!("  - The torrent may be dead or inactive");
                 eprintln!("  - Network connectivity issues");
                 std::process::exit(1);
-            } else {
-                eprintln!("\n❌ Download Failed: {}\n", error_msg);
+            }
+            _ => {
+                eprintln!("\n❌ Download Failed: {}\n", e);
                 std::process::exit(1);
             }
-        }
+        },
     }
 }

@@ -38,8 +38,8 @@ The application uses `env_logger` with debug level enabled by default in main.rs
 - **cli.rs**: Command-line argument parsing using clap
 - **encoding.rs**: Bencode encoder/decoder implementation
 - **types.rs**: Core types including peer messages, connections, and protocol structs
-- **file_manager.rs**: BitTorrent client (manages torrent metadata, pieces, and orchestration)
-- **peer_manager.rs**: Handles tracker communication and peer lifecycle
+- **file_manager.rs**: Manages torrent metadata, file I/O, piece verification, and download progress tracking
+- **peer_manager.rs**: Orchestrates peer lifecycle, download coordination, and piece-to-peer assignment
 
 ### Key Architecture Patterns
 
@@ -49,7 +49,12 @@ The application uses `env_logger` with debug level enabled by default in main.rs
 
 **Message Codec**: Uses `tokio_util::codec` with custom `PeerMessageDecoder` and `PeerMessageEncoder` for framing peer protocol messages.
 
-**Piece Management**: Pieces are tracked in `Arc<RwLock<Vec<Piece>>>` for shared state across async tasks.
+**Download Orchestration**: The architecture cleanly separates concerns:
+- **FileManager**: Handles torrent metadata, writes completed pieces to disk, verifies file integrity, and displays download progress
+- **PeerManager**: Manages the peer connection pool (up to 5 concurrent peers), assigns pieces to optimal peers based on bitfield availability, handles retry logic for failed pieces
+- **PeerConnection**: Handles raw TCP I/O with individual peers, downloads piece blocks, and reports completion/failure
+
+Pieces flow through channels: FileManager requests pieces → PeerManager assigns to peers → PeerConnection downloads → completion reported back to FileManager for writing.
 
 ### BitTorrent Protocol Implementation
 
@@ -73,12 +78,12 @@ Current error handling relies on string matching (e.g., `e.to_string().contains(
 Handshake has exponential backoff retry logic (3 attempts with 200ms, 400ms, 800ms delays).
 
 ### Current State
-The codebase is mid-refactoring. The BitTorrent client previously had a working single-piece download flow (now commented out in file_manager.rs). The new architecture separates concerns:
-- FileManager decides which pieces to request
-- PeerManager matches pieces to peers based on bitfield availability
-- PeerConnection handles raw I/O with individual peers
+The refactoring is complete. The BitTorrent client now has a clean separation of concerns:
+- **FileManager** (`file_manager.rs:197-351`): Orchestrates the download process, writes pieces to disk, verifies file integrity with SHA1 hashes, and displays download progress as "Downloaded X/Y pieces (Z%)"
+- **PeerManager** (`peer_manager.rs`): Manages a pool of connected peers, assigns pieces based on peer bitfield availability, handles retry logic (up to 3 attempts per piece), and maintains connection health
+- **PeerConnection** (`types.rs`): Handles block-level downloads using the BitTorrent peer protocol
 
-The `download_file` method in file_manager.rs is currently empty - this is the integration point being worked on.
+The client uses eager piece assignment (all pieces requested at once) for better parallelism and downloads from up to 5 peers simultaneously.
 
 ## Common Gotchas
 

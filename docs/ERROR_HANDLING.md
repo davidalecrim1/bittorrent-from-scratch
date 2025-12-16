@@ -1,267 +1,206 @@
 # Error Handling and Logging Best Practices in Modern Rust Applications
 
-Error handling in Rust doesn't have to be verbose. With `anyhow` for error propagation and pattern matching inspired by Go's `errors.Is`, you can build robust applications with clear, actionable logging.
+Error handling in Rust doesn’t have to be verbose — but the way you structure your errors *does* matter for clarity, matchability, and long-term maintainability. Rather than relying on `anyhow::Error` everywhere, define a central set of custom application errors in your project (e.g., in `src/error.rs`) and return them as concrete types. Use `anyhow` selectively to add contextual information where it’s useful for logs or debugging. ([Rust for C Programmers][1])
 
-## Error Handling with Anyhow
+---
 
-### Basic Error Propagation
+## Centralized Custom Errors (in `src/error.rs`)
 
-`anyhow` excels at quick error propagation while preserving context:
-
-```rust
-use anyhow::{Context, Result};
-
-fn read_config() -> Result<Config> {
-    let content = std::fs::read_to_string("config.toml")
-        .context("Failed to read config file")?;
-    
-    toml::from_str(&content)
-        .context("Failed to parse config")
-}
-```
-
-### Go-style Error Matching
-
-To match specific errors like Go's `errors.Is`, use `downcast_ref`:
+Define an enum representing meaningful error cases for your app. Making this the error type of your `Result`s lets callers use **normal pattern matching**, giving you clear control flow:
 
 ```rust
-use anyhow::{anyhow, Result};
-use std::io;
-
-fn process_file(path: &str) -> Result<()> {
-    match read_file(path) {
-        Ok(data) => handle_data(data),
-        Err(e) => {
-            // Match specific error types
-            if let Some(io_err) = e.downcast_ref::<io::Error>() {
-                match io_err.kind() {
-                    io::ErrorKind::NotFound => {
-                        log::warn!("File not found: {}, using defaults", path);
-                        Ok(())
-                    }
-                    io::ErrorKind::PermissionDenied => {
-                        log::error!("Permission denied reading: {}", path);
-                        Err(e)
-                    }
-                    _ => Err(e),
-                }
-            } else {
-                Err(e)
-            }
-        }
-    }
-}
-```
-
-### Custom Error Types for Matching
-
-For application-specific errors you need to match against:
-
-```rust
-use anyhow::{Context, Result};
+// src/error.rs
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum AppError {
-    #[error("Database connection failed")]
-    DatabaseConnection,
-    
-    #[error("Invalid user input: {0}")]
+    #[error("invalid input: {0}")]
     InvalidInput(String),
-    
-    #[error("Resource not found: {0}")]
-    NotFound(String),
-}
 
-fn handle_request(id: &str) -> Result<Response> {
-    match fetch_user(id) {
-        Ok(user) => Ok(Response::new(user)),
-        Err(e) => {
-            if let Some(app_err) = e.downcast_ref::<AppError>() {
-                match app_err {
-                    AppError::NotFound(_) => {
-                        log::info!("User {} not found, returning 404", id);
-                        Ok(Response::not_found())
-                    }
-                    AppError::DatabaseConnection => {
-                        log::error!("DB connection failed for user lookup");
-                        Err(e)
-                    }
-                    _ => Err(e),
-                }
-            } else {
-                Err(e)
-            }
-        }
+    #[error("database connection failed")]
+    DatabaseConnection(#[from] DatabaseError),
+
+    #[error("resource not found: {0}")]
+    NotFound(String),
+
+    // …other domain cases
+}
+```
+
+Functions then return:
+
+```rust
+fn handle_request(...) -> Result<Response, AppError> { /* ... */ }
+```
+
+This structure gives you exact error variants to match on later — something `anyhow::Error` *erases* by design. ([DEV Community][2])
+
+---
+
+## Why Custom Errors + `anyhow` Works Better Together
+
+Rust’s standard guidance for error handling suggests:
+
+* Use **custom typed errors** for fine-grained control and handling.
+* Use `anyhow` for **application top levels** or when you want to add additional context to errors before handling them. ([Rust for C Programmers][1])
+
+Custom types let you write:
+
+```rust
+match do_work() {
+    Ok(_) => …,
+    Err(AppError::NotFound(id)) => {
+        log::info!("thing {id} not found");
+        // handle case
+    }
+    Err(AppError::InvalidInput(msg)) => …,
+    Err(e) => …,
+}
+```
+
+This is clearer and more efficient than downcasting a dynamic `anyhow::Error` every time. ([Rust for C Programmers][1])
+
+You *can* still use `anyhow` helpers to build context before converting to your error type:
+
+```rust
+use anyhow::Context;
+
+fn load_config(path: &str) -> Result<Config, AppError> {
+    let content = std::fs::read_to_string(path)
+        .context("reading config")
+        .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+
+    toml::from_str(&content).map_err(|e| AppError::InvalidInput(e.to_string()))
+}
+```
+
+The context improves debugging output, but the canonical return type remains your custom `AppError`. ([DEV Community][2])
+
+---
+
+## Error Matching and Handling
+
+With custom error types, error matching is direct and ergonomic:
+
+```rust
+match handle_request(&req) {
+    Ok(resp) => Ok(resp),
+    Err(AppError::NotFound(resource)) => {
+        log::warn!("Resource {resource} not found");
+        Ok(Response::not_found())
+    }
+    Err(AppError::DatabaseConnection(_)) => {
+        log::error!("DB connection failed");
+        Err(AppError::DatabaseConnection(...))
+    }
+    Err(other) => {
+        log::error!("Unexpected error: {other:?}");
+        Err(other)
     }
 }
 ```
 
+This avoids pulling types out of an `anyhow::Error` at every call site. ([Rust for C Programmers][1])
+
+---
+
 ## Logging Best Practices
 
-### Clear, Non-Noisy Logging
+### Clear, Intentional Logging
 
-Good logs tell a story without overwhelming:
+Logs should tell *why* something failed without noise:
 
 ```rust
 use log::{debug, info, warn, error};
 
-fn process_batch(items: &[Item]) -> Result<()> {
-    debug!("Processing batch of {} items", items.len());
-    
-    for (idx, item) in items.iter().enumerate() {
+fn process_batch(items: &[Item]) -> Result<(), AppError> {
+    debug!("Processing {} items", items.len());
+
+    for (i, item) in items.iter().enumerate() {
         match item.validate() {
-            Ok(_) => {
-                // Only log validation failures, not successes
-                debug!("Item {}: validated", idx);
-            }
+            Ok(_) => debug!("Item {} validated", i),
             Err(e) => {
-                warn!("Item {}: validation failed: {:#}", idx, e);
+                warn!("Item {} validation failed: {e:?}", i);
                 continue;
             }
         }
-        
+
+        // Add context without changing underlying type
         item.process()
-            .with_context(|| format!("Processing item {}", idx))?;
+            .map_err(|e| AppError::InvalidInput(format!("processing {}: {e}", i)))?;
     }
-    
-    info!("Batch completed: {}/{} items processed", 
-          items.len(), items.len());
+
+    info!("Batch completed: {} items", items.len());
     Ok(())
 }
 ```
 
-### Log Level Guidelines
+Disable verbose logs (e.g., `debug!`) in production builds unless explicitly enabled.
 
-- **`error!`**: Actionable failures requiring immediate attention
-- **`warn!`**: Degraded operation or recoverable issues
-- **`info!`**: Key business events and state changes
-- **`debug!`**: Detailed flow for troubleshooting (not in production)
+---
 
-```rust
-fn handle_payment(amount: f64) -> Result<()> {
-    info!("Payment initiated: ${:.2}", amount);
-    
-    match process_payment(amount) {
-        Ok(txn_id) => {
-            info!("Payment successful: txn={}", txn_id);
-            Ok(())
-        }
-        Err(e) => {
-            if let Some(payment_err) = e.downcast_ref::<PaymentError>() {
-                match payment_err {
-                    PaymentError::InsufficientFunds => {
-                        warn!("Payment declined: insufficient funds");
-                        Err(e)
-                    }
-                    PaymentError::NetworkTimeout => {
-                        error!("Payment processing timeout - manual review needed");
-                        Err(e)
-                    }
-                    _ => {
-                        error!("Payment failed: {:#}", e);
-                        Err(e)
-                    }
-                }
-            } else {
-                error!("Unexpected payment error: {:#}", e);
-                Err(e)
-            }
-        }
-    }
-}
-```
+### Recommended Log Levels
 
-### Structured Context
+* **`error!`**: Failures the app can’t recover from
+* **`warn!`**: Recoverable issues or degraded operation
+* **`info!`**: High-level state changes and decisions
+* **`debug!`**: Detailed diagnostics during development ([Compile N Run][3])
 
-Use `anyhow`'s context chaining for clear error trails:
+---
+
+## Structured Context
+
+Providing context helps trace failures:
 
 ```rust
-fn sync_data() -> Result<()> {
-    let conn = connect_db()
-        .context("Database connection failed")?;
-    
-    let records = fetch_records(&conn)
-        .context("Failed to fetch records from database")?;
-    
+fn sync_data() -> Result<(), AppError> {
+    let conn = connect_db().map_err(|e| {
+        AppError::DatabaseConnection(e)
+    })?;
+
+    let records = fetch_records(&conn)?;
     upload_to_s3(&records)
-        .context("S3 upload failed")?;
+        .map_err(|e| AppError::InvalidInput(format!("upload failed: {e}")))?;
     
-    info!("Data sync completed: {} records", records.len());
+    info!("Data sync finished: {} records", records.len());
     Ok(())
 }
 ```
 
-When this fails, you get a beautiful error chain:
+This pattern surfaces domain meaning while keeping error types explicit. ([Rust for C Programmers][1])
 
-```
-Error: S3 upload failed
+---
 
-Caused by:
-    0: Network request failed
-    1: Connection timeout
-```
-
-### Debug Formatting
-
-Use `{:#}` for pretty-printed errors with full context:
+## Consolidated Example
 
 ```rust
-if let Err(e) = risky_operation() {
-    error!("Operation failed: {:#}", e);  // Multi-line with context
-    debug!("Error details: {:?}", e);      // Full debug output
-}
-```
-
-## Putting It Together
-
-```rust
-use anyhow::{Context, Result};
-use log::{debug, info, error};
-
-pub async fn handle_user_request(req: Request) -> Result<Response> {
-    debug!("Request received: method={} path={}", req.method(), req.path());
-    
+pub async fn handle_user_request(req: Request) -> Result<Response, AppError> {
     let user_id = extract_user_id(&req)
-        .context("Invalid user ID in request")?;
-    
+        .map_err(|_| AppError::InvalidInput("invalid user id".into()))?;
+
     match fetch_user_data(user_id).await {
-        Ok(data) => {
-            info!("User data retrieved: user_id={}", user_id);
-            Ok(Response::ok(data))
-        }
+        Ok(data) => Ok(Response::ok(data)),
+        Err(AppError::NotFound(_)) => Ok(Response::not_found()),
         Err(e) => {
-            if let Some(db_err) = e.downcast_ref::<DatabaseError>() {
-                match db_err {
-                    DatabaseError::NotFound => {
-                        debug!("User {} not found", user_id);
-                        Ok(Response::not_found())
-                    }
-                    DatabaseError::ConnectionLost => {
-                        error!("Database connection lost during user fetch");
-                        Err(e)
-                    }
-                    _ => {
-                        error!("Database error: {:#}", e);
-                        Err(e)
-                    }
-                }
-            } else {
-                error!("Unexpected error fetching user: {:#}", e);
-                Err(e)
-            }
+            error!("Error fetching user: {e:?}");
+            Err(e)
         }
     }
 }
 ```
+
+Here we match *specific* error cases clearly and log appropriately.
+
+---
 
 ## Key Takeaways
 
-1. **Use `downcast_ref`** for Go-style error matching with `anyhow`
-2. **Add context liberally** with `.context()` for clear error trails
-3. **Log intentionally**: info for events, warn for issues, error for failures
-4. **Format with `{:#}`** for readable multi-line errors
-5. **Keep logs actionable**: what happened, what needs attention
-6. **Debug logs are free in development**, silent in production unless enabled
+1. **Use explicit error types** (`Result<T, AppError>`) for domain logic so you can pattern-match error cases directly. ([Rust for C Programmers][1])
+2. **Use `anyhow` primarily for adding context** and error propagation helpers, not as the main error type everywhere. ([DEV Community][2])
+3. **Centralize error definitions** (e.g., in `src/error.rs`) so they reflect the actual failure modes your app handles. ([Compile N Run][3])
+4. **Match errors directly** rather than downcasting everywhere — this is more ergonomic and expressive.
+5. **Log intentionally** according to severity levels — `error`, `warn`, `info`, `debug`. ([Compile N Run][3])
 
-This approach gives you Go's error handling clarity with Rust's type safety, and logs that developers actually want to read.
+This approach balances Rust’s compile-time guarantees with clear, actionable runtime error handling and readable logs. ([Rust for C Programmers][1])
+
+---

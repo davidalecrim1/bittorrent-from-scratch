@@ -1,9 +1,12 @@
-#![allow(dead_code)]
-
 use anyhow::{Result, anyhow};
+use bytes::Buf;
 use log::debug;
 use std::collections::BTreeMap;
+use tokio_util::bytes::BytesMut;
+use tokio_util::codec::{Decoder as TokioDecoder, Encoder as TokioEncoder};
 
+use crate::error::CodecError;
+use crate::messages::PeerMessage;
 use crate::types::BencodeTypes;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -164,30 +167,6 @@ impl Decoder {
         Err(anyhow!("the provided data is not a valid primitive"))
     }
 
-    // TODO: Review if there is a way to not add everything as unknown if for some reason
-    // there is other valid types after this raw bytes.
-    fn handle_as_raw(&self, bytes: &[u8]) -> Result<(usize, BencodeTypes)> {
-        let mut curr_idx = 0;
-        while curr_idx < bytes.len() {
-            let b = bytes[curr_idx];
-
-            if b == b':' {
-                break;
-            }
-
-            curr_idx += 1;
-        }
-
-        let input_len = &bytes[0..curr_idx];
-        let input_len_str: &str = std::str::from_utf8(input_len)?;
-        let len: usize = input_len_str.parse()?;
-
-        curr_idx += 1; // ignore the colon in the string
-
-        let input = &bytes[curr_idx..len + curr_idx];
-        Ok((len + curr_idx, BencodeTypes::Raw(input.to_vec())))
-    }
-
     fn get_next_data_len(&self, bytes: &[u8]) -> Result<(usize, usize)> {
         let mut curr_idx = 0;
         while curr_idx < bytes.len() {
@@ -300,8 +279,6 @@ impl Decoder {
             curr_idx += n;
         }
 
-        debug!("[decode_list] result: {:?}", &result);
-
         // +1 because of the 'e' in the provided bytes
         Ok((curr_idx + 1, result))
     }
@@ -341,10 +318,6 @@ impl Decoder {
                 v
             };
 
-            debug!(
-                "[decode_dictionary] adding the key: {:?} with the value: {:?}",
-                &key, &val
-            );
             hm.insert(key, val);
         }
 
@@ -725,5 +698,66 @@ mod tests {
                 panic!("Result variants did not match");
             }
         }
+    }
+}
+
+pub struct PeerMessageDecoder {
+    num_pieces: usize,
+}
+
+impl PeerMessageDecoder {
+    pub fn new(num_pieces: usize) -> Self {
+        Self { num_pieces }
+    }
+}
+
+impl TokioDecoder for PeerMessageDecoder {
+    type Item = PeerMessage;
+    type Error = anyhow::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        match PeerMessage::from_bytes(src.as_ref(), self.num_pieces) {
+            Ok((n, message)) => {
+                src.advance(n);
+                Ok(Some(message))
+            }
+            Err(e) => {
+                if let Some(codec_err) = e.downcast_ref::<CodecError>() {
+                    match codec_err {
+                        CodecError::IncompleteMessage { .. } | CodecError::MessageTooShort(_) => {
+                            Ok(None)
+                        }
+                        _ => Err(e),
+                    }
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+}
+
+pub struct PeerMessageEncoder {
+    #[allow(dead_code)]
+    num_pieces: usize,
+}
+
+impl PeerMessageEncoder {
+    pub fn new(num_pieces: usize) -> Self {
+        Self { num_pieces }
+    }
+}
+
+impl TokioEncoder<PeerMessage> for PeerMessageEncoder {
+    type Error = anyhow::Error;
+
+    fn encode(&mut self, item: PeerMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let bytes = item.to_bytes();
+        if let Err(e) = bytes {
+            return Err(anyhow!("error converting message to bytes: {}", e));
+        }
+
+        dst.extend_from_slice(&bytes.unwrap());
+        Ok(())
     }
 }
