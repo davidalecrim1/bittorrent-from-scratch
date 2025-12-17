@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use bytes::Buf;
-use log::debug;
 use std::collections::BTreeMap;
 use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Decoder as TokioDecoder, Encoder as TokioEncoder};
@@ -101,8 +100,6 @@ impl Encoder {
                 let mut res = Vec::with_capacity(prefix.len() + data.len());
                 res.extend_from_slice(&prefix);
                 res.extend_from_slice(&data);
-
-                debug!("[encode_pieces] encoded pieces length: {:?}", len);
                 Ok(res)
             }
             BencodeTypes::Raw(s) => {
@@ -111,8 +108,6 @@ impl Encoder {
                 let mut res = Vec::with_capacity(prefix.len() + s.len());
                 res.extend_from_slice(&prefix);
                 res.extend_from_slice(&s);
-
-                debug!("[encode_pieces] encoded pieces length: {:?}", &len);
                 Ok(res)
             }
 
@@ -202,18 +197,11 @@ impl Decoder {
             curr_idx += 20;
         }
 
-        debug!("[decode_pieces_hashes] pieces received: {:?}", hashes.len());
-
         Ok((curr_idx, hashes))
     }
 
     fn decode_string(&self, bytes: &[u8]) -> Result<(usize, String)> {
         if !self.is_string(bytes) {
-            let str = String::from_utf8_lossy(bytes).to_string();
-            debug!(
-                "[decode_string] the provided data is not a string: {:?}",
-                &str
-            );
             return Err(anyhow!("the provided data is not a string"));
         }
 
@@ -231,8 +219,6 @@ impl Decoder {
         curr_idx += 1; // ignore the colon in the string
         let input = &bytes[curr_idx..len + curr_idx];
         let str = String::from_utf8_lossy(input).to_string();
-
-        debug!("[decode_string] extracted string: {:?}", &str);
 
         let n = len + curr_idx; // considers the len of the string in the message and the colon
         Ok((n, str.to_string()))

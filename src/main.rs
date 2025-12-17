@@ -7,6 +7,7 @@ mod encoding;
 pub mod error;
 mod file_manager;
 mod messages;
+mod peer_connection;
 mod peer_manager;
 mod types;
 

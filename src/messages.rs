@@ -22,7 +22,6 @@ impl PeerMessage {
         }
 
         let length = Self::get_length(src)?;
-        debug!("[from_bytes] the message length: {}", length);
         let message_type = src[4];
 
         let total_size = 4 + length;
@@ -37,25 +36,19 @@ impl PeerMessage {
         match message_type {
             1 => {
                 let message = UnchokeMessage::from_bytes(src)?;
-                debug!("[from_bytes] received `unchoke` message: {:?}", &message);
                 Ok((total_size, Self::Unchoke(message)))
             }
             5 => {
                 let payload = &src[5..];
                 let message = BitfieldMessage::from_bytes(payload, num_pieces)?;
-                debug!("[from_bytes] received `bitfield` message: {:?}", &message);
                 Ok((total_size, Self::Bitfield(message)))
             }
             7 => {
                 let message = PieceMessage::from_bytes(src)?;
-                debug!("[from_bytes] received `piece` message`: {:?}", &message);
                 Ok((total_size, Self::Piece(message)))
             }
             _ => {
-                debug!(
-                    "[from_bytes] received invalid message: {:?} with length {}",
-                    &message_type, length
-                );
+                debug!("Unknown message type {}", message_type);
                 Err(CodecError::UnknownMessageType(message_type).into())
             }
         }
@@ -195,8 +188,7 @@ impl PieceMessage {
         let piece_index = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
         let begin = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
         let mut block = vec![0u8; bytes.len() - 9];
-        if let Err(e) = std::io::Read::read_exact(&mut cursor, &mut block) {
-            debug!("[from_bytes] error reading block: {:?}", e);
+        if std::io::Read::read_exact(&mut cursor, &mut block).is_err() {
             std::io::Read::read_to_end(&mut cursor, &mut block)?;
         }
 

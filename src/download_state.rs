@@ -1,5 +1,4 @@
 use crate::error::{AppError, Result};
-use log::debug;
 use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet};
 
@@ -36,7 +35,6 @@ impl DownloadState {
 
     pub fn add_block(&mut self, begin: u32, data: Vec<u8>) -> Result<()> {
         if self.received_blocks.contains_key(&begin) {
-            debug!("[DownloadState] Duplicate block at offset {}", begin);
             return Ok(());
         }
 

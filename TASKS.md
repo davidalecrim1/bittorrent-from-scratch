@@ -18,7 +18,7 @@ This file tracks pending tasks and improvements identified in the codebase.
 ## Medium Priority
 
 ### Logging and Observability
-- [ ] **Improve logging clarity across codebase**: Review and refactor all debug logging to keep only useful messages that help understand the application's internal workings. Remove verbose/redundant logs and ensure log messages are clear and actionable.
+- [x] **Improve logging clarity across codebase**: Review and refactor all debug logging to keep only useful messages that help understand the application's internal workings. Remove verbose/redundant logs and ensure log messages are clear and actionable.
 
 ### Multi-Peer Download
 - [ ] **Evolve download to use multiple peers in file_manager.rs:473**: Currently downloads pieces sequentially; enhance to download from multiple peers simultaneously (note: current implementation already supports this to some degree with max 5 peers)
@@ -28,6 +28,9 @@ This file tracks pending tasks and improvements identified in the codebase.
 - [ ] **Review pieces hash format in encoding.rs:329**: Consider whether to keep pieces as raw bytes or convert to string format
 
 ## Low Priority / Code Cleanup
+
+### Code Organization
+- [x] **Move PeerConnection to peer_connection.rs**: Extract PeerConnection struct and implementation from types.rs into a dedicated module to improve code organization and reduce file size
 
 ### Deprecated Code Review
 - [ ] **Review commented bitfield reading in file_manager.rs:555**: Evaluate if the old bitfield reading logic should be removed or preserved

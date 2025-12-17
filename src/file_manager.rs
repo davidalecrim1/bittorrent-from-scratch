@@ -1,5 +1,4 @@
 use anyhow::{Result, anyhow};
-use log::debug;
 use sha1::{Digest, Sha1};
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -60,13 +59,8 @@ impl BitTorrent {
 
     fn load_file(&mut self, path: String) -> Result<()> {
         let bytes = fs::read(path)?;
-        debug!(
-            "[BitTorrent] bytes length loaded from file: {:?}",
-            bytes.len()
-        );
 
-        let (n, val) = self.decoder.from_bytes(&bytes)?;
-        debug!("[BitTorrent] bytes length decoded: {:?}", n);
+        let (_n, val) = self.decoder.from_bytes(&bytes)?;
 
         match val {
             BencodeTypes::Dictionary(val) => {
@@ -159,13 +153,9 @@ impl BitTorrent {
     }
 
     pub fn print_file_metadata(&self) -> Result<()> {
-        let hash = self.get_info_hash_as_hex()?;
-        let size = self.get_file_size()?;
-        let piece_length = self.get_piece_length()?;
-        debug!(
-            "[print_file_metadata] hash: {:?}, size: {:?}, piece_length: {:?}",
-            hash, size, piece_length
-        );
+        let _hash = self.get_info_hash_as_hex()?;
+        let _size = self.get_file_size()?;
+        let _piece_length = self.get_piece_length()?;
         Ok(())
     }
 
@@ -204,16 +194,10 @@ impl BitTorrent {
             .start(announce_url.clone(), completion_tx, failure_tx)
             .await?;
 
-        debug!("[download_file] PeerManager started");
-
         let filename = self.get_filename()?;
         let output_path = format!("{}/{}", output_directory_path, filename);
         let mut file = File::create(&output_path).await?;
         file.set_len(file_size as u64).await?;
-        debug!(
-            "[download_file] Created file: {} ({} bytes)",
-            output_path, file_size
-        );
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -229,7 +213,6 @@ impl BitTorrent {
             .collect();
 
         self.peer_manager.request_pieces(piece_requests).await?;
-        debug!("[download_file] Requested all {} pieces", num_pieces);
 
         let mut downloaded_pieces = 0;
         let mut failed_attempts: HashMap<u32, usize> = HashMap::new();
@@ -271,7 +254,6 @@ impl BitTorrent {
         }
 
         drop(file);
-        debug!("[download_file] File download complete: {}", output_path);
 
         self.verify_file(&output_path, &pieces_hashes, piece_length, file_size)
             .await?;
@@ -286,10 +268,7 @@ impl BitTorrent {
         piece_length: usize,
         file_size: usize,
     ) -> Result<()> {
-        debug!("[verify_file] Starting verification of {}", file_path);
-
         let mut file = File::open(file_path).await?;
-        let mut verified_pieces = 0;
 
         for (piece_index, expected_hash) in expected_hashes.iter().enumerate() {
             let offset = piece_index * piece_length;
@@ -316,20 +295,8 @@ impl BitTorrent {
                     actual_hash_bytes
                 ));
             }
-
-            verified_pieces += 1;
-            debug!(
-                "[verify_file] Piece {} verified ({}/{})",
-                piece_index,
-                verified_pieces,
-                expected_hashes.len()
-            );
         }
 
-        debug!(
-            "[verify_file] All {} pieces verified successfully",
-            verified_pieces
-        );
         Ok(())
     }
 

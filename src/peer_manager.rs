@@ -75,18 +75,16 @@ impl PeerManager {
         tokio::task::spawn(async move {
             while let Some(disconnect) = disconnect_rx.recv().await {
                 debug!(
-                    "[PeerManager] Peer {} disconnected: {}",
+                    "Peer {} disconnected: {}",
                     disconnect.peer_addr, disconnect.reason
                 );
 
-                // Remove from connected_peers
                 peer_manager_disconnect
                     .connected_peers
                     .write()
                     .await
                     .remove(&disconnect.peer_addr);
 
-                // Re-queue any in-flight pieces from this peer
                 let mut in_flight = peer_manager_disconnect.in_flight_pieces.write().await;
                 let failed_pieces: Vec<u32> = in_flight
                     .iter()
@@ -94,14 +92,15 @@ impl PeerManager {
                     .map(|(piece_idx, _)| *piece_idx)
                     .collect();
 
-                for piece_idx in failed_pieces {
-                    in_flight.remove(&piece_idx);
+                if !failed_pieces.is_empty() {
                     debug!(
-                        "[PeerManager] Re-queueing piece {} from disconnected peer {}",
-                        piece_idx, disconnect.peer_addr
+                        "Re-queueing {} pieces from {}",
+                        failed_pieces.len(),
+                        disconnect.peer_addr
                     );
-                    // Note: Pieces will be reassigned by the assignment background task
-                    // which picks from pending_pieces queue
+                    for piece_idx in failed_pieces {
+                        in_flight.remove(&piece_idx);
+                    }
                 }
             }
         });
@@ -112,17 +111,14 @@ impl PeerManager {
         let disconnect_tx_bg = disconnect_tx.clone();
         tokio::task::spawn(async move {
             loop {
-                if let Err(e) = peer_manager
+                let _ = peer_manager
                     .connect_with_peers(
                         max_peers,
                         completion_tx_bg.clone(),
                         failure_tx_bg.clone(),
                         disconnect_tx_bg.clone(),
                     )
-                    .await
-                {
-                    debug!("[PeerManager::start] Error connecting peers: {}", e);
-                }
+                    .await;
 
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
@@ -201,10 +197,6 @@ impl PeerManager {
         for request in requests {
             pending.push_back(request);
         }
-        debug!(
-            "[PeerManager::request_pieces] Queued {} pieces for download",
-            pending.len()
-        );
         Ok(())
     }
 
@@ -241,12 +233,6 @@ impl PeerManager {
         let mut in_flight = self.in_flight_pieces.write().await;
         in_flight.insert(piece_index, best_peer.peer.get_addr());
 
-        debug!(
-            "[PeerManager::assign_piece_to_peer] Assigned piece {} to peer {}",
-            piece_index,
-            best_peer.peer.get_addr()
-        );
-
         Ok(())
     }
 
@@ -278,8 +264,8 @@ impl PeerManager {
                             hash_map.insert(peer.get_addr(), peer);
                         }
                     }
-                    Err(e) => {
-                        debug!("[watch_tracker] failed to get peers: {:?}", e);
+                    Err(_e) => {
+                        // Tracker error, will retry on next interval
                     }
                 }
             }
@@ -321,11 +307,7 @@ impl PeerManager {
             match self.try_get_peers(&endpoint, info_hash, file_size).await {
                 Ok(peers) => {
                     if attempt > 1 {
-                        debug!(
-                            "[get_peers] Successfully connected to tracker after {} attempts ({} seconds)",
-                            attempt,
-                            elapsed.as_secs()
-                        );
+                        debug!("Tracker connected after {} attempts", attempt);
                     }
                     return Ok(peers);
                 }
@@ -337,7 +319,7 @@ impl PeerManager {
                     };
 
                     if is_tracker_error {
-                        debug!("[get_peers] Tracker rejection (attempt {}): {}", attempt, e);
+                        debug!("Tracker rejected connection: {}", e);
                         return Err(e);
                     }
 
@@ -413,7 +395,6 @@ impl PeerManager {
         }
 
         let body = res.bytes().await?;
-        debug!("[try_get_peers] body: {}", String::from_utf8_lossy(&body));
         let (_, val) = self.decoder.from_bytes(&body)?;
 
         self.parse_peers(val)
@@ -562,29 +543,22 @@ impl PeerManager {
                 .await
             {
                 Ok(connected_peer) => {
-                    debug!(
-                        "[PeerManager::connect_with_peers] Connected to peer {}",
-                        peer_addr
-                    );
                     self.connected_peers
                         .write()
                         .await
-                        .insert(peer_addr, connected_peer);
+                        .insert(peer_addr.clone(), connected_peer);
                     successful_connections += 1;
+                    debug!("Connected to peer {}", peer_addr);
                 }
-                Err(e) => {
-                    debug!(
-                        "[PeerManager::connect_with_peers] Failed to connect to peer {}: {}",
-                        peer_addr, e
-                    );
+                Err(_e) => {
+                    // Connection failed, skip this peer
                 }
             }
         }
 
-        debug!(
-            "[PeerManager::connect_with_peers] Connected {} new peers",
-            successful_connections
-        );
+        if successful_connections > 0 {
+            debug!("Connected {} new peers", successful_connections);
+        }
         Ok(successful_connections)
     }
 
