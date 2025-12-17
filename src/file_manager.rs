@@ -9,7 +9,6 @@ use crate::encoding::Decoder;
 use crate::encoding::Encoder;
 use crate::peer_manager::PeerManager;
 use crate::types::{BencodeTypes, Piece, PieceStatus};
-
 use crate::types::{CompletedPiece, FailedPiece, PeerManagerConfig, PieceDownloadRequest};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -226,6 +225,7 @@ impl BitTorrent {
                     file.flush().await?;
 
                     downloaded_pieces += 1;
+                    self.peer_manager.increment_completed_pieces().await;
 
                     let percentage = (downloaded_pieces * 100) / num_pieces;
                     println!(

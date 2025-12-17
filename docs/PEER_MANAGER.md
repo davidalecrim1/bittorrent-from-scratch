@@ -6,7 +6,7 @@ This file documents how the PeerManager is responsible for coordinating BitTorre
 
 The PeerManager operates with three main responsibilities:
 
-1. **Peer Pool Management**: Maintains connections to up to `max_peers` (default 5) peers simultaneously, automatically connecting to new peers from the tracker as needed.
+1. **Peer Pool Management**: Maintains connections to up to `max_peers` peers simultaneously, automatically connecting to new peers from the tracker as needed.
 
 2. **Piece Assignment**: Matches pending piece requests to peers that have the piece (based on bitfield) and minimal active downloads, ensuring optimal load distribution.
 

@@ -8,6 +8,7 @@ use crate::error::CodecError;
 
 #[derive(Debug)]
 pub enum PeerMessage {
+    Choke(ChokeMessage),
     Unchoke(UnchokeMessage),
     Interested(InterestedMessage),
     Bitfield(BitfieldMessage),
@@ -34,6 +35,10 @@ impl PeerMessage {
         }
 
         match message_type {
+            0 => {
+                let message = ChokeMessage::from_bytes(src)?;
+                Ok((total_size, Self::Choke(message)))
+            }
             1 => {
                 let message = UnchokeMessage::from_bytes(src)?;
                 Ok((total_size, Self::Unchoke(message)))
@@ -134,6 +139,15 @@ impl InterestedMessage {
         bytes[0..4].copy_from_slice(&1u32.to_be_bytes());
         bytes[4] = 2;
         bytes
+    }
+}
+
+#[derive(Debug)]
+pub struct ChokeMessage {}
+
+impl ChokeMessage {
+    pub fn from_bytes(_bytes: &[u8]) -> Result<Self> {
+        Ok(Self {})
     }
 }
 

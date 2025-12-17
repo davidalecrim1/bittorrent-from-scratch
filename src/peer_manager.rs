@@ -29,6 +29,7 @@ pub struct PeerManager {
 
     pending_pieces: Arc<RwLock<VecDeque<PieceDownloadRequest>>>,
     in_flight_pieces: Arc<RwLock<HashMap<u32, String>>>,
+    completed_pieces: Arc<RwLock<usize>>,
 }
 
 impl PeerManager {
@@ -41,6 +42,7 @@ impl PeerManager {
             config: None,
             pending_pieces: Arc::new(RwLock::new(VecDeque::new())),
             in_flight_pieces: Arc::new(RwLock::new(HashMap::new())),
+            completed_pieces: Arc::new(RwLock::new(0)),
         }
     }
 
@@ -66,6 +68,7 @@ impl PeerManager {
         let info_hash = config.info_hash;
         let file_size = config.file_size;
         let max_peers = config.max_peers;
+        let num_pieces = config.num_pieces;
 
         // Create shared disconnect channel for all peers
         let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<PeerDisconnected>(100);
@@ -146,6 +149,23 @@ impl PeerManager {
             }
         });
 
+        let peer_manager_progress = self.clone();
+        tokio::task::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+
+                let completed = *peer_manager_progress.completed_pieces.read().await;
+                let connected_peers = peer_manager_progress.connected_peers.read().await.len();
+                let percentage = (completed * 100) / num_pieces;
+
+                println!(
+                    "[Progress] {}/{} pieces ({}%) | {} peers connected",
+                    completed, num_pieces, percentage, connected_peers
+                );
+            }
+        });
+
         self.clone()
             .watch_tracker(
                 Duration::from_secs(2 * 60),
@@ -198,6 +218,11 @@ impl PeerManager {
             pending.push_back(request);
         }
         Ok(())
+    }
+
+    pub async fn increment_completed_pieces(&self) {
+        let mut completed = self.completed_pieces.write().await;
+        *completed += 1;
     }
 
     async fn assign_piece_to_peer(&self, request: PieceDownloadRequest) -> Result<()> {

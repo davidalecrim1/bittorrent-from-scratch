@@ -14,18 +14,16 @@ This file tracks pending tasks and improvements identified in the codebase.
 
 ### Peer Management
 - [x] **Handle peer disconnection in types.rs:396**: Implement mechanism to notify peer manager when a peer disconnects and should be dropped from the pool
+- [ ] **Implement additional peer message types**: Add support for Have (ID 4), NotInterested (ID 3), Cancel (ID 8), and Keep-Alive messages to complete the BitTorrent peer wire protocol implementation
 
 ## Medium Priority
 
 ### Logging and Observability
 - [x] **Improve logging clarity across codebase**: Review and refactor all debug logging to keep only useful messages that help understand the application's internal workings. Remove verbose/redundant logs and ensure log messages are clear and actionable.
+- [x] **Add periodic progress reporting in peer_manager.rs**: Implemented background task that prints download progress (percentage based on completed pieces) and number of connected peers once per minute. Progress format: "[Progress] X/Y pieces (Z%) | N peers connected"
 
 ### Multi-Peer Download
-- [ ] **Evolve download to use multiple peers in file_manager.rs:473**: Currently downloads pieces sequentially; enhance to download from multiple peers simultaneously (note: current implementation already supports this to some degree with max 5 peers)
-
-### Encoding/Decoding
-- [ ] **Review unknown field handling in encoding.rs:167**: Evaluate if there's a better approach than marking everything as unknown when parsing fails
-- [ ] **Review pieces hash format in encoding.rs:329**: Consider whether to keep pieces as raw bytes or convert to string format
+- [x] **Evolve download to use multiple peers in file_manager.rs:473**: Multi-peer parallel downloads fully implemented with eager piece assignment, background orchestration, and support for up to 10 concurrent peer connections with load balancing
 
 ## Low Priority / Code Cleanup
 
@@ -33,19 +31,11 @@ This file tracks pending tasks and improvements identified in the codebase.
 - [x] **Move PeerConnection to peer_connection.rs**: Extract PeerConnection struct and implementation from types.rs into a dedicated module to improve code organization and reduce file size
 
 ### Deprecated Code Review
-- [ ] **Review commented bitfield reading in file_manager.rs:555**: Evaluate if the old bitfield reading logic should be removed or preserved
-- [ ] **Review async download blocking in file_manager.rs:565**: Consider if the commented async download logic should be implemented
-- [ ] **Review piece writing in file_manager.rs:640**: Evaluate the commented file system writing logic
-- [ ] **Improve the README file**: Mae sure to create a conciser version of the README file explaning this is an MVP of a BitTorrent client.
+- [x] **Review commented bitfield reading in file_manager.rs:555**: Removed in commit c795e66 - functionality refactored into PeerConnection
+- [x] **Review async download blocking in file_manager.rs:565**: Removed in commit c795e66 - now handled with proper async/channel separation
+- [x] **Review piece writing in file_manager.rs:640**: Removed in commit c795e66 - implemented with proper seek/write operations in download_file()
+- [x] **Improve the README file**: Rewritten to be concise and MVP-focused with clear features, architecture overview, technical details, and limitations
 
 ## Completed
 - [x] Add hash verification after file download
 - [x] Implement periodic tracker announcements (watch_tracker integration)
-
----
-
-## Notes
-
-- The codebase is mid-refactoring with some old implementation preserved in comments
-- Current focus should be on completing the orchestration layer for robust multi-peer downloads
-- Error handling improvements are crucial for production readiness

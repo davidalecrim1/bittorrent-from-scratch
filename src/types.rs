@@ -167,7 +167,7 @@ pub enum PieceStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::messages::BitfieldMessage;
 
     #[test]
     fn test_bitfield_message_from_bytes_single_byte() {

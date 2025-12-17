@@ -245,6 +245,13 @@ impl PeerConnection {
 
     async fn handle_peer_message(&mut self, msg: PeerMessage) -> Result<()> {
         match msg {
+            PeerMessage::Choke(_) => {
+                self.is_choking = true;
+                // Peer is choking us - we should stop requesting pieces
+                // Current download can continue receiving already-requested blocks
+                // but we won't send new requests until unchoked
+            }
+
             PeerMessage::Bitfield(bitfield) => {
                 self.bitfield = bitfield.bitfield;
             }
