@@ -334,6 +334,7 @@ impl PeerManager {
                     if attempt > 1 {
                         debug!("Tracker connected after {} attempts", attempt);
                     }
+                    debug!("Tracker request completed: {} peers available", peers.len());
                     return Ok(peers);
                 }
                 Err(e) => {

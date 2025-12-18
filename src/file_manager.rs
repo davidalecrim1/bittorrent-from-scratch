@@ -11,7 +11,6 @@ use crate::peer_manager::PeerManager;
 use crate::types::{BencodeTypes, Piece, PieceStatus};
 use crate::types::{CompletedPiece, FailedPiece, PeerManagerConfig, PieceDownloadRequest};
 use std::collections::HashMap;
-use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::mpsc;
@@ -177,7 +176,7 @@ impl BitTorrent {
             client_peer_id,
             file_size,
             num_pieces,
-            max_peers: 10,
+            max_peers: 30,
         };
 
         Arc::get_mut(&mut self.peer_manager)
@@ -198,8 +197,7 @@ impl BitTorrent {
         let mut file = File::create(&output_path).await?;
         file.set_len(file_size as u64).await?;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
+        // Requests all pieces in the initialization
         let piece_requests: Vec<PieceDownloadRequest> = (0..num_pieces)
             .map(|idx| {
                 let piece_hash = pieces_hashes[idx];

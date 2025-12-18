@@ -14,7 +14,7 @@ This file tracks pending tasks and improvements identified in the codebase.
 
 ### Peer Management
 - [x] **Handle peer disconnection in types.rs:396**: Implement mechanism to notify peer manager when a peer disconnects and should be dropped from the pool
-- [ ] **Implement additional peer message types**: Add support for Have (ID 4), NotInterested (ID 3), Cancel (ID 8), and Keep-Alive messages to complete the BitTorrent peer wire protocol implementation
+- [x] **Implement additional peer message types**: Add support for Have (ID 4), NotInterested (ID 3), Cancel (ID 8), and Keep-Alive messages to complete the BitTorrent peer wire protocol implementation
 
 ## Medium Priority
 

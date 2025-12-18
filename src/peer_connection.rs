@@ -65,8 +65,8 @@ impl PeerConnection {
         piece_failure_tx: mpsc::Sender<FailedPiece>,
         peer_disconnect_tx: mpsc::Sender<PeerDisconnected>,
     ) -> (Self, mpsc::Sender<PieceDownloadRequest>) {
-        let (outbound_tx, outbound_rx) = mpsc::channel(10);
-        let (inbound_tx, inbound_rx) = mpsc::channel(10);
+        let (outbound_tx, outbound_rx) = mpsc::channel(32);
+        let (inbound_tx, inbound_rx) = mpsc::channel(64);
         let (download_request_tx, download_request_rx) = mpsc::channel(10);
 
         let peer_conn = Self {
