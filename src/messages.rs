@@ -8,21 +8,35 @@ use crate::error::CodecError;
 
 #[derive(Debug)]
 pub enum PeerMessage {
+    KeepAlive,
     Choke(ChokeMessage),
     Unchoke(UnchokeMessage),
     Interested(InterestedMessage),
+    NotInterested(NotInterestedMessage),
     Bitfield(BitfieldMessage),
+    Have(HaveMessage),
     Request(RequestMessage),
     Piece(PieceMessage),
+    Cancel(CancelMessage),
 }
 
 impl PeerMessage {
     pub fn from_bytes(src: &[u8], num_pieces: usize) -> Result<(usize, Self)> {
-        if src.len() < 5 {
+        if src.len() < 4 {
             return Err(CodecError::MessageTooShort(src.len()).into());
         }
 
         let length = Self::get_length(src)?;
+
+        // Handle Keep-Alive message (length = 0)
+        if length == 0 {
+            return Ok((4, Self::KeepAlive));
+        }
+
+        if src.len() < 5 {
+            return Err(CodecError::MessageTooShort(src.len()).into());
+        }
+
         let message_type = src[4];
 
         let total_size = 4 + length;
@@ -43,6 +57,14 @@ impl PeerMessage {
                 let message = UnchokeMessage::from_bytes(src)?;
                 Ok((total_size, Self::Unchoke(message)))
             }
+            3 => {
+                let message = NotInterestedMessage::from_bytes(src)?;
+                Ok((total_size, Self::NotInterested(message)))
+            }
+            4 => {
+                let message = HaveMessage::from_bytes(src)?;
+                Ok((total_size, Self::Have(message)))
+            }
             5 => {
                 let payload = &src[5..];
                 let message = BitfieldMessage::from_bytes(payload, num_pieces)?;
@@ -52,9 +74,16 @@ impl PeerMessage {
                 let message = PieceMessage::from_bytes(src)?;
                 Ok((total_size, Self::Piece(message)))
             }
+            8 => {
+                let message = CancelMessage::from_bytes(src)?;
+                Ok((total_size, Self::Cancel(message)))
+            }
             _ => {
-                debug!("Unknown message type {}", message_type);
-                Err(CodecError::UnknownMessageType(message_type).into())
+                debug!(
+                    "Unknown message type {}, skipping {} bytes",
+                    message_type, total_size
+                );
+                Ok((total_size, Self::KeepAlive))
             }
         }
     }
@@ -221,5 +250,75 @@ impl Debug for PieceMessage {
             "PieceMessage {{ piece_index: {}, begin: {} }}",
             self.piece_index, self.begin
         )
+    }
+}
+
+#[derive(Debug)]
+pub struct NotInterestedMessage {}
+
+impl NotInterestedMessage {
+    pub fn from_bytes(_bytes: &[u8]) -> Result<Self> {
+        Ok(Self {})
+    }
+}
+
+#[derive(Debug)]
+pub struct HaveMessage {
+    pub piece_index: u32,
+}
+
+impl HaveMessage {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < 9 {
+            return Err(anyhow!(
+                "the provided data has less than 9 bytes, it has {}",
+                bytes.len()
+            ));
+        }
+        let mut cursor = Cursor::new(bytes);
+        let _length = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
+        let msg_id = ReadBytesExt::read_u8(&mut cursor)?;
+        if msg_id != 4 {
+            return Err(anyhow!("the provided data is not a valid have message"));
+        }
+        let piece_index = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
+
+        Ok(HaveMessage { piece_index })
+    }
+}
+
+#[derive(Debug)]
+pub struct CancelMessage {
+    #[allow(dead_code)]
+    pub piece_index: u32,
+    #[allow(dead_code)]
+    pub begin: u32,
+    #[allow(dead_code)]
+    pub length: u32,
+}
+
+impl CancelMessage {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < 17 {
+            return Err(anyhow!(
+                "the provided data has less than 17 bytes, it has {}",
+                bytes.len()
+            ));
+        }
+        let mut cursor = Cursor::new(bytes);
+        let _length = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
+        let msg_id = ReadBytesExt::read_u8(&mut cursor)?;
+        if msg_id != 8 {
+            return Err(anyhow!("the provided data is not a valid cancel message"));
+        }
+        let piece_index = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
+        let begin = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
+        let length = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
+
+        Ok(CancelMessage {
+            piece_index,
+            begin,
+            length,
+        })
     }
 }

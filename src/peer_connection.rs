@@ -218,13 +218,14 @@ impl PeerConnection {
             loop {
                 tokio::select! {
                     Some(msg) = inbound_rx.recv() => {
-                        if let Err(_e) = self.handle_peer_message(msg).await {
+                        if let Err(_e) = self.handle_peer_message(peer_addr.clone(), msg).await {
                             break;
                         }
                     }
                     Some(request) = download_request_rx.recv() => {
                         let piece_index = request.piece_index;
-                        if let Err(e) = self.start_piece_download(request).await {
+                        if let Err(e) = self.start_piece_download(peer_addr.clone(),request).await {
+                            debug!("Peer {} Failed to start piece download: {}", peer_addr.clone(), e);
                             let _ = self.piece_failure_tx.send(FailedPiece {
                                 piece_index,
                                 reason: e.to_string(),
@@ -243,8 +244,13 @@ impl PeerConnection {
         });
     }
 
-    async fn handle_peer_message(&mut self, msg: PeerMessage) -> Result<()> {
+    async fn handle_peer_message(&mut self, peer_addr: String, msg: PeerMessage) -> Result<()> {
         match msg {
+            PeerMessage::KeepAlive => {
+                // No-op, just log receipt
+                debug!("Peer {} received Keep-Alive message", peer_addr);
+            }
+
             PeerMessage::Choke(_) => {
                 self.is_choking = true;
                 // Peer is choking us - we should stop requesting pieces
@@ -253,6 +259,7 @@ impl PeerConnection {
             }
 
             PeerMessage::Bitfield(bitfield) => {
+                debug!("Peer {} received a Bitfield message", peer_addr);
                 self.bitfield = bitfield.bitfield;
             }
 
@@ -268,12 +275,29 @@ impl PeerConnection {
                 self.is_interested = true;
             }
 
+            PeerMessage::NotInterested(_) => {
+                // Peer is not interested in our pieces
+                debug!("Peer {} received a NotInterested message", peer_addr);
+            }
+
+            PeerMessage::Have(have) => {
+                let piece_index = have.piece_index as usize;
+                if piece_index < self.bitfield.len() {
+                    self.bitfield[piece_index] = true;
+                    debug!("Peer {} now has piece {}", peer_addr, piece_index);
+                }
+            }
+
             PeerMessage::Request(_request) => {
                 // We don't support uploading yet
             }
 
             PeerMessage::Piece(piece) => {
                 self.handle_piece_block(piece).await?;
+            }
+
+            PeerMessage::Cancel(_cancel) => {
+                // We don't support uploading yet, so no-op
             }
         }
 
@@ -303,7 +327,11 @@ impl PeerConnection {
         Ok(())
     }
 
-    async fn start_piece_download(&mut self, request: PieceDownloadRequest) -> Result<()> {
+    async fn start_piece_download(
+        &mut self,
+        peer_addr: String,
+        request: PieceDownloadRequest,
+    ) -> Result<()> {
         if !self.has_piece(request.piece_index as usize) {
             return Err(anyhow!("Peer does not have piece {}", request.piece_index));
         }
@@ -324,8 +352,8 @@ impl PeerConnection {
         }
 
         debug!(
-            "[start_piece_download] Starting download of piece {}, length={}",
-            request.piece_index, request.piece_length
+            "Peer {} starting download of piece {}, length={}",
+            peer_addr, request.piece_index, request.piece_length
         );
 
         self.current_download = Some(DownloadState::new(
