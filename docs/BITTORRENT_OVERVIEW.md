@@ -1,7 +1,3 @@
-Here is the comprehensive article on the inner workings of a BitTorrent client, consolidating the distributed architecture, protocol fundamentals, and advanced networking mechanics.
-
-***
-
 # Under the Hood: How a BitTorrent Client Works
 
 The BitTorrent protocol represents a paradigm shift from traditional client-server models. Instead of downloading a file from a single source, a BitTorrent client orchestrates a massive, distributed "swarm" of users who download pieces of a file simultaneously while uploading pieces they already possess to others.

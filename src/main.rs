@@ -23,6 +23,7 @@ use peer_manager::PeerManager;
 async fn main() {
     env_logger::Builder::new()
         .filter_level(log::LevelFilter::Debug)
+        .target(env_logger::Target::Stdout)
         .init();
 
     let http_client = Client::new();

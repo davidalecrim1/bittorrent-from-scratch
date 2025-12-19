@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use sha1::{Digest, Sha1};
-use std::fmt::Debug;
 use std::sync::Arc;
 use std::{collections::BTreeMap, fs};
 use tokio::sync::RwLock;
@@ -9,15 +8,15 @@ use crate::encoding::Decoder;
 use crate::encoding::Encoder;
 use crate::peer_manager::PeerManager;
 use crate::types::{BencodeTypes, Piece, PieceStatus};
-use crate::types::{CompletedPiece, FailedPiece, PeerManagerConfig, PieceDownloadRequest};
-use std::collections::HashMap;
+use crate::types::{CompletedPiece, DownloadComplete, PeerManagerConfig, PieceDownloadRequest};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::mpsc;
 
-const MAX_FAILED_PIECE_RETRY: usize = 3;
+use log::{debug, info};
 
-#[derive(Debug)]
+const MAX_PEERS_TO_CONNECT: usize = 50;
+
 pub struct BitTorrent {
     // Encoder and Decoder are used to encode and decode
     // the data from a torrent file and some specific messages with tracker.
@@ -176,7 +175,7 @@ impl BitTorrent {
             client_peer_id,
             file_size,
             num_pieces,
-            max_peers: 30,
+            max_peers: MAX_PEERS_TO_CONNECT,
         };
 
         Arc::get_mut(&mut self.peer_manager)
@@ -185,11 +184,11 @@ impl BitTorrent {
             .await?;
 
         let (completion_tx, mut completion_rx) = mpsc::channel::<CompletedPiece>(100);
-        let (failure_tx, mut failure_rx) = mpsc::channel::<FailedPiece>(100);
+        let (download_complete_tx, mut download_complete_rx) = mpsc::channel::<DownloadComplete>(1);
 
         self.peer_manager
             .clone()
-            .start(announce_url.clone(), completion_tx, failure_tx)
+            .start(announce_url.clone(), completion_tx, download_complete_tx)
             .await?;
 
         let filename = self.get_filename()?;
@@ -212,9 +211,8 @@ impl BitTorrent {
         self.peer_manager.request_pieces(piece_requests).await?;
 
         let mut downloaded_pieces = 0;
-        let mut failed_attempts: HashMap<u32, usize> = HashMap::new();
 
-        while downloaded_pieces < num_pieces {
+        loop {
             tokio::select! {
                 Some(completed) = completion_rx.recv() => {
                     let offset = completed.piece_index as u64 * piece_length as u64;
@@ -223,30 +221,16 @@ impl BitTorrent {
                     file.flush().await?;
 
                     downloaded_pieces += 1;
-                    self.peer_manager.increment_completed_pieces().await;
-
                     let percentage = (downloaded_pieces * 100) / num_pieces;
-                    println!(
+
+                    info!(
                         "Downloaded {}/{} pieces ({}%)",
                         downloaded_pieces, num_pieces, percentage
                     );
                 }
-                Some(failed) = failure_rx.recv() => {
-                    let attempts = failed_attempts.entry(failed.piece_index).or_insert(0);
-                    *attempts += 1;
-
-                    if *attempts >= MAX_FAILED_PIECE_RETRY {
-                        return Err(anyhow!("Failed to download piece {} after {} attempts", failed.piece_index, MAX_FAILED_PIECE_RETRY));
-                    }
-
-                    let piece_hash = pieces_hashes[failed.piece_index as usize];
-                    let retry_request = PieceDownloadRequest {
-                        piece_index: failed.piece_index,
-                        piece_length,
-                        expected_hash: piece_hash,
-                    };
-
-                    self.peer_manager.request_pieces(vec![retry_request]).await?;
+                Some(_) = download_complete_rx.recv() => {
+                    debug!("All pieces downloaded, exiting write loop");
+                    break;
                 }
             }
         }

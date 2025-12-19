@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
 use std::net::IpAddr;
 use std::str::FromStr;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{RwLock, mpsc};
 
 #[derive(Debug, Clone)]
 pub struct PieceDownloadRequest {
@@ -27,9 +28,45 @@ pub struct PeerManagerConfig {
 #[derive(Debug)]
 pub struct ConnectedPeer {
     pub peer: Peer,
-    pub download_request_tx: mpsc::Sender<PieceDownloadRequest>,
-    pub bitfield: Vec<bool>,
+    download_request_tx: mpsc::Sender<PieceDownloadRequest>,
+    bitfield: Arc<RwLock<Vec<bool>>>,
     pub active_downloads: HashSet<u32>,
+}
+
+impl ConnectedPeer {
+    pub fn new(
+        peer: Peer,
+        download_request_tx: mpsc::Sender<PieceDownloadRequest>,
+        bitfield: Arc<RwLock<Vec<bool>>>, // Shared with PeerConnection
+    ) -> Self {
+        Self {
+            peer,
+            download_request_tx,
+            bitfield,
+            active_downloads: HashSet::new(),
+        }
+    }
+
+    pub async fn has_piece(&self, piece_index: usize) -> bool {
+        let bf = self.bitfield.read().await;
+        bf.get(piece_index).copied().unwrap_or(false)
+    }
+
+    pub async fn piece_count(&self) -> usize {
+        let bf = self.bitfield.read().await;
+        bf.iter().filter(|&&has| has).count()
+    }
+
+    pub async fn bitfield_len(&self) -> usize {
+        self.bitfield.read().await.len()
+    }
+
+    pub async fn request_piece(&self, request: PieceDownloadRequest) -> Result<()> {
+        self.download_request_tx
+            .send(request)
+            .await
+            .map_err(|e| anyhow!("Failed to send download request: {}", e))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -47,9 +84,12 @@ pub struct FailedPiece {
 
 #[derive(Debug, Clone)]
 pub struct PeerDisconnected {
-    pub peer_addr: String,
+    pub peer: Peer,
     pub reason: String,
 }
+
+#[derive(Debug, Clone)]
+pub struct DownloadComplete;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum BencodeTypes {

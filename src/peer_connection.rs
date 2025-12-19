@@ -1,10 +1,11 @@
 use anyhow::{Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use log::debug;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 use tokio::time::sleep;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
@@ -18,6 +19,10 @@ use crate::types::{
 
 const DEFAULT_BLOCK_SIZE: usize = 16 * 1024; // 16 KiB per BitTorrent spec
 const BLOCK_PIPELINE_SIZE: usize = 5; // Request 5 blocks ahead
+
+const OUTBOUND_CHANNEL_SIZE: usize = 32;
+const INBOUND_CHANNEL_SIZE: usize = 64;
+const DOWNLOAD_REQUEST_CHANNEL_SIZE: usize = 200;
 
 #[derive(Debug)]
 pub struct PeerConnection {
@@ -36,8 +41,6 @@ pub struct PeerConnection {
     inbound_rx: Option<mpsc::Receiver<PeerMessage>>,
 
     // Piece download channels
-    #[allow(dead_code)]
-    download_request_tx: mpsc::Sender<PieceDownloadRequest>,
     download_request_rx: Option<mpsc::Receiver<PieceDownloadRequest>>,
     piece_completion_tx: mpsc::Sender<CompletedPiece>,
     piece_failure_tx: mpsc::Sender<FailedPiece>,
@@ -49,8 +52,8 @@ pub struct PeerConnection {
     is_choking: bool,
     is_interested: bool,
 
-    // Peer Information
-    bitfield: Vec<bool>,
+    // Peer Information (shared with PeerManager)
+    bitfield: Arc<RwLock<Vec<bool>>>,
 
     // Download state
     current_download: Option<DownloadState>,
@@ -64,10 +67,17 @@ impl PeerConnection {
         piece_completion_tx: mpsc::Sender<CompletedPiece>,
         piece_failure_tx: mpsc::Sender<FailedPiece>,
         peer_disconnect_tx: mpsc::Sender<PeerDisconnected>,
-    ) -> (Self, mpsc::Sender<PieceDownloadRequest>) {
-        let (outbound_tx, outbound_rx) = mpsc::channel(32);
-        let (inbound_tx, inbound_rx) = mpsc::channel(64);
-        let (download_request_tx, download_request_rx) = mpsc::channel(10);
+    ) -> (
+        Self,
+        mpsc::Sender<PieceDownloadRequest>,
+        Arc<RwLock<Vec<bool>>>,
+    ) {
+        let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CHANNEL_SIZE);
+        let (inbound_tx, inbound_rx) = mpsc::channel(INBOUND_CHANNEL_SIZE);
+        let (download_request_tx, download_request_rx) =
+            mpsc::channel(DOWNLOAD_REQUEST_CHANNEL_SIZE);
+
+        let bitfield = Arc::new(RwLock::new(Vec::new()));
 
         let peer_conn = Self {
             peer,
@@ -77,18 +87,17 @@ impl PeerConnection {
             outbound_rx: Some(outbound_rx),
             inbound_tx,
             inbound_rx: Some(inbound_rx),
-            download_request_tx: download_request_tx.clone(),
             download_request_rx: Some(download_request_rx),
             piece_completion_tx,
             piece_failure_tx,
             peer_disconnect_tx,
             is_choking: false,
             is_interested: false,
-            bitfield: Vec::new(),
+            bitfield: bitfield.clone(),
             current_download: None,
         };
 
-        (peer_conn, download_request_tx)
+        (peer_conn, download_request_tx, bitfield)
     }
 
     pub fn get_peer_id(&self) -> Option<[u8; 20]> {
@@ -163,9 +172,8 @@ impl PeerConnection {
         let inbound_tx = self.inbound_tx.clone();
         let disconnect_tx_reader = self.peer_disconnect_tx.clone();
         let disconnect_tx_writer = self.peer_disconnect_tx.clone();
-        let peer_addr = self.peer.get_addr();
-        let peer_addr_reader = peer_addr.clone();
-        let peer_addr_writer = peer_addr.clone();
+        let peer_reader = self.peer.clone();
+        let peer_writer = self.peer.clone();
 
         // Spawn writer task
         tokio::spawn(async move {
@@ -173,7 +181,7 @@ impl PeerConnection {
                 if let Err(e) = writer.send(msg).await {
                     let _ = disconnect_tx_writer
                         .send(PeerDisconnected {
-                            peer_addr: peer_addr_writer.clone(),
+                            peer: peer_writer.clone(),
                             reason: format!("write_error: {}", e),
                         })
                         .await;
@@ -192,7 +200,7 @@ impl PeerConnection {
                     Err(err) => {
                         let _ = disconnect_tx_reader
                             .send(PeerDisconnected {
-                                peer_addr: peer_addr_reader,
+                                peer: peer_reader,
                                 reason: format!("read_error: {}", err),
                             })
                             .await;
@@ -212,32 +220,56 @@ impl PeerConnection {
         let mut inbound_rx = self.inbound_rx.take().unwrap();
         let mut download_request_rx = self.download_request_rx.take().unwrap();
         let disconnect_tx = self.peer_disconnect_tx.clone();
-        let peer_addr = self.peer.get_addr();
+        let peer = self.peer.clone();
+        let peer_addr = peer.get_addr();
 
         tokio::task::spawn(async move {
             loop {
                 tokio::select! {
-                    Some(msg) = inbound_rx.recv() => {
-                        if let Err(_e) = self.handle_peer_message(peer_addr.clone(), msg).await {
-                            break;
+                    // Use biased to ensure fair scheduling between branches
+                    biased;
+
+                    result = inbound_rx.recv() => {
+                        match result {
+                            Some(msg) => {
+                                if let Err(_e) = self.handle_peer_message(peer_addr.clone(), msg).await {
+                                    break;
+                                }
+                            }
+                            None => {
+                                // Reader channel closed (peer disconnected)
+                                let _ = disconnect_tx.send(PeerDisconnected {
+                                    peer: peer.clone(),
+                                    reason: "inbound_channel_closed".to_string(),
+                                }).await;
+                                break;
+                            }
                         }
                     }
-                    Some(request) = download_request_rx.recv() => {
-                        let piece_index = request.piece_index;
-                        if let Err(e) = self.start_piece_download(peer_addr.clone(),request).await {
-                            debug!("Peer {} Failed to start piece download: {}", peer_addr.clone(), e);
-                            let _ = self.piece_failure_tx.send(FailedPiece {
-                                piece_index,
-                                reason: e.to_string(),
-                            }).await;
+                    result = download_request_rx.recv() => {
+                        match result {
+                            Some(request) => {
+                                debug!("Peer {} received download request for piece {}", peer_addr.clone(), request.piece_index);
+
+                                let piece_index = request.piece_index;
+                                if let Err(e) = self.start_piece_download(peer_addr.clone(), request).await {
+                                    debug!("Peer {} failed to start piece download: {}", peer_addr.clone(), e);
+                                    let _ = self.piece_failure_tx.send(FailedPiece {
+                                        piece_index,
+                                        reason: e.to_string(),
+                                    }).await;
+                                }
+                            }
+                            None => {
+                                // Download request channel closed (shouldn't happen during normal operation)
+                                debug!("Peer {} download_request channel closed unexpectedly", peer_addr);
+                                let _ = disconnect_tx.send(PeerDisconnected {
+                                    peer: peer.clone(),
+                                    reason: "download_request_channel_closed".to_string(),
+                                }).await;
+                                break;
+                            }
                         }
-                    }
-                    else => {
-                        let _ = disconnect_tx.send(PeerDisconnected {
-                            peer_addr: peer_addr.clone(),
-                            reason: "channels_closed".to_string(),
-                        }).await;
-                        break;
                     }
                 }
             }
@@ -247,20 +279,28 @@ impl PeerConnection {
     async fn handle_peer_message(&mut self, peer_addr: String, msg: PeerMessage) -> Result<()> {
         match msg {
             PeerMessage::KeepAlive => {
-                // No-op, just log receipt
-                debug!("Peer {} received Keep-Alive message", peer_addr);
+                // No-op for now.
+                // TODO: Consider refreshing the connection.
             }
 
             PeerMessage::Choke(_) => {
-                self.is_choking = true;
                 // Peer is choking us - we should stop requesting pieces
                 // Current download can continue receiving already-requested blocks
                 // but we won't send new requests until unchoked
+                self.is_choking = true;
             }
 
             PeerMessage::Bitfield(bitfield) => {
-                debug!("Peer {} received a Bitfield message", peer_addr);
-                self.bitfield = bitfield.bitfield;
+                let num_pieces_available = bitfield.bitfield.iter().filter(|&&has| has).count();
+                debug!(
+                    "Peer {} received Bitfield message with {}/{} pieces available",
+                    peer_addr,
+                    num_pieces_available,
+                    bitfield.bitfield.len()
+                );
+
+                let mut bf = self.bitfield.write().await;
+                *bf = bitfield.bitfield;
             }
 
             PeerMessage::Unchoke(_) => {
@@ -276,15 +316,14 @@ impl PeerConnection {
             }
 
             PeerMessage::NotInterested(_) => {
-                // Peer is not interested in our pieces
-                debug!("Peer {} received a NotInterested message", peer_addr);
+                self.is_interested = false;
             }
 
             PeerMessage::Have(have) => {
                 let piece_index = have.piece_index as usize;
-                if piece_index < self.bitfield.len() {
-                    self.bitfield[piece_index] = true;
-                    debug!("Peer {} now has piece {}", peer_addr, piece_index);
+                let mut bf = self.bitfield.write().await;
+                if piece_index < bf.len() {
+                    bf[piece_index] = true;
                 }
             }
 
@@ -308,17 +347,43 @@ impl PeerConnection {
         let download_state = match self.current_download.as_mut() {
             Some(state) => state,
             None => {
+                debug!(
+                    "Peer {} received piece block for index {} but no active download",
+                    self.peer.get_addr(),
+                    piece_msg.piece_index
+                );
                 return Ok(());
             }
         };
 
         if piece_msg.piece_index != download_state.piece_index {
+            debug!(
+                "Peer {} received piece block for index {} but expected {}",
+                self.peer.get_addr(),
+                piece_msg.piece_index,
+                download_state.piece_index
+            );
             return Ok(());
         }
+
+        debug!(
+            "Peer {} received block at offset {} for piece {} ({} bytes) - progress: {}/{}",
+            self.peer.get_addr(),
+            piece_msg.begin,
+            piece_msg.piece_index,
+            piece_msg.block.len(),
+            download_state.received_blocks.len() + 1,
+            download_state.total_blocks
+        );
 
         download_state.add_block(piece_msg.begin, piece_msg.block)?;
 
         if download_state.is_complete() {
+            debug!(
+                "Peer {} all blocks received for piece {}, finishing download",
+                self.peer.get_addr(),
+                download_state.piece_index
+            );
             self.finish_piece_download().await?;
         } else {
             self.handle_piece_download().await?;
@@ -329,19 +394,19 @@ impl PeerConnection {
 
     async fn start_piece_download(
         &mut self,
-        peer_addr: String,
+        _peer_addr: String,
         request: PieceDownloadRequest,
     ) -> Result<()> {
-        if !self.has_piece(request.piece_index as usize) {
+        if !self.has_piece(request.piece_index as usize).await {
             return Err(anyhow!("Peer does not have piece {}", request.piece_index));
         }
 
-        if !self.can_download_pieces() {
+        if !self.can_download_pieces().await {
+            let bf = self.bitfield.read().await;
             return Err(anyhow!(
-                "Peer not ready for download (choking={}, interested={}, bitfield={})",
+                "Peer not ready for download (choking={}, bitfield={})",
                 self.is_choking,
-                self.is_interested,
-                self.bitfield.is_empty()
+                bf.is_empty()
             ));
         }
 
@@ -350,11 +415,6 @@ impl PeerConnection {
                 "Already downloading a piece, cannot start new download"
             ));
         }
-
-        debug!(
-            "Peer {} starting download of piece {}, length={}",
-            peer_addr, request.piece_index, request.piece_length
-        );
 
         self.current_download = Some(DownloadState::new(
             request.piece_index,
@@ -378,6 +438,12 @@ impl PeerConnection {
 
         match download_state.verify_hash(&piece_data)? {
             true => {
+                debug!(
+                    "Peer {} finished downloading the piece {}",
+                    self.peer.get_addr().clone(),
+                    download_state.piece_index
+                );
+
                 let completed = CompletedPiece {
                     piece_index: download_state.piece_index,
                     data: piece_data,
@@ -389,6 +455,12 @@ impl PeerConnection {
                     .map_err(|_| anyhow!("Failed to send completed piece to manager"))?;
             }
             false => {
+                debug!(
+                    "Peer {} failed downloading the piece {}",
+                    self.peer.get_addr().clone(),
+                    download_state.piece_index
+                );
+
                 let failed = FailedPiece {
                     piece_index: download_state.piece_index,
                     reason: "hash_mismatch".to_string(),
@@ -406,16 +478,14 @@ impl PeerConnection {
         Ok(())
     }
 
-    pub fn has_piece(&self, piece_index: usize) -> bool {
-        self.bitfield.get(piece_index).copied().unwrap_or(false)
+    pub async fn has_piece(&self, piece_index: usize) -> bool {
+        let bf = self.bitfield.read().await;
+        bf.get(piece_index).copied().unwrap_or(false)
     }
 
-    pub fn can_download_pieces(&self) -> bool {
-        !self.is_choking && self.is_interested && !self.bitfield.is_empty()
-    }
-
-    pub fn get_bitfield(&self) -> &[bool] {
-        &self.bitfield
+    pub async fn can_download_pieces(&self) -> bool {
+        let bf = self.bitfield.read().await;
+        !self.is_choking && !bf.is_empty()
     }
 
     async fn send_interested_message(&self) {
@@ -447,6 +517,13 @@ impl PeerConnection {
         while requests_sent < BLOCK_PIPELINE_SIZE {
             match download_state.get_next_block_to_request() {
                 Some((begin, length)) => {
+                    debug!(
+                        "Peer {} sending request message for piece {} and block {}",
+                        self.peer.get_addr().clone(),
+                        download_state.piece_index,
+                        begin
+                    );
+
                     let request = RequestMessage {
                         piece_index: download_state.piece_index,
                         begin,
