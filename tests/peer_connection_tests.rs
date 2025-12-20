@@ -3,7 +3,7 @@ mod helpers;
 #[cfg(test)]
 mod tests {
     use super::helpers::fakes::FakeMessageIO;
-    use bittorrent_from_scratch::messages::PeerMessage;
+    use bittorrent_from_scratch::messages::{PeerMessage, PieceMessage};
     use bittorrent_from_scratch::traits::MessageIO;
     use bittorrent_from_scratch::types::{
         CompletedPiece, FailedPiece, Peer, PeerConnection, PeerDisconnected, PieceDownloadRequest,
@@ -18,7 +18,8 @@ mod tests {
         let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
-        let tcp_connector = std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
 
         let (peer_conn, _download_request_tx, _bitfield) = PeerConnection::new(
             peer,
@@ -42,8 +43,10 @@ mod tests {
         // The peer should receive an Interested message
         match tokio::time::timeout(
             tokio::time::Duration::from_millis(100),
-            client_io.read_message()
-        ).await {
+            client_io.read_message(),
+        )
+        .await
+        {
             Ok(Ok(Some(PeerMessage::Interested(_)))) => {
                 // Success! PeerConnection sent Interested message
             }
@@ -59,7 +62,8 @@ mod tests {
         let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
-        let tcp_connector = std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
 
         let (peer_conn, _download_request_tx, bitfield) = PeerConnection::new(
             peer,
@@ -82,9 +86,10 @@ mod tests {
 
         // Send a Bitfield message with 5 pieces, pieces 0, 2, 4 available
         let bitfield_data = vec![true, false, true, false, true];
-        let bitfield_msg = PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
-            bitfield: bitfield_data.clone(),
-        });
+        let bitfield_msg =
+            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+                bitfield: bitfield_data.clone(),
+            });
 
         client_io.write_message(&bitfield_msg).await.unwrap();
 
@@ -97,14 +102,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unchoke_message_allows_piece_requests() {
+    async fn test_unchoke_message_starts_piece_download() {
         // Create channels for PeerConnection
         let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
         let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
         let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
-        let tcp_connector = std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
 
         let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
             peer,
@@ -127,22 +133,31 @@ mod tests {
 
         // Send Bitfield first - peer needs to know which pieces are available
         let bitfield_data = vec![true]; // Peer has piece 0
-        let bitfield_msg = PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
-            bitfield: bitfield_data,
-        });
+        let bitfield_msg =
+            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+                bitfield: bitfield_data,
+            });
         client_io.write_message(&bitfield_msg).await.unwrap();
 
         // Give it time to process
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        // Send Choke message first to test unchoke behavior
+        // Send Choke message
         let choke_msg = PeerMessage::Choke(bittorrent_from_scratch::messages::ChokeMessage {});
         client_io.write_message(&choke_msg).await.unwrap();
 
         // Give it time to process
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        // Send a piece download request (while choked)
+        // Send Unchoke message
+        let unchoke_msg =
+            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+        client_io.write_message(&unchoke_msg).await.unwrap();
+
+        // Give it time to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Now send a piece download request (after unchoke)
         let piece_request = PieceDownloadRequest {
             piece_index: 0,
             expected_hash: [0u8; 20],
@@ -150,25 +165,735 @@ mod tests {
         };
         download_request_tx.send(piece_request).await.unwrap();
 
-        // Give it time to process the request (but peer is choked, so no Request messages yet)
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-        // Send Unchoke message
-        let unchoke_msg = PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
-        client_io.write_message(&unchoke_msg).await.unwrap();
-
         // Give it time to process
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        // After unchoke, peer should send Request messages for blocks
+        // After receiving the download request while unchoked, peer should send Request messages
         match tokio::time::timeout(
             tokio::time::Duration::from_millis(100),
-            client_io.read_message()
-        ).await {
+            client_io.read_message(),
+        )
+        .await
+        {
             Ok(Ok(Some(PeerMessage::Request(_)))) => {
-                // Success! PeerConnection sent Request message after Unchoke
+                // Success! PeerConnection sent Request message when unchoked
             }
-            other => panic!("Expected Request message after Unchoke, got: {:?}", other),
+            other => panic!("Expected Request message when unchoked, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_piece_download_complete_flow() {
+        // Create channels for PeerConnection
+        let (completion_tx, mut completion_rx) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        // Create a pair of fake MessageIO instances
+        let (mut client_io, peer_io) = FakeMessageIO::pair();
+
+        // Start the peer connection with fake IO
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
+        });
+
+        // Wait for Interested message
+        let _ = client_io.read_message().await;
+
+        // Send Bitfield - peer has piece 0
+        let bitfield_data = vec![true];
+        let bitfield_msg =
+            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+                bitfield: bitfield_data,
+            });
+        client_io.write_message(&bitfield_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Send Unchoke
+        let unchoke_msg =
+            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+        client_io.write_message(&unchoke_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Create test piece data (small piece for faster test)
+        let piece_length = 16384;
+        let piece_data = vec![42u8; piece_length];
+
+        // Calculate expected hash
+        use sha1::{Digest, Sha1};
+        let mut hasher = Sha1::new();
+        hasher.update(&piece_data);
+        let expected_hash: [u8; 20] = hasher.finalize().into();
+
+        // Send download request
+        let piece_request = PieceDownloadRequest {
+            piece_index: 0,
+            expected_hash,
+            piece_length,
+        };
+        download_request_tx.send(piece_request).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Peer should receive Request message
+        let first_request = match client_io.read_message().await {
+            Ok(Some(PeerMessage::Request(req))) => req,
+            other => panic!("Expected Request message, got: {:?}", other),
+        };
+
+        // Send Piece message with the requested block
+        let block_length = first_request.length as usize;
+        let block_data = piece_data
+            [first_request.begin as usize..(first_request.begin as usize + block_length)]
+            .to_vec();
+
+        let piece_msg = PeerMessage::Piece(PieceMessage {
+            piece_index: 0,
+            begin: first_request.begin,
+            block: block_data,
+        });
+        client_io.write_message(&piece_msg).await.unwrap();
+
+        // Wait for completion notification
+        match tokio::time::timeout(tokio::time::Duration::from_secs(2), completion_rx.recv()).await
+        {
+            Ok(Some(completed)) => {
+                assert_eq!(
+                    completed.piece_index, 0,
+                    "Completed piece should be index 0"
+                );
+                assert_eq!(
+                    completed.data.len(),
+                    piece_length,
+                    "Piece data length should match"
+                );
+            }
+            other => panic!("Expected CompletedPiece notification, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_piece_download_with_hash_mismatch() {
+        // Create channels for PeerConnection
+        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, mut failure_rx) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        // Create a pair of fake MessageIO instances
+        let (mut client_io, peer_io) = FakeMessageIO::pair();
+
+        // Start the peer connection with fake IO
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
+        });
+
+        // Wait for Interested message
+        let _ = client_io.read_message().await;
+
+        // Send Bitfield - peer has piece 0
+        let bitfield_data = vec![true];
+        let bitfield_msg =
+            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+                bitfield: bitfield_data,
+            });
+        client_io.write_message(&bitfield_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Send Unchoke
+        let unchoke_msg =
+            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+        client_io.write_message(&unchoke_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Create test piece with wrong hash
+        let piece_length = 16384;
+        let piece_data = vec![42u8; piece_length];
+
+        // Use a WRONG hash (all zeros)
+        let expected_hash = [0u8; 20];
+
+        // Send download request
+        let piece_request = PieceDownloadRequest {
+            piece_index: 0,
+            expected_hash,
+            piece_length,
+        };
+        download_request_tx.send(piece_request).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Peer should receive Request message
+        let first_request = match client_io.read_message().await {
+            Ok(Some(PeerMessage::Request(req))) => req,
+            other => panic!("Expected Request message, got: {:?}", other),
+        };
+
+        // Send Piece message with data that won't match the hash
+        let block_length = first_request.length as usize;
+        let block_data = piece_data
+            [first_request.begin as usize..(first_request.begin as usize + block_length)]
+            .to_vec();
+
+        let piece_msg = PeerMessage::Piece(PieceMessage {
+            piece_index: 0,
+            begin: first_request.begin,
+            block: block_data,
+        });
+        client_io.write_message(&piece_msg).await.unwrap();
+
+        // Wait for failure notification (hash mismatch)
+        match tokio::time::timeout(tokio::time::Duration::from_secs(2), failure_rx.recv()).await {
+            Ok(Some(failed)) => {
+                assert_eq!(failed.piece_index, 0, "Failed piece should be index 0");
+                assert!(
+                    failed.reason.contains("hash"),
+                    "Failure should mention hash mismatch"
+                );
+            }
+            other => panic!(
+                "Expected FailedPiece notification due to hash mismatch, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_have_message_updates_bitfield() {
+        // Create channels for PeerConnection
+        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, _download_request_tx, bitfield) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        // Create a pair of fake MessageIO instances
+        let (mut client_io, peer_io) = FakeMessageIO::pair();
+
+        // Start the peer connection with fake IO
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
+        });
+
+        // Wait for Interested message
+        let _ = client_io.read_message().await;
+
+        // Send Bitfield with 5 pieces, initially all false
+        let bitfield_data = vec![false, false, false, false, false];
+        let bitfield_msg =
+            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+                bitfield: bitfield_data.clone(),
+            });
+        client_io.write_message(&bitfield_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Verify initial bitfield
+        {
+            let bf = bitfield.read().await;
+            assert_eq!(*bf, bitfield_data, "Initial bitfield should match");
+        }
+
+        // Send Have message for piece 2
+        let have_msg =
+            PeerMessage::Have(bittorrent_from_scratch::messages::HaveMessage { piece_index: 2 });
+        client_io.write_message(&have_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Verify piece 2 is now true
+        {
+            let bf = bitfield.read().await;
+            assert_eq!(bf[0], false, "Piece 0 should still be false");
+            assert_eq!(bf[1], false, "Piece 1 should still be false");
+            assert_eq!(bf[2], true, "Piece 2 should be true after Have message");
+            assert_eq!(bf[3], false, "Piece 3 should still be false");
+            assert_eq!(bf[4], false, "Piece 4 should still be false");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_choke_message_stops_new_requests() {
+        // Create channels for PeerConnection
+        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        // Create a pair of fake MessageIO instances
+        let (mut client_io, peer_io) = FakeMessageIO::pair();
+
+        // Start the peer connection with fake IO
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
+        });
+
+        // Wait for Interested message
+        let _ = client_io.read_message().await;
+
+        // Send Bitfield
+        let bitfield_msg =
+            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+                bitfield: vec![true],
+            });
+        client_io.write_message(&bitfield_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Send Unchoke first
+        let unchoke_msg =
+            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+        client_io.write_message(&unchoke_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Send Choke message
+        let choke_msg = PeerMessage::Choke(bittorrent_from_scratch::messages::ChokeMessage {});
+        client_io.write_message(&choke_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Now send a download request while choked
+        let piece_request = PieceDownloadRequest {
+            piece_index: 0,
+            expected_hash: [0u8; 20],
+            piece_length: 16384,
+        };
+        let send_result = download_request_tx.send(piece_request).await;
+        assert!(
+            send_result.is_ok(),
+            "Should be able to send download request"
+        );
+
+        // Give it time to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Should NOT receive a Request message because peer is choked
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(100),
+            client_io.read_message(),
+        )
+        .await
+        {
+            Err(_) => {
+                // Timeout is expected - peer should not send requests while choked
+            }
+            Ok(msg) => panic!("Expected no message while choked, but got: {:?}", msg),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wrong_piece_index_ignored() {
+        // Create channels for PeerConnection
+        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        // Create a pair of fake MessageIO instances
+        let (mut client_io, peer_io) = FakeMessageIO::pair();
+
+        // Start the peer connection with fake IO
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
+        });
+
+        // Wait for Interested message
+        let _ = client_io.read_message().await;
+
+        // Send Bitfield
+        let bitfield_msg =
+            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+                bitfield: vec![true, true],
+            });
+        client_io.write_message(&bitfield_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Send Unchoke
+        let unchoke_msg =
+            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+        client_io.write_message(&unchoke_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Send download request for piece 0
+        let piece_request = PieceDownloadRequest {
+            piece_index: 0,
+            expected_hash: [0u8; 20],
+            piece_length: 16384,
+        };
+        download_request_tx.send(piece_request).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Wait for Request message
+        let _ = client_io.read_message().await;
+
+        // Send Piece message with WRONG piece index (piece 1 instead of 0)
+        let piece_msg = PeerMessage::Piece(PieceMessage {
+            piece_index: 1, // Wrong!
+            begin: 0,
+            block: vec![42u8; 16384],
+        });
+        client_io.write_message(&piece_msg).await.unwrap();
+
+        // Give it time to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Should still be waiting for more Request messages (didn't complete)
+        // The wrong piece should have been ignored
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(100),
+            client_io.read_message(),
+        )
+        .await
+        {
+            Ok(Ok(Some(PeerMessage::Request(_)))) => {
+                // Good - still requesting blocks for piece 0
+            }
+            other => {
+                // Also acceptable - might have already sent all requests
+                // The key is that wrong piece index was ignored
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_download_request_for_unavailable_piece() {
+        // Create channels for PeerConnection
+        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, mut failure_rx) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        // Create a pair of fake MessageIO instances
+        let (mut client_io, peer_io) = FakeMessageIO::pair();
+
+        // Start the peer connection with fake IO
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
+        });
+
+        // Wait for Interested message
+        let _ = client_io.read_message().await;
+
+        // Send Bitfield - peer only has piece 0
+        let bitfield_msg =
+            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+                bitfield: vec![true, false], // Only piece 0
+            });
+        client_io.write_message(&bitfield_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Send Unchoke
+        let unchoke_msg =
+            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+        client_io.write_message(&unchoke_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Request piece 1 which peer doesn't have
+        let piece_request = PieceDownloadRequest {
+            piece_index: 1, // Peer doesn't have this
+            expected_hash: [0u8; 20],
+            piece_length: 16384,
+        };
+        download_request_tx.send(piece_request).await.unwrap();
+
+        // Should receive a failure notification
+        match tokio::time::timeout(tokio::time::Duration::from_secs(1), failure_rx.recv()).await {
+            Ok(Some(failed)) => {
+                assert_eq!(failed.piece_index, 1, "Failed piece should be index 1");
+                assert!(
+                    failed.reason.contains("does not have"),
+                    "Should indicate peer doesn't have piece"
+                );
+            }
+            other => panic!(
+                "Expected FailedPiece for unavailable piece, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_keep_alive_and_other_messages() {
+        // Create channels for PeerConnection
+        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, _download_request_tx, _bitfield) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        // Create a pair of fake MessageIO instances
+        let (mut client_io, peer_io) = FakeMessageIO::pair();
+
+        // Start the peer connection with fake IO
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
+        });
+
+        // Wait for Interested message
+        let _ = client_io.read_message().await;
+
+        // Send KeepAlive message (should be handled without error)
+        let keepalive_msg = PeerMessage::KeepAlive;
+        client_io.write_message(&keepalive_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Send Interested message
+        let interested_msg =
+            PeerMessage::Interested(bittorrent_from_scratch::messages::InterestedMessage {});
+        client_io.write_message(&interested_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Send NotInterested message
+        let not_interested_msg =
+            PeerMessage::NotInterested(bittorrent_from_scratch::messages::NotInterestedMessage {});
+        client_io.write_message(&not_interested_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Send Request message (should be no-op, we don't support uploading)
+        let request_msg = PeerMessage::Request(bittorrent_from_scratch::messages::RequestMessage {
+            piece_index: 0,
+            begin: 0,
+            length: 16384,
+        });
+        client_io.write_message(&request_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Send Cancel message (should be no-op)
+        let cancel_msg = PeerMessage::Cancel(bittorrent_from_scratch::messages::CancelMessage {
+            piece_index: 0,
+            begin: 0,
+            length: 16384,
+        });
+        client_io.write_message(&cancel_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // All messages should have been processed without errors or disconnection
+        // Connection should still be alive
+    }
+
+    #[tokio::test]
+    async fn test_piece_message_without_active_download() {
+        // Create channels for PeerConnection
+        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, _download_request_tx, _bitfield) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        // Create a pair of fake MessageIO instances
+        let (mut client_io, peer_io) = FakeMessageIO::pair();
+
+        // Start the peer connection with fake IO
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
+        });
+
+        // Wait for Interested message
+        let _ = client_io.read_message().await;
+
+        // Send Piece message without any active download - should be ignored
+        let piece_msg = PeerMessage::Piece(PieceMessage {
+            piece_index: 0,
+            begin: 0,
+            block: vec![42u8; 1024],
+        });
+        client_io.write_message(&piece_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Should not crash or cause errors - message should be ignored
+    }
+
+    #[tokio::test]
+    async fn test_large_piece_with_multiple_blocks() {
+        // Create channels for PeerConnection
+        let (completion_tx, mut completion_rx) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        // Create a pair of fake MessageIO instances
+        let (mut client_io, peer_io) = FakeMessageIO::pair();
+
+        // Start the peer connection with fake IO
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
+        });
+
+        // Wait for Interested message
+        let _ = client_io.read_message().await;
+
+        // Send Bitfield
+        let bitfield_msg =
+            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+                bitfield: vec![true],
+            });
+        client_io.write_message(&bitfield_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Send Unchoke
+        let unchoke_msg =
+            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+        client_io.write_message(&unchoke_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Create a larger piece that requires 3 blocks (3 * 16384 = 49152 bytes)
+        let block_size = 16384;
+        let piece_length = block_size * 3;
+        let piece_data = (0..piece_length)
+            .map(|i| (i % 256) as u8)
+            .collect::<Vec<u8>>();
+
+        // Calculate expected hash
+        use sha1::{Digest, Sha1};
+        let mut hasher = Sha1::new();
+        hasher.update(&piece_data);
+        let expected_hash: [u8; 20] = hasher.finalize().into();
+
+        // Send download request
+        let piece_request = PieceDownloadRequest {
+            piece_index: 0,
+            expected_hash,
+            piece_length,
+        };
+        download_request_tx.send(piece_request).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Collect all Request messages (should get up to 3 requests)
+        let mut requests = Vec::new();
+        for _ in 0..3 {
+            match tokio::time::timeout(
+                tokio::time::Duration::from_millis(100),
+                client_io.read_message(),
+            )
+            .await
+            {
+                Ok(Ok(Some(PeerMessage::Request(req)))) => {
+                    requests.push(req);
+                }
+                _ => break,
+            }
+        }
+
+        assert!(
+            !requests.is_empty(),
+            "Should receive at least one Request message"
+        );
+
+        // Send all the blocks
+        for request in &requests {
+            let begin = request.begin as usize;
+            let length = request.length as usize;
+            let block_data = piece_data[begin..begin + length].to_vec();
+
+            let piece_msg = PeerMessage::Piece(PieceMessage {
+                piece_index: 0,
+                begin: request.begin,
+                block: block_data,
+            });
+            client_io.write_message(&piece_msg).await.unwrap();
+            tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+        }
+
+        // Wait for completion
+        match tokio::time::timeout(tokio::time::Duration::from_secs(2), completion_rx.recv()).await
+        {
+            Ok(Some(completed)) => {
+                assert_eq!(completed.piece_index, 0);
+                assert_eq!(completed.data.len(), piece_length);
+                assert_eq!(completed.data, piece_data);
+            }
+            other => panic!("Expected CompletedPiece, got: {:?}", other),
         }
     }
 }

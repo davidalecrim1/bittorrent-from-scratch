@@ -6,7 +6,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Url};
 
-/// Production implementation of TrackerClient using HTTP
 pub struct HttpTrackerClient {
     http_client: Client,
     decoder: Decoder,

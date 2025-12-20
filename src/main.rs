@@ -19,7 +19,9 @@ async fn main() {
     let http_client = Client::new();
     let peer_manager = PeerManager::new(Decoder {}, http_client);
 
+    // CLI Arguments
     let args = Args::parse();
+
     let mut torrent_client =
         BitTorrent::new(Decoder {}, Encoder {}, peer_manager, args.input_file_path).unwrap();
 

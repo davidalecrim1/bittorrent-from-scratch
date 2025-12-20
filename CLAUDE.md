@@ -100,10 +100,52 @@ Peer messages are length-prefixed (4 bytes big-endian) followed by message type 
 ### Bitfield Parsing
 Bitfield messages use MSB-first bit ordering. Bit 0 of byte 0 represents piece 0. The implementation in types.rs handles this correctly.
 
-### Edition
-The project uses Rust edition 2024 (see Cargo.toml).
+## Rust Coding Best Practices
+
+### Avoid Deep Nesting (TL;DR)
+- **Avoid deep nesting** → prefer early returns (`return`, `?`, `let-else`)
+- **Use `?` aggressively** to eliminate match/if pyramids
+- **Flatten control flow**: validate → exit early → proceed linearly
+- **Prefer `let-else` over `match`** for guard-style checks
+- **Extract logic into functions**, not inner blocks
+- **Avoid `else` after `return`** — linear flow is idiomatic
+- **Indentation > 3 levels** = refactor
+
+**Example:**
+```rust
+// Bad: Deep nesting
+fn process(data: Option<Vec<u8>>) -> Result<()> {
+    if let Some(bytes) = data {
+        if bytes.len() > 0 {
+            match parse(bytes) {
+                Ok(result) => {
+                    // ... deep logic
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(())
+}
+
+// Good: Early returns, flat structure
+fn process(data: Option<Vec<u8>>) -> Result<()> {
+    let Some(bytes) = data else { return Ok(()) };
+    if bytes.is_empty() { return Ok(()) }
+
+    let result = parse(bytes)?;
+    // ... logic at top level
+    Ok(())
+}
+```
 
 ## Testing Strategy
+
+### Core Principles
+- **Target public APIs**: Write tests against public functions and methods to avoid coupling to implementation details
+- **Coverage goal**: 70% on core modules (peer_manager.rs, peer_connection.rs, messages.rs)
+- **Refactor resilience**: Tests should survive internal refactors by focusing on observable behavior, not internal state
+- **No dead code**: Remove unused test helpers immediately; no `#[allow(dead_code)]` except during active refactoring
 
 ### Test Doubles: Fakes over Mocks
 
@@ -139,11 +181,9 @@ Following Rust async testing best practices (Tokio, Jon Gjengset's Rust for Rust
 - Order-dependent expectations that make tests fragile
 - Mocks that can only test failure cases
 - `std::sync::Mutex` in async code (use `tokio::sync::Mutex`)
-- `#[allow(dead_code)]` or unused code - if not used, delete it immediately
-  - **Exception**: During active refactoring where code will be used in the next step
 - Keeping "future-proofing" code that isn't currently needed
+- Panicking. Prefer always returning an error instead.
 
 **Coverage Goals:**
 - peer_manager.rs: 70%+ coverage
 - peer_connection.rs: 70%+ coverage
-- messages.rs: 70%+ coverage

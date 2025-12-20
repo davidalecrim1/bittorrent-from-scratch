@@ -10,7 +10,8 @@ This file tracks pending tasks and improvements identified in the codebase.
   - [ ] The trait is used to create Mocks to test the Peer Manager.
 - [ ] Create a trait for the Peer Manager for when we want to mock it for the File Manager to test it.
 - [ ] Refactor the tests for the PeerManager to allow to create mocks for the Peer Connectors instead of relying on the Peer Connection.
-
+- [ ] Split the file coverage_boost_tests.rs into the actual files that ensure the responsability for the code, such as peer_manager or peer_connection ones. The file name itself shows a code smell that the file is not designed over the layer it is testing.
+- [ ] Get rid of all the mocks that are not being used. Preper to use the Fakes to ensure testability.
 
 ### Error Handling
 - [x] **Refactor error handling in types.rs:726**: Replace string matching for incomplete messages with proper error types/sentinel errors (similar to Golang patterns)

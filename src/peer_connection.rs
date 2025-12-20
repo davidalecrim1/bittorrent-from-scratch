@@ -21,6 +21,8 @@ const OUTBOUND_CHANNEL_SIZE: usize = 32;
 const INBOUND_CHANNEL_SIZE: usize = 64;
 const DOWNLOAD_REQUEST_CHANNEL_SIZE: usize = 200;
 
+const MAX_RETRIES_HANDSHAKE: usize = 3;
+
 #[derive(Debug)]
 pub struct PeerConnection {
     peer: Peer,
@@ -106,8 +108,7 @@ impl PeerConnection {
         self.peer_id
     }
 
-    // Opens the connection and performs the handshake.
-    // This is the kick off to run the messages loop.
+    // Handshake with the peer to initialize the connection.
     pub async fn handshake(
         &mut self,
         client_peer_id: [u8; 20],
@@ -115,19 +116,18 @@ impl PeerConnection {
     ) -> Result<PeerHandshake> {
         let handshake = PeerHandshake::new(info_hash, client_peer_id);
         let bytes = handshake.to_bytes();
-        let max_retries = 3;
 
         let mut last_error = None;
 
-        for attempt in 1..=max_retries {
+        for attempt in 1..=MAX_RETRIES_HANDSHAKE {
             match self.try_handshake(&bytes).await {
                 Ok(response) => {
                     return Ok(response);
                 }
                 Err(e) => {
                     last_error = Some(e);
-                    if attempt < max_retries {
-                        let delay = Duration::from_millis(200 * 2_u64.pow(attempt - 1)); // 200ms, 400ms, 800ms ...
+                    if attempt < MAX_RETRIES_HANDSHAKE {
+                        let delay = Duration::from_millis(200 * 2_u64.pow(attempt as u32 - 1)); // 200ms, 400ms, 800ms ...
                         sleep(delay).await;
                     }
                 }
@@ -137,11 +137,12 @@ impl PeerConnection {
         Err(anyhow!(
             "Failed to handshake with peer {} after {} attempts: {}",
             self.peer.get_addr(),
-            max_retries,
+            MAX_RETRIES_HANDSHAKE,
             last_error.unwrap()
         ))
     }
 
+    // Attemps to perform the handshake. This can be unstable and may need retries.
     async fn try_handshake(&mut self, handshake_bytes: &[u8]) -> Result<PeerHandshake> {
         let mut stream = self.tcp_connector.connect(self.peer.get_addr()).await?;
         stream.write_all(handshake_bytes).await?;
@@ -156,6 +157,8 @@ impl PeerConnection {
         Ok(response)
     }
 
+    // Starts the peer connection after the handshake
+    // wrapping the TCP connection in the MessageIO trait.
     pub async fn start(mut self, num_pieces: usize) -> Result<()> {
         let stream = self
             .stream
@@ -166,7 +169,12 @@ impl PeerConnection {
         self.start_with_io(Box::new(message_io)).await
     }
 
-    pub async fn start_with_io(mut self, mut message_io: Box<dyn crate::traits::MessageIO>) -> Result<()> {
+    // Starts with a custom MessageIO implementation.
+    // Usually done for testing purposes.
+    pub async fn start_with_io(
+        mut self,
+        mut message_io: Box<dyn crate::traits::MessageIO>,
+    ) -> Result<()> {
         // Take the receivers out of self
         let mut outbound_rx = self.outbound_rx.take().unwrap();
         let inbound_tx = self.inbound_tx.clone();
@@ -287,7 +295,8 @@ impl PeerConnection {
     async fn handle_peer_message(&mut self, peer_addr: String, msg: PeerMessage) -> Result<()> {
         match msg {
             PeerMessage::KeepAlive => {
-                // No-op for now.
+                // No-op for now
+                //
                 // TODO: Consider refreshing the connection.
             }
 
@@ -337,6 +346,7 @@ impl PeerConnection {
 
             PeerMessage::Request(_request) => {
                 // We don't support uploading yet
+                // TODO: Implement request handling
             }
 
             PeerMessage::Piece(piece) => {
@@ -345,6 +355,7 @@ impl PeerConnection {
 
             PeerMessage::Cancel(_cancel) => {
                 // We don't support uploading yet, so no-op
+                // TODO: Implement cancel handling
             }
         }
 
@@ -400,6 +411,7 @@ impl PeerConnection {
         Ok(())
     }
 
+    // Starts the download of a piece from the Peer Manager.
     async fn start_piece_download(
         &mut self,
         _peer_addr: String,
@@ -436,6 +448,8 @@ impl PeerConnection {
         Ok(())
     }
 
+    // After all the blocks have been downloaded, verify the hash and
+    // send the completed piece to the Peer Manager.
     async fn finish_piece_download(&mut self) -> Result<()> {
         let download_state = self
             .current_download
@@ -496,6 +510,7 @@ impl PeerConnection {
         !self.is_choking && !bf.is_empty()
     }
 
+    // Sends an interested message to the peer.
     async fn send_interested_message(&self) {
         let outbound_tx = self.outbound_tx.clone();
 
@@ -513,6 +528,7 @@ impl PeerConnection {
         }
     }
 
+    // Controls the blocks in the requests messages to download pieces from the peer.
     async fn handle_piece_download(&mut self) -> Result<()> {
         let download_state = match self.current_download.as_mut() {
             Some(state) => state,

@@ -1,4 +1,5 @@
-// Re-export modules
+// Designed to be small and simple types used in the codebase,
+// anything more complex deserves it's own module.
 pub use crate::peer_connection::PeerConnection;
 
 use anyhow::{Result, anyhow};
@@ -90,6 +91,23 @@ pub struct PeerDisconnected {
 
 #[derive(Debug, Clone)]
 pub struct DownloadComplete;
+
+/// Handle for managing PeerManager lifecycle
+pub struct PeerManagerHandle {
+    shutdown_tx: tokio::sync::broadcast::Sender<()>,
+}
+
+impl PeerManagerHandle {
+    pub fn new(shutdown_tx: tokio::sync::broadcast::Sender<()>) -> Self {
+        Self { shutdown_tx }
+    }
+
+    /// Signal shutdown to all background tasks
+    pub fn shutdown(self) {
+        // Send shutdown signal to all subscribers
+        let _ = self.shutdown_tx.send(());
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum BencodeTypes {

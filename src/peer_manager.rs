@@ -11,12 +11,12 @@ use crate::tracker_client::HttpTrackerClient;
 use crate::traits::{AnnounceRequest, TrackerClient};
 use crate::types::{
     CompletedPiece, ConnectedPeer, DownloadComplete, FailedPiece, Peer, PeerConnection,
-    PeerDisconnected, PeerManagerConfig, PieceDownloadRequest,
+    PeerDisconnected, PeerManagerConfig, PeerManagerHandle, PieceDownloadRequest,
 };
 use async_trait::async_trait;
 use log::{debug, error, info};
 use reqwest::Client;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::time;
 
 const MAX_FAILED_PIECE_RETRY: usize = 10;
@@ -81,15 +81,27 @@ pub struct PeerManager {
     tracker_client: Arc<dyn TrackerClient>,
 
     available_peers: Arc<RwLock<HashMap<String, Peer>>>,
-    connected_peers: Arc<RwLock<HashMap<String, ConnectedPeer>>>,
+
+    /// Public for testing purposes - not part of stable API
+    pub connected_peers: Arc<RwLock<HashMap<String, ConnectedPeer>>>,
 
     config: Option<PeerManagerConfig>,
 
-    pending_pieces: Arc<RwLock<VecDeque<PieceDownloadRequest>>>,
-    in_flight_pieces: Arc<RwLock<HashMap<u32, String>>>,
-    completed_pieces: Arc<RwLock<usize>>,
-    failed_attempts: Arc<RwLock<HashMap<u32, usize>>>,
-    piece_requests: Arc<RwLock<HashMap<u32, PieceDownloadRequest>>>,
+    /// Public for testing purposes - not part of stable API
+    pub pending_pieces: Arc<RwLock<VecDeque<PieceDownloadRequest>>>,
+
+    /// Public for testing purposes - not part of stable API
+    pub in_flight_pieces: Arc<RwLock<HashMap<u32, String>>>,
+
+    /// Public for testing purposes - not part of stable API
+    pub completed_pieces: Arc<RwLock<usize>>,
+
+    /// Public for testing purposes - not part of stable API
+    pub failed_attempts: Arc<RwLock<HashMap<u32, usize>>>,
+
+    /// Public for testing purposes - not part of stable API
+    pub piece_requests: Arc<RwLock<HashMap<u32, PieceDownloadRequest>>>,
+
     connector: Arc<dyn PeerConnector>,
 }
 
@@ -128,7 +140,11 @@ impl PeerManager {
         })
     }
 
-    async fn cleanup_piece_tracking(&self, piece_index: u32) -> Option<String> {
+    /// Cleanup piece tracking after completion/failure.
+    ///
+    /// # Note
+    /// This method is public for testing purposes but is not part of the stable API.
+    pub async fn cleanup_piece_tracking(&self, piece_index: u32) -> Option<String> {
         let mut in_flight = self.in_flight_pieces.write().await;
         let peer_addr = in_flight.remove(&piece_index)?;
 
@@ -145,7 +161,7 @@ impl PeerManager {
         announce_url: String,
         piece_completion_tx: mpsc::Sender<CompletedPiece>,
         download_complete_tx: mpsc::Sender<DownloadComplete>,
-    ) -> Result<()> {
+    ) -> Result<PeerManagerHandle> {
         let config = self.config()?;
 
         let info_hash = config.info_hash;
@@ -153,214 +169,43 @@ impl PeerManager {
         let max_peers = config.max_peers;
         let num_pieces = config.num_pieces;
 
+        // Create shutdown channel for graceful termination in tests
+        let (shutdown_tx, _shutdown_rx) = broadcast::channel::<()>(1);
+
         // Create shared disconnect channel for all peers
-        let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<PeerDisconnected>(100);
+        let (disconnect_tx, disconnect_rx) = mpsc::channel::<PeerDisconnected>(100);
 
         // Create channels for PeerConnections to send events
-        let (completion_tx, mut completion_rx) = mpsc::channel::<CompletedPiece>(100);
-        let (failure_tx, mut failure_rx) = mpsc::channel::<FailedPiece>(100);
+        let (completion_tx, completion_rx) = mpsc::channel::<CompletedPiece>(100);
+        let (failure_tx, failure_rx) = mpsc::channel::<FailedPiece>(100);
 
         // Spawn completion handler task
-        let peer_manager_completion = self.clone();
-        let file_writer_tx = piece_completion_tx.clone();
-        let download_complete_tx_handler = download_complete_tx.clone();
-        tokio::task::spawn(async move {
-            while let Some(completed) = completion_rx.recv().await {
-                let piece_index = completed.piece_index;
-
-                if let Some(peer_addr) = peer_manager_completion
-                    .cleanup_piece_tracking(piece_index)
-                    .await
-                {
-                    let connected_peers = peer_manager_completion.connected_peers.read().await;
-                    let active_count = connected_peers
-                        .get(&peer_addr)
-                        .map(|p| p.active_downloads.len())
-                        .unwrap_or(0);
-
-                    debug!(
-                        "Peer {} completed piece {}, active_downloads now: {}",
-                        peer_addr, piece_index, active_count
-                    );
-                }
-
-                // Increment progress
-                let progress = {
-                    let mut completed_count =
-                        peer_manager_completion.completed_pieces.write().await;
-                    *completed_count += 1;
-                    *completed_count
-                };
-
-                // Forward to FileManager (only successful pieces)
-                let _ = file_writer_tx.send(completed).await;
-
-                // Check if all pieces complete
-                if progress >= num_pieces {
-                    let _ = download_complete_tx_handler.send(DownloadComplete).await;
-                    debug!(
-                        "All {} pieces completed, sent DownloadComplete signal",
-                        num_pieces
-                    );
-                    break;
-                }
-            }
-        });
+        tokio::task::spawn(self.clone().handle_completion_events(
+            completion_rx,
+            piece_completion_tx.clone(),
+            download_complete_tx.clone(),
+            num_pieces,
+        ));
 
         // Spawn failure handler task with retry logic
-        let peer_manager_failure = self.clone();
-        tokio::task::spawn(async move {
-            while let Some(failed) = failure_rx.recv().await {
-                let piece_index = failed.piece_index;
-
-                if let Some(peer_addr) = peer_manager_failure
-                    .cleanup_piece_tracking(piece_index)
-                    .await
-                {
-                    let connected_peers = peer_manager_failure.connected_peers.read().await;
-                    let active_count = connected_peers
-                        .get(&peer_addr)
-                        .map(|p| p.active_downloads.len())
-                        .unwrap_or(0);
-
-                    debug!(
-                        "Peer {} failed piece {} ({}), active_downloads now: {}",
-                        peer_addr, piece_index, failed.reason, active_count
-                    );
-                }
-
-                // Check retry attempts
-                let attempts = {
-                    let mut failed_attempts = peer_manager_failure.failed_attempts.write().await;
-                    let attempts = failed_attempts.entry(piece_index).or_insert(0);
-                    *attempts += 1;
-                    *attempts
-                };
-
-                if attempts >= MAX_FAILED_PIECE_RETRY {
-                    error!(
-                        "Piece {} failed after {} attempts ({}), aborting download",
-                        piece_index, MAX_FAILED_PIECE_RETRY, failed.reason
-                    );
-                    // TODO: Signal fatal error - for now we just stop trying this piece
-                    continue;
-                }
-
-                debug!(
-                    "Piece {} failed (attempt {}/{}): {}, re-queuing",
-                    piece_index, attempts, MAX_FAILED_PIECE_RETRY, failed.reason
-                );
-
-                // Re-queue for retry using stored request
-                let request = {
-                    let piece_requests = peer_manager_failure.piece_requests.read().await;
-                    piece_requests.get(&piece_index).cloned()
-                };
-
-                if let Some(request) = request {
-                    let mut pending = peer_manager_failure.pending_pieces.write().await;
-                    pending.push_back(request);
-                } else {
-                    error!(
-                        "Cannot retry piece {}: original request not found",
-                        piece_index
-                    );
-                }
-            }
-        });
+        tokio::task::spawn(self.clone().handle_failure_events(failure_rx));
 
         // Spawn disconnect handler task
-        let peer_manager_disconnect = self.clone();
-        let failure_tx_disconnect = failure_tx.clone();
-        tokio::task::spawn(async move {
-            while let Some(disconnect) = disconnect_rx.recv().await {
-                let peer_addr = disconnect.peer.get_addr();
-                debug!("Peer {} disconnected: {}", peer_addr, disconnect.reason);
-
-                // Extract peer's active downloads before removing
-                let active_downloads = {
-                    let mut connected_peers = peer_manager_disconnect.connected_peers.write().await;
-                    connected_peers
-                        .remove(&peer_addr)
-                        .map(|peer| peer.active_downloads)
-                };
-
-                // Clean up in-flight pieces for this peer
-                if let Some(downloads) = active_downloads
-                    && !downloads.is_empty()
-                {
-                    debug!(
-                        "Marking {} pieces as failed due to peer disconnect: {}",
-                        downloads.len(),
-                        peer_addr
-                    );
-
-                    let mut in_flight = peer_manager_disconnect.in_flight_pieces.write().await;
-
-                    for piece_idx in downloads {
-                        // Remove from global in-flight tracking
-                        in_flight.remove(&piece_idx);
-
-                        // Send to internal failure handler for retry logic
-                        let _ = failure_tx_disconnect
-                            .send(FailedPiece {
-                                piece_index: piece_idx,
-                                reason: "peer_disconnected".to_string(),
-                            })
-                            .await;
-                    }
-                }
-            }
-        });
-
-        let peer_manager = self.clone();
-        let completion_tx_bg = completion_tx.clone();
-        let failure_tx_bg = failure_tx.clone();
-        let disconnect_tx_bg = disconnect_tx.clone();
+        tokio::task::spawn(
+            self.clone()
+                .handle_disconnect_events(disconnect_rx, failure_tx.clone()),
+        );
 
         // Spawn task to connect with peers
-        tokio::task::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(10));
-            loop {
-                let _ = peer_manager
-                    .connect_with_peers(
-                        max_peers,
-                        completion_tx_bg.clone(),
-                        failure_tx_bg.clone(),
-                        disconnect_tx_bg.clone(),
-                    )
-                    .await;
+        tokio::task::spawn(self.clone().handle_peer_connector(
+            max_peers,
+            completion_tx.clone(),
+            failure_tx.clone(),
+            disconnect_tx.clone(),
+        ));
 
-                interval.tick().await;
-            }
-        });
-
-        // Spawn task to asign pieces to peers
-        let peer_manager_assignment = self.clone();
-        tokio::task::spawn(async move {
-            loop {
-                let pending_piece = {
-                    let mut pending = peer_manager_assignment.pending_pieces.write().await;
-                    pending.pop_front()
-                };
-
-                if let Some(request) = pending_piece {
-                    if let Err(_e) = peer_manager_assignment
-                        .assign_piece_to_peer(request.clone())
-                        .await
-                    {
-                        let mut pending = peer_manager_assignment.pending_pieces.write().await;
-                        pending.push_back(request);
-                        drop(pending);
-
-                        // Sleep to avoid tight loop when no peers are available
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                } else {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            }
-        });
+        // Spawn task to assign pieces to peers
+        tokio::task::spawn(self.clone().handle_piece_assignment());
 
         // Spawn task to show the current status of the pieces
         let peer_manager_progress = self.clone();
@@ -391,7 +236,281 @@ impl PeerManager {
             )
             .await?;
 
-        Ok(())
+        Ok(PeerManagerHandle::new(shutdown_tx))
+    }
+
+    /// Process a single completed piece event.
+    ///
+    /// Returns true to continue processing, or false when download is complete.
+    ///
+    /// # Note
+    /// This method is public for testing purposes but is not part of the stable API.
+    pub async fn process_completion(
+        &self,
+        completed: CompletedPiece,
+        file_writer_tx: &mpsc::Sender<CompletedPiece>,
+        download_complete_tx: &mpsc::Sender<DownloadComplete>,
+        num_pieces: usize,
+    ) -> bool {
+        let piece_index = completed.piece_index;
+
+        if let Some(peer_addr) = self.cleanup_piece_tracking(piece_index).await {
+            let connected_peers = self.connected_peers.read().await;
+            let active_count = connected_peers
+                .get(&peer_addr)
+                .map(|p| p.active_downloads.len())
+                .unwrap_or(0);
+
+            debug!(
+                "Peer {} completed piece {}, active_downloads now: {}",
+                peer_addr, piece_index, active_count
+            );
+        }
+
+        // Increment progress
+        let progress = {
+            let mut completed_count = self.completed_pieces.write().await;
+            *completed_count += 1;
+            *completed_count
+        };
+
+        // Forward to FileManager (only successful pieces)
+        let _ = file_writer_tx.send(completed).await;
+
+        // Check if all pieces complete
+        if progress >= num_pieces {
+            let _ = download_complete_tx.send(DownloadComplete).await;
+            debug!(
+                "All {} pieces completed, sent DownloadComplete signal",
+                num_pieces
+            );
+            return false; // Download complete
+        }
+
+        true // Continue processing
+    }
+
+    /// Handle completed piece events - extracted for testing
+    async fn handle_completion_events(
+        self: Arc<Self>,
+        mut completion_rx: mpsc::Receiver<CompletedPiece>,
+        file_writer_tx: mpsc::Sender<CompletedPiece>,
+        download_complete_tx: mpsc::Sender<DownloadComplete>,
+        num_pieces: usize,
+    ) {
+        while let Some(completed) = completion_rx.recv().await {
+            if !self
+                .process_completion(
+                    completed,
+                    &file_writer_tx,
+                    &download_complete_tx,
+                    num_pieces,
+                )
+                .await
+            {
+                break; // Download complete
+            }
+        }
+    }
+
+    /// Process a single failed piece event.
+    ///
+    /// Returns Ok(true) if piece was requeued, Ok(false) if max retries exceeded.
+    ///
+    /// # Note
+    /// This method is public for testing purposes but is not part of the stable API.
+    pub async fn process_failure(&self, failed: FailedPiece) -> Result<bool> {
+        let piece_index = failed.piece_index;
+
+        if let Some(peer_addr) = self.cleanup_piece_tracking(piece_index).await {
+            let connected_peers = self.connected_peers.read().await;
+            let active_count = connected_peers
+                .get(&peer_addr)
+                .map(|p| p.active_downloads.len())
+                .unwrap_or(0);
+
+            debug!(
+                "Peer {} failed piece {} ({}), active_downloads now: {}",
+                peer_addr, piece_index, failed.reason, active_count
+            );
+        }
+
+        // Check retry attempts
+        let attempts = {
+            let mut failed_attempts = self.failed_attempts.write().await;
+            let attempts = failed_attempts.entry(piece_index).or_insert(0);
+            *attempts += 1;
+            *attempts
+        };
+
+        if attempts >= MAX_FAILED_PIECE_RETRY {
+            error!(
+                "Piece {} failed after {} attempts ({}), aborting download",
+                piece_index, MAX_FAILED_PIECE_RETRY, failed.reason
+            );
+            return Ok(false); // Max retries exceeded
+        }
+
+        debug!(
+            "Piece {} failed (attempt {}/{}): {}, re-queuing",
+            piece_index, attempts, MAX_FAILED_PIECE_RETRY, failed.reason
+        );
+
+        // Re-queue for retry using stored request
+        let request = {
+            let piece_requests = self.piece_requests.read().await;
+            piece_requests.get(&piece_index).cloned()
+        };
+
+        if let Some(request) = request {
+            let mut pending = self.pending_pieces.write().await;
+            pending.push_back(request);
+            Ok(true) // Requeued successfully
+        } else {
+            error!(
+                "Cannot retry piece {}: original request not found",
+                piece_index
+            );
+            Err(anyhow::anyhow!(
+                "Original request not found for piece {}",
+                piece_index
+            ))
+        }
+    }
+
+    /// Handle failed piece events - extracted for testing
+    async fn handle_failure_events(self: Arc<Self>, mut failure_rx: mpsc::Receiver<FailedPiece>) {
+        while let Some(failed) = failure_rx.recv().await {
+            let _ = self.process_failure(failed).await;
+        }
+    }
+
+    /// Process a single peer disconnect event.
+    ///
+    /// Returns the number of pieces that were re-queued for download.
+    ///
+    /// # Note
+    /// This method is public for testing purposes but is not part of the stable API.
+    pub async fn process_disconnect(
+        &self,
+        disconnect: PeerDisconnected,
+        failure_tx: &mpsc::Sender<FailedPiece>,
+    ) -> Result<usize> {
+        let peer_addr = disconnect.peer.get_addr();
+        debug!("Peer {} disconnected: {}", peer_addr, disconnect.reason);
+
+        // Extract peer's active downloads before removing
+        let active_downloads = {
+            let mut connected_peers = self.connected_peers.write().await;
+            connected_peers
+                .remove(&peer_addr)
+                .map(|peer| peer.active_downloads)
+        };
+
+        // Clean up in-flight pieces for this peer
+        if let Some(downloads) = active_downloads
+            && !downloads.is_empty()
+        {
+            debug!(
+                "Marking {} pieces as failed due to peer disconnect: {}",
+                downloads.len(),
+                peer_addr
+            );
+
+            let count = downloads.len();
+            let mut in_flight = self.in_flight_pieces.write().await;
+
+            for piece_idx in downloads {
+                // Remove from global in-flight tracking
+                in_flight.remove(&piece_idx);
+
+                // Send to internal failure handler for retry logic
+                let _ = failure_tx
+                    .send(FailedPiece {
+                        piece_index: piece_idx,
+                        reason: "peer_disconnected".to_string(),
+                    })
+                    .await;
+            }
+
+            Ok(count)
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Handle peer disconnect events - extracted for testing
+    async fn handle_disconnect_events(
+        self: Arc<Self>,
+        mut disconnect_rx: mpsc::Receiver<PeerDisconnected>,
+        failure_tx: mpsc::Sender<FailedPiece>,
+    ) {
+        while let Some(disconnect) = disconnect_rx.recv().await {
+            let _ = self.process_disconnect(disconnect, &failure_tx).await;
+        }
+    }
+
+    /// Periodically connect to peers - extracted for testing
+    async fn handle_peer_connector(
+        self: Arc<Self>,
+        max_peers: usize,
+        completion_tx: mpsc::Sender<CompletedPiece>,
+        failure_tx: mpsc::Sender<FailedPiece>,
+        disconnect_tx: mpsc::Sender<PeerDisconnected>,
+    ) {
+        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        loop {
+            let _ = self
+                .connect_with_peers(
+                    max_peers,
+                    completion_tx.clone(),
+                    failure_tx.clone(),
+                    disconnect_tx.clone(),
+                )
+                .await;
+
+            interval.tick().await;
+        }
+    }
+
+    /// Try to assign one piece from the queue to an available peer.
+    ///
+    /// Returns Ok(true) if a piece was assigned, Ok(false) if queue is empty,
+    /// or Err if assignment failed and piece was re-queued.
+    ///
+    /// # Note
+    /// This method is public for testing purposes but is not part of the stable API.
+    pub async fn try_assign_piece(&self) -> Result<bool> {
+        let pending_piece = {
+            let mut pending = self.pending_pieces.write().await;
+            pending.pop_front()
+        };
+
+        if let Some(request) = pending_piece {
+            if let Err(e) = self.assign_piece_to_peer(request.clone()).await {
+                let mut pending = self.pending_pieces.write().await;
+                pending.push_back(request);
+                return Err(e); // Assignment failed, piece re-queued
+            }
+            Ok(true) // Successfully assigned
+        } else {
+            Ok(false) // Queue is empty
+        }
+    }
+
+    /// Assign pending pieces to available peers - extracted for testing
+    async fn handle_piece_assignment(self: Arc<Self>) {
+        loop {
+            match self.try_assign_piece().await {
+                Ok(true) => {
+                    // Successfully assigned, continue immediately
+                }
+                Ok(false) | Err(_) => {
+                    // Queue empty or assignment failed, wait before retry
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
     }
 
     async fn connect_peer(

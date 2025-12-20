@@ -1,8 +1,14 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use bittorrent_from_scratch::messages::PeerMessage;
-use bittorrent_from_scratch::traits::MessageIO;
-use tokio::sync::mpsc;
+use bittorrent_from_scratch::peer_manager::PeerConnector;
+use bittorrent_from_scratch::traits::{
+    AnnounceRequest, AnnounceResponse, MessageIO, TrackerClient,
+};
+use bittorrent_from_scratch::types::{ConnectedPeer, FailedPiece, Peer};
+use std::collections::VecDeque;
+use std::sync::Arc;
+use tokio::sync::{Mutex, mpsc};
 
 /// Fake MessageIO for testing using in-memory channels.
 /// Provides real async message passing without network I/O.
@@ -49,5 +55,79 @@ impl MessageIO for FakeMessageIO {
             Some(msg) => Ok(Some(msg)),
             None => Ok(None), // Channel closed, stream ended
         }
+    }
+}
+
+/// Mock tracker client for testing
+pub struct MockTrackerClient {
+    responses: Mutex<VecDeque<Result<AnnounceResponse>>>,
+}
+
+impl MockTrackerClient {
+    pub fn new() -> Self {
+        Self {
+            responses: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    pub async fn expect_announce(&self, peers: Vec<Peer>, interval: Option<u64>) {
+        self.responses
+            .lock()
+            .await
+            .push_back(Ok(AnnounceResponse { peers, interval }));
+    }
+}
+
+#[async_trait]
+impl TrackerClient for MockTrackerClient {
+    async fn announce(&self, _request: AnnounceRequest) -> Result<AnnounceResponse> {
+        self.responses.lock().await.pop_front().unwrap_or_else(|| {
+            Ok(AnnounceResponse {
+                peers: vec![],
+                interval: Some(60),
+            })
+        })
+    }
+}
+
+/// Mock peer connector for testing
+pub struct MockPeerConnector {
+    fail_next: Mutex<bool>,
+}
+
+impl MockPeerConnector {
+    pub fn new() -> Self {
+        Self {
+            fail_next: Mutex::new(false),
+        }
+    }
+
+    pub async fn set_fail_next(&self, should_fail: bool) {
+        *self.fail_next.lock().await = should_fail;
+    }
+}
+
+#[async_trait]
+impl PeerConnector for MockPeerConnector {
+    async fn connect(
+        &self,
+        peer: Peer,
+        _completion_tx: mpsc::Sender<bittorrent_from_scratch::types::CompletedPiece>,
+        _failure_tx: mpsc::Sender<FailedPiece>,
+        _disconnect_tx: mpsc::Sender<bittorrent_from_scratch::types::PeerDisconnected>,
+        _client_peer_id: [u8; 20],
+        _info_hash: [u8; 20],
+        _num_pieces: usize,
+    ) -> Result<ConnectedPeer> {
+        let should_fail = *self.fail_next.lock().await;
+        if should_fail {
+            return Err(anyhow::anyhow!("Mock connection failed"));
+        }
+
+        let (download_request_tx, _rx) =
+            mpsc::channel::<bittorrent_from_scratch::types::PieceDownloadRequest>(10);
+        let bitfield = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+
+        Ok(ConnectedPeer::new(peer, download_request_tx, bitfield))
     }
 }

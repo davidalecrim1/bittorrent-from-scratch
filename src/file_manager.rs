@@ -11,7 +11,7 @@ use crate::types::{BencodeTypes, Piece, PieceStatus};
 use crate::types::{CompletedPiece, DownloadComplete, PeerManagerConfig, PieceDownloadRequest};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, Receiver};
 
 use log::{debug, info};
 
@@ -28,6 +28,7 @@ pub struct BitTorrent {
     metadata: Option<BTreeMap<String, BencodeTypes>>,
 
     // Keep track of the pieces status.
+    // TODO: Remove this and control all pieces within the peer manager.
     pieces: Option<Arc<RwLock<Vec<Piece>>>>,
 
     // Peer manager to handle the communication with the peers.
@@ -54,6 +55,7 @@ impl BitTorrent {
         Ok(torrent)
     }
 
+    // Loads the torrent source file to extract metadata.
     fn load_file(&mut self, path: String) -> Result<()> {
         let bytes = fs::read(path)?;
 
@@ -70,6 +72,7 @@ impl BitTorrent {
         Ok(())
     }
 
+    // Loads the desired file pieces from the torrent source file metadata.
     fn load_pieces(&mut self) -> Result<()> {
         let n = self.get_num_pieces()?;
         let pieces = (0..n)
@@ -156,6 +159,7 @@ impl BitTorrent {
         Ok(())
     }
 
+    // Starts downloading the desired file using the torrent source file metadata.
     pub async fn download_file(&mut self, output_directory_path: String) -> Result<()> {
         let info_hash_bytes = self.get_info_hash()?;
         let info_hash: [u8; 20] = info_hash_bytes
@@ -168,7 +172,7 @@ impl BitTorrent {
         let piece_length = self.get_piece_length()?;
         let num_pieces = self.get_num_pieces()?;
         let pieces_hashes = self.get_pieces_hashes()?;
-        let client_peer_id = *b"postman-000000000001";
+        let client_peer_id = *b"postman-000000000001"; // TODO: Improve this to something clearer.
 
         let config = PeerManagerConfig {
             info_hash,
@@ -183,6 +187,7 @@ impl BitTorrent {
             .initialize(config)
             .await?;
 
+        // Peer Manager will let the File Manager know when the pieces are completed.
         let (completion_tx, mut completion_rx) = mpsc::channel::<CompletedPiece>(100);
         let (download_complete_tx, mut download_complete_rx) = mpsc::channel::<DownloadComplete>(1);
 
@@ -193,10 +198,13 @@ impl BitTorrent {
 
         let filename = self.get_filename()?;
         let output_path = format!("{}/{}", output_directory_path, filename);
+
         let mut file = File::create(&output_path).await?;
         file.set_len(file_size as u64).await?;
 
-        // Requests all pieces in the initialization
+        // TODO: This should be refactored to be moved completely to the Peer Manager.
+        // The File Manager should only care about completed pieces. So the start function should be responsible
+        // for this in the Peer Manager.
         let piece_requests: Vec<PieceDownloadRequest> = (0..num_pieces)
             .map(|idx| {
                 let piece_hash = pieces_hashes[idx];
@@ -210,6 +218,29 @@ impl BitTorrent {
 
         self.peer_manager.request_pieces(piece_requests).await?;
 
+        self.watch_for_completed_pieces(
+            &mut file,
+            &mut completion_rx,
+            &mut download_complete_rx,
+            num_pieces,
+            piece_length,
+        )
+        .await?;
+
+        self.verify_file(&output_path, &pieces_hashes, piece_length, file_size)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn watch_for_completed_pieces(
+        &self,
+        file: &mut File,
+        completion_rx: &mut Receiver<CompletedPiece>,
+        download_complete_rx: &mut Receiver<DownloadComplete>,
+        num_pieces: usize,
+        piece_length: usize,
+    ) -> Result<()> {
         let mut downloaded_pieces = 0;
 
         loop {
@@ -234,11 +265,6 @@ impl BitTorrent {
                 }
             }
         }
-
-        drop(file);
-
-        self.verify_file(&output_path, &pieces_hashes, piece_length, file_size)
-            .await?;
 
         Ok(())
     }
