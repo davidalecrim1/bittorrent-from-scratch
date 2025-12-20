@@ -1,5 +1,4 @@
 use anyhow::{Result, anyhow};
-use futures_util::{SinkExt, StreamExt};
 use log::debug;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,10 +6,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{RwLock, mpsc};
 use tokio::time::sleep;
-use tokio_util::codec::{FramedRead, FramedWrite};
 
 use crate::download_state::DownloadState;
-use crate::encoding::{PeerMessageDecoder, PeerMessageEncoder};
 use crate::messages::{InterestedMessage, PeerMessage, PieceMessage, RequestMessage};
 use crate::types::{
     CompletedPiece, FailedPiece, Peer, PeerDisconnected, PeerHandshake, PeerId,
@@ -31,6 +28,9 @@ pub struct PeerConnection {
 
     // Stream is only present after handshake
     stream: Option<TcpStream>,
+
+    // TCP connector for establishing connections
+    tcp_connector: Arc<dyn crate::traits::TcpConnector>,
 
     // Outbound messages the actor will write to the wire
     outbound_tx: mpsc::Sender<PeerMessage>,
@@ -67,6 +67,7 @@ impl PeerConnection {
         piece_completion_tx: mpsc::Sender<CompletedPiece>,
         piece_failure_tx: mpsc::Sender<FailedPiece>,
         peer_disconnect_tx: mpsc::Sender<PeerDisconnected>,
+        tcp_connector: Arc<dyn crate::traits::TcpConnector>,
     ) -> (
         Self,
         mpsc::Sender<PieceDownloadRequest>,
@@ -83,6 +84,7 @@ impl PeerConnection {
             peer,
             peer_id: None,
             stream: None,
+            tcp_connector,
             outbound_tx,
             outbound_rx: Some(outbound_rx),
             inbound_tx,
@@ -141,7 +143,7 @@ impl PeerConnection {
     }
 
     async fn try_handshake(&mut self, handshake_bytes: &[u8]) -> Result<PeerHandshake> {
-        let mut stream = TcpStream::connect(self.peer.get_addr()).await?;
+        let mut stream = self.tcp_connector.connect(self.peer.get_addr()).await?;
         stream.write_all(handshake_bytes).await?;
 
         let mut buffer = vec![0u8; 68];
@@ -159,52 +161,58 @@ impl PeerConnection {
             .stream
             .take()
             .ok_or_else(|| anyhow!("handshake not done"))?;
-        let (reader, writer) = stream.into_split();
 
-        let decoder = PeerMessageDecoder::new(num_pieces);
-        let encoder = PeerMessageEncoder::new(num_pieces);
+        let message_io = crate::io::TcpMessageIO::from_stream(stream, num_pieces);
+        self.start_with_io(Box::new(message_io)).await
+    }
 
-        let mut reader = FramedRead::new(reader, decoder);
-        let mut writer = FramedWrite::new(writer, encoder);
-
+    pub async fn start_with_io(mut self, mut message_io: Box<dyn crate::traits::MessageIO>) -> Result<()> {
         // Take the receivers out of self
         let mut outbound_rx = self.outbound_rx.take().unwrap();
         let inbound_tx = self.inbound_tx.clone();
-        let disconnect_tx_reader = self.peer_disconnect_tx.clone();
-        let disconnect_tx_writer = self.peer_disconnect_tx.clone();
-        let peer_reader = self.peer.clone();
-        let peer_writer = self.peer.clone();
+        let disconnect_tx = self.peer_disconnect_tx.clone();
+        let peer = self.peer.clone();
 
-        // Spawn writer task
+        // Spawn single I/O task that handles both reading and writing
         tokio::spawn(async move {
-            while let Some(msg) = outbound_rx.recv().await {
-                if let Err(e) = writer.send(msg).await {
-                    let _ = disconnect_tx_writer
-                        .send(PeerDisconnected {
-                            peer: peer_writer.clone(),
-                            reason: format!("write_error: {}", e),
-                        })
-                        .await;
-                    break;
-                }
-            }
-        });
-
-        // Spawn reader task
-        tokio::spawn(async move {
-            while let Some(result) = reader.next().await {
-                match result {
-                    Ok(msg) => {
-                        let _ = inbound_tx.send(msg).await;
+            loop {
+                tokio::select! {
+                    // Handle outbound messages (write to network)
+                    Some(msg) = outbound_rx.recv() => {
+                        if let Err(e) = message_io.write_message(&msg).await {
+                            let _ = disconnect_tx.send(PeerDisconnected {
+                                peer: peer.clone(),
+                                reason: format!("write_error: {}", e),
+                            }).await;
+                            break;
+                        }
                     }
-                    Err(err) => {
-                        let _ = disconnect_tx_reader
-                            .send(PeerDisconnected {
-                                peer: peer_reader,
-                                reason: format!("read_error: {}", err),
-                            })
-                            .await;
-                        break;
+
+                    // Handle inbound messages (read from network)
+                    result = message_io.read_message() => {
+                        match result {
+                            Ok(Some(msg)) => {
+                                if inbound_tx.send(msg).await.is_err() {
+                                    // Channel closed, stop I/O task
+                                    break;
+                                }
+                            }
+                            Ok(None) => {
+                                // Stream ended gracefully
+                                let _ = disconnect_tx.send(PeerDisconnected {
+                                    peer: peer.clone(),
+                                    reason: "stream_closed".to_string(),
+                                }).await;
+                                break;
+                            }
+                            Err(e) => {
+                                let _ = disconnect_tx.send(PeerDisconnected {
+                                    peer: peer.clone(),
+                                    reason: format!("read_error: {}", e),
+                                }).await;
+                                break;
+                            }
+                        }
                     }
                 }
             }

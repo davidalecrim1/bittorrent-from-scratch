@@ -205,6 +205,25 @@ pub enum PieceStatus {
     Pending,
 }
 
+/// Tracker announce request parameters
+#[derive(Debug, Clone)]
+pub struct AnnounceRequest {
+    pub endpoint: String,
+    pub info_hash: Vec<u8>,
+    pub peer_id: String,
+    pub port: u16,
+    pub uploaded: usize,
+    pub downloaded: usize,
+    pub left: usize,
+}
+
+/// Tracker announce response
+#[derive(Debug, Clone)]
+pub struct AnnounceResponse {
+    pub interval: Option<u64>,
+    pub peers: Vec<Peer>,
+}
+
 #[cfg(test)]
 mod tests {
     use crate::messages::BitfieldMessage;

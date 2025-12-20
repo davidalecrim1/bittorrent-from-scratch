@@ -19,6 +19,10 @@ cargo run -- -i <path-to-torrent-file> -o <output-directory>
 cargo test
 ```
 
+**Test Organization:**
+- **Unit tests**: Located in `src/**` files using `#[cfg(test)]` modules
+- **Integration tests**: Located in `tests/` directory for black-box testing of public APIs
+
 ### Code Quality
 Always run the following after implementing a plan to fix formatting and linting errors:
 ```bash
@@ -98,3 +102,48 @@ Bitfield messages use MSB-first bit ordering. Bit 0 of byte 0 represents piece 0
 
 ### Edition
 The project uses Rust edition 2024 (see Cargo.toml).
+
+## Testing Strategy
+
+### Test Doubles: Fakes over Mocks
+
+Following Rust async testing best practices (Tokio, Jon Gjengset's Rust for Rustaceans), this project uses **Fakes instead of Mocks**:
+
+**Fake vs Mock:**
+- **Fake**: Simplified working implementation (e.g., in-memory channel behaving like TCP)
+- **Mock**: Pre-programmed expectations and responses (brittle, order-dependent)
+
+**Why Fakes?**
+- Test real behavior, not just error paths
+- No order-dependent expectations that break easily
+- Idiomatic Rust async patterns (channels, `tokio::io::duplex`)
+- Used by Tokio, Actix, Hyper, Tonic for their own tests
+
+**Implementation Guidelines:**
+
+1. **FakeTcpConnector**: Use `tokio::io::duplex()` to return real readable/writable streams (in-memory)
+   - Can test actual handshake logic
+   - Returns `TcpStream`-like behavior without network
+
+2. **FakeMessageIO**: Use `tokio::sync::mpsc::unbounded_channel()` for message passing
+   - Behaves like real async I/O
+   - Test sends messages via channel, code reads them naturally
+   - No "expect" calls - just real async communication
+
+3. **MockTrackerClient**: HTTP is external boundary - mock acceptable here
+   - Use `tokio::sync::Mutex` (not `std::sync::Mutex`) in async code
+   - Keep VecDeque pattern for queued responses
+
+**Anti-patterns to Avoid:**
+- `Arc<Mutex<VecDeque<T>>>` with `.lock().unwrap()` everywhere (use channels instead)
+- Order-dependent expectations that make tests fragile
+- Mocks that can only test failure cases
+- `std::sync::Mutex` in async code (use `tokio::sync::Mutex`)
+- `#[allow(dead_code)]` or unused code - if not used, delete it immediately
+  - **Exception**: During active refactoring where code will be used in the next step
+- Keeping "future-proofing" code that isn't currently needed
+
+**Coverage Goals:**
+- peer_manager.rs: 70%+ coverage
+- peer_connection.rs: 70%+ coverage
+- messages.rs: 70%+ coverage

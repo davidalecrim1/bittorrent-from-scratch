@@ -4,18 +4,20 @@ use std::{
     time::Duration,
 };
 
+use crate::encoding::Decoder;
 use crate::error::{AppError, Result};
+use crate::tcp_connector::RealTcpConnector;
+use crate::tracker_client::HttpTrackerClient;
+use crate::traits::{AnnounceRequest, TrackerClient};
 use crate::types::{
-    BencodeTypes, CompletedPiece, ConnectedPeer, DownloadComplete, FailedPiece, Peer,
-    PeerConnection, PeerDisconnected, PeerManagerConfig, PieceDownloadRequest,
+    CompletedPiece, ConnectedPeer, DownloadComplete, FailedPiece, Peer, PeerConnection,
+    PeerDisconnected, PeerManagerConfig, PieceDownloadRequest,
 };
 use async_trait::async_trait;
 use log::{debug, error, info};
-use reqwest::{Client, Url};
+use reqwest::Client;
 use tokio::sync::{RwLock, mpsc};
 use tokio::time;
-
-use crate::encoding::Decoder;
 
 const MAX_FAILED_PIECE_RETRY: usize = 10;
 
@@ -48,8 +50,14 @@ impl PeerConnector for RealPeerConnector {
         info_hash: [u8; 20],
         num_pieces: usize,
     ) -> Result<ConnectedPeer> {
-        let (mut peer_conn, download_request_tx, bitfield) =
-            PeerConnection::new(peer.clone(), completion_tx, failure_tx, disconnect_tx);
+        let tcp_connector = Arc::new(RealTcpConnector);
+        let (mut peer_conn, download_request_tx, bitfield) = PeerConnection::new(
+            peer.clone(),
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
 
         peer_conn.handshake(client_peer_id, info_hash).await?;
 
@@ -70,12 +78,10 @@ impl PeerConnector for RealPeerConnector {
 }
 
 pub struct PeerManager {
-    http_client: Client,
+    tracker_client: Arc<dyn TrackerClient>,
 
     available_peers: Arc<RwLock<HashMap<String, Peer>>>,
     connected_peers: Arc<RwLock<HashMap<String, ConnectedPeer>>>,
-
-    decoder: Decoder,
 
     config: Option<PeerManagerConfig>,
 
@@ -89,17 +95,16 @@ pub struct PeerManager {
 
 impl PeerManager {
     pub fn new(decoder: Decoder, http_client: Client) -> Self {
-        Self::new_with_connector(decoder, http_client, Arc::new(RealPeerConnector))
+        let tracker_client = Arc::new(HttpTrackerClient::new(http_client, decoder));
+        Self::new_with_connector(tracker_client, Arc::new(RealPeerConnector))
     }
 
     pub fn new_with_connector(
-        decoder: Decoder,
-        http_client: Client,
+        tracker_client: Arc<dyn TrackerClient>,
         connector: Arc<dyn PeerConnector>,
     ) -> Self {
         Self {
-            decoder,
-            http_client,
+            tracker_client,
             available_peers: Arc::new(RwLock::new(HashMap::new())),
             connected_peers: Arc::new(RwLock::new(HashMap::new())),
             config: None,
@@ -638,135 +643,18 @@ impl PeerManager {
         info_hash: [u8; 20],
         file_size: usize,
     ) -> Result<Vec<Peer>> {
-        // URL-encode the info_hash (percent-encoding, not hex)
-        let info_hash_encoded: String = info_hash.iter().map(|b| format!("%{:02X}", b)).collect();
+        let request = AnnounceRequest {
+            endpoint: endpoint.to_string(),
+            info_hash: info_hash.to_vec(),
+            peer_id: "postman-000000000001".to_string(),
+            port: 6881,
+            uploaded: 0,
+            downloaded: 0,
+            left: file_size,
+        };
 
-        let params = [
-            ("info_hash", info_hash_encoded),
-            ("port", "6881".to_string()),
-            ("uploaded", "0".to_string()),
-            ("peer_id", "postman-000000000001".to_string()),
-            ("downloaded", "0".to_string()),
-            ("left", file_size.to_string()),
-            ("compact", "1".to_string()),
-        ];
-
-        let raw_query = params
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect::<Vec<_>>()
-            .join("&");
-        let mut url = Url::parse(endpoint)?;
-        url.set_query(Some(&raw_query));
-
-        let req = self.http_client.get(url).build()?;
-
-        let res = self.http_client.execute(req).await?;
-        if !res.status().is_success() {
-            return Err(AppError::tracker_rejected(format!(
-                "Tracker returned status: {}",
-                res.status()
-            ))
-            .into());
-        }
-
-        let body = res.bytes().await?;
-        let (_, val) = self.decoder.from_bytes(&body)?;
-
-        self.parse_peers(val)
-    }
-
-    fn parse_peers(&self, val: BencodeTypes) -> Result<Vec<Peer>> {
-        match val {
-            BencodeTypes::Dictionary(dict) => {
-                if let Some(failure_reason) = dict.get("failure reason") {
-                    let reason = match failure_reason {
-                        BencodeTypes::String(s) => s.clone(),
-                        _ => "Unknown failure reason".to_string(),
-                    };
-                    return Err(AppError::tracker_rejected(reason).into());
-                }
-
-                let peers_bencode = dict.get("peers").ok_or_else(|| {
-                    anyhow::Error::from(AppError::missing_field(
-                        "peers field not found in response",
-                    ))
-                })?;
-
-                match peers_bencode {
-                    BencodeTypes::List(peers_list) => {
-                        let mut peers = Vec::new();
-                        for peer_bencode in peers_list {
-                            match peer_bencode {
-                                BencodeTypes::Dictionary(peer_dict) => {
-                                    let ip = peer_dict.get("ip").ok_or_else(|| {
-                                        anyhow::Error::from(AppError::missing_field(
-                                            "ip field not found in peer",
-                                        ))
-                                    })?;
-
-                                    let port = peer_dict.get("port").ok_or_else(|| {
-                                        anyhow::Error::from(AppError::missing_field(
-                                            "port field not found in peer",
-                                        ))
-                                    })?;
-
-                                    let ip_string = match ip {
-                                        BencodeTypes::String(s) => s.clone(),
-                                        _ => {
-                                            return Err(AppError::InvalidFieldType {
-                                                field: "ip".to_string(),
-                                                expected: "string".to_string(),
-                                            }
-                                            .into());
-                                        }
-                                    };
-
-                                    let port_u16 = match port {
-                                        BencodeTypes::Integer(i) => {
-                                            if *i < 0 || *i > u16::MAX as isize {
-                                                return Err(AppError::invalid_bencode(
-                                                    "port value out of range",
-                                                )
-                                                .into());
-                                            }
-                                            *i as u16
-                                        }
-                                        _ => {
-                                            return Err(AppError::InvalidFieldType {
-                                                field: "port".to_string(),
-                                                expected: "integer".to_string(),
-                                            }
-                                            .into());
-                                        }
-                                    };
-
-                                    peers.push(Peer::new(ip_string, port_u16));
-                                }
-                                _ => {
-                                    return Err(AppError::InvalidFieldType {
-                                        field: "peer".to_string(),
-                                        expected: "dictionary".to_string(),
-                                    }
-                                    .into());
-                                }
-                            }
-                        }
-                        Ok(peers)
-                    }
-                    _ => Err(AppError::InvalidFieldType {
-                        field: "peers".to_string(),
-                        expected: "list".to_string(),
-                    }
-                    .into()),
-                }
-            }
-            _ => Err(AppError::InvalidFieldType {
-                field: "response".to_string(),
-                expected: "dictionary".to_string(),
-            }
-            .into()),
-        }
+        let response = self.tracker_client.announce(request).await?;
+        Ok(response.peers)
     }
 
     /// Connect to available peers up to the specified limit.

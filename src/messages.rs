@@ -6,7 +6,7 @@ use std::io::Cursor;
 
 use crate::error::CodecError;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PeerMessage {
     KeepAlive,
     Choke(ChokeMessage),
@@ -113,6 +113,7 @@ impl PeerMessage {
     }
 }
 
+#[derive(Clone, PartialEq)]
 pub struct BitfieldMessage {
     pub bitfield: Vec<bool>,
 }
@@ -159,7 +160,7 @@ impl Debug for BitfieldMessage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InterestedMessage {}
 
 impl InterestedMessage {
@@ -171,7 +172,7 @@ impl InterestedMessage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChokeMessage {}
 
 impl ChokeMessage {
@@ -180,7 +181,7 @@ impl ChokeMessage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UnchokeMessage {}
 
 impl UnchokeMessage {
@@ -189,7 +190,7 @@ impl UnchokeMessage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RequestMessage {
     pub piece_index: u32,
     pub begin: u32,
@@ -208,6 +209,7 @@ impl RequestMessage {
     }
 }
 
+#[derive(Clone, PartialEq)]
 pub struct PieceMessage {
     pub piece_index: u32,
     pub begin: u32,
@@ -253,7 +255,7 @@ impl Debug for PieceMessage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NotInterestedMessage {}
 
 impl NotInterestedMessage {
@@ -262,7 +264,7 @@ impl NotInterestedMessage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HaveMessage {
     pub piece_index: u32,
 }
@@ -287,7 +289,7 @@ impl HaveMessage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CancelMessage {
     #[allow(dead_code)]
     pub piece_index: u32,

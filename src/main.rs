@@ -1,23 +1,13 @@
+use bittorrent_from_scratch::{
+    cli::Args,
+    encoding::{Decoder, Encoder},
+    error::AppError,
+    file_manager::BitTorrent,
+    peer_manager::PeerManager,
+};
 use clap::Parser;
-use reqwest::Client;
-
-mod cli;
-mod download_state;
-mod encoding;
-pub mod error;
-mod file_manager;
-mod messages;
-mod peer_connection;
-mod peer_manager;
-mod types;
-
-use cli::Args;
-use encoding::Decoder;
-use encoding::Encoder;
-use error::AppError;
-use file_manager::BitTorrent;
 use log::debug;
-use peer_manager::PeerManager;
+use reqwest::Client;
 
 #[tokio::main]
 async fn main() {
