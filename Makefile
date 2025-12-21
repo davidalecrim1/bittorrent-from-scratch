@@ -13,3 +13,6 @@ lint:
 
 test:
 	cargo test
+
+coverage:
+	cargo tarpaulin --all-targets --engine llvm --out Stdout

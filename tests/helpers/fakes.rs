@@ -76,6 +76,13 @@ impl MockTrackerClient {
             .await
             .push_back(Ok(AnnounceResponse { peers, interval }));
     }
+
+    pub async fn expect_failure(&self, error_msg: &str) {
+        self.responses
+            .lock()
+            .await
+            .push_back(Err(anyhow::anyhow!(error_msg.to_string())));
+    }
 }
 
 #[async_trait]
@@ -91,19 +98,11 @@ impl TrackerClient for MockTrackerClient {
 }
 
 /// Mock peer connector for testing
-pub struct MockPeerConnector {
-    fail_next: Mutex<bool>,
-}
+pub struct MockPeerConnector {}
 
 impl MockPeerConnector {
     pub fn new() -> Self {
-        Self {
-            fail_next: Mutex::new(false),
-        }
-    }
-
-    pub async fn set_fail_next(&self, should_fail: bool) {
-        *self.fail_next.lock().await = should_fail;
+        Self {}
     }
 }
 
@@ -119,11 +118,6 @@ impl PeerConnector for MockPeerConnector {
         _info_hash: [u8; 20],
         _num_pieces: usize,
     ) -> Result<ConnectedPeer> {
-        let should_fail = *self.fail_next.lock().await;
-        if should_fail {
-            return Err(anyhow::anyhow!("Mock connection failed"));
-        }
-
         let (download_request_tx, _rx) =
             mpsc::channel::<bittorrent_from_scratch::types::PieceDownloadRequest>(10);
         let bitfield = Arc::new(tokio::sync::RwLock::new(Vec::new()));

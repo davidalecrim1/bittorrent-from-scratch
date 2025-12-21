@@ -20,6 +20,7 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::time;
 
 const MAX_FAILED_PIECE_RETRY: usize = 10;
+const CHANNEL_SIZE: usize = 100;
 
 #[async_trait]
 pub trait PeerConnector: Send + Sync {
@@ -141,9 +142,6 @@ impl PeerManager {
     }
 
     /// Cleanup piece tracking after completion/failure.
-    ///
-    /// # Note
-    /// This method is public for testing purposes but is not part of the stable API.
     pub async fn cleanup_piece_tracking(&self, piece_index: u32) -> Option<String> {
         let mut in_flight = self.in_flight_pieces.write().await;
         let peer_addr = in_flight.remove(&piece_index)?;
@@ -170,14 +168,14 @@ impl PeerManager {
         let num_pieces = config.num_pieces;
 
         // Create shutdown channel for graceful termination in tests
-        let (shutdown_tx, _shutdown_rx) = broadcast::channel::<()>(1);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
 
         // Create shared disconnect channel for all peers
-        let (disconnect_tx, disconnect_rx) = mpsc::channel::<PeerDisconnected>(100);
+        let (disconnect_tx, disconnect_rx) = mpsc::channel::<PeerDisconnected>(CHANNEL_SIZE);
 
         // Create channels for PeerConnections to send events
-        let (completion_tx, completion_rx) = mpsc::channel::<CompletedPiece>(100);
-        let (failure_tx, failure_rx) = mpsc::channel::<FailedPiece>(100);
+        let (completion_tx, completion_rx) = mpsc::channel::<CompletedPiece>(CHANNEL_SIZE);
+        let (failure_tx, failure_rx) = mpsc::channel::<FailedPiece>(CHANNEL_SIZE);
 
         // Spawn completion handler task
         tokio::task::spawn(self.clone().handle_completion_events(
@@ -202,10 +200,14 @@ impl PeerManager {
             completion_tx.clone(),
             failure_tx.clone(),
             disconnect_tx.clone(),
+            shutdown_rx.resubscribe(),
         ));
 
         // Spawn task to assign pieces to peers
-        tokio::task::spawn(self.clone().handle_piece_assignment());
+        tokio::task::spawn(
+            self.clone()
+                .handle_piece_assignment(shutdown_rx.resubscribe()),
+        );
 
         // Spawn task to show the current status of the pieces
         let peer_manager_progress = self.clone();
@@ -242,9 +244,6 @@ impl PeerManager {
     /// Process a single completed piece event.
     ///
     /// Returns true to continue processing, or false when download is complete.
-    ///
-    /// # Note
-    /// This method is public for testing purposes but is not part of the stable API.
     pub async fn process_completion(
         &self,
         completed: CompletedPiece,
@@ -316,9 +315,6 @@ impl PeerManager {
     /// Process a single failed piece event.
     ///
     /// Returns Ok(true) if piece was requeued, Ok(false) if max retries exceeded.
-    ///
-    /// # Note
-    /// This method is public for testing purposes but is not part of the stable API.
     pub async fn process_failure(&self, failed: FailedPiece) -> Result<bool> {
         let piece_index = failed.piece_index;
 
@@ -388,9 +384,6 @@ impl PeerManager {
     /// Process a single peer disconnect event.
     ///
     /// Returns the number of pieces that were re-queued for download.
-    ///
-    /// # Note
-    /// This method is public for testing purposes but is not part of the stable API.
     pub async fn process_disconnect(
         &self,
         disconnect: PeerDisconnected,
@@ -457,19 +450,26 @@ impl PeerManager {
         completion_tx: mpsc::Sender<CompletedPiece>,
         failure_tx: mpsc::Sender<FailedPiece>,
         disconnect_tx: mpsc::Sender<PeerDisconnected>,
+        mut shutdown_rx: broadcast::Receiver<()>,
     ) {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
         loop {
-            let _ = self
-                .connect_with_peers(
-                    max_peers,
-                    completion_tx.clone(),
-                    failure_tx.clone(),
-                    disconnect_tx.clone(),
-                )
-                .await;
-
-            interval.tick().await;
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    debug!("Peer connector task shutting down");
+                    break;
+                }
+                _ = interval.tick() => {
+                    let _ = self
+                        .connect_with_peers(
+                            max_peers,
+                            completion_tx.clone(),
+                            failure_tx.clone(),
+                            disconnect_tx.clone(),
+                        )
+                        .await;
+                }
+            }
         }
     }
 
@@ -477,9 +477,6 @@ impl PeerManager {
     ///
     /// Returns Ok(true) if a piece was assigned, Ok(false) if queue is empty,
     /// or Err if assignment failed and piece was re-queued.
-    ///
-    /// # Note
-    /// This method is public for testing purposes but is not part of the stable API.
     pub async fn try_assign_piece(&self) -> Result<bool> {
         let pending_piece = {
             let mut pending = self.pending_pieces.write().await;
@@ -499,21 +496,29 @@ impl PeerManager {
     }
 
     /// Assign pending pieces to available peers - extracted for testing
-    async fn handle_piece_assignment(self: Arc<Self>) {
+    async fn handle_piece_assignment(self: Arc<Self>, mut shutdown_rx: broadcast::Receiver<()>) {
         loop {
-            match self.try_assign_piece().await {
-                Ok(true) => {
-                    // Successfully assigned, continue immediately
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    debug!("Piece assignment task shutting down");
+                    break;
                 }
-                Ok(false) | Err(_) => {
-                    // Queue empty or assignment failed, wait before retry
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
+                _ = async {
+                    match self.try_assign_piece().await {
+                        Ok(true) => {
+                            // Successfully assigned, continue immediately
+                        }
+                        Ok(false) | Err(_) => {
+                            // Queue empty or assignment failed, wait before retry
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    }
+                } => {}
             }
         }
     }
 
-    async fn connect_peer(
+    pub async fn connect_peer(
         &self,
         peer: Peer,
         completion_tx: mpsc::Sender<CompletedPiece>,
@@ -546,7 +551,7 @@ impl PeerManager {
     ///
     /// Selects a peer that has the piece and is least busy (fewest active downloads),
     /// then sends the download request to that peer's channel.
-    async fn assign_piece_to_peer(&self, request: PieceDownloadRequest) -> Result<()> {
+    pub async fn assign_piece_to_peer(&self, request: PieceDownloadRequest) -> Result<()> {
         let piece_index = request.piece_index;
 
         let mut connected_peers = self.connected_peers.write().await;

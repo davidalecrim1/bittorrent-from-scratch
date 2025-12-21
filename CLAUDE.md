@@ -20,8 +20,26 @@ cargo test
 ```
 
 **Test Organization:**
-- **Unit tests**: Located in `src/**` files using `#[cfg(test)]` modules
-- **Integration tests**: Located in `tests/` directory for black-box testing of public APIs
+- **Unit tests**: Located in `src/**` files using `#[cfg(test)]` modules (18 tests)
+- **Integration tests**: Located in `tests/` directory for black-box testing of public APIs (69 tests)
+  - `tests/encoding_tests.rs`: Bencode encoding/decoding tests (10 tests)
+  - `tests/messages_tests.rs`: Peer protocol message serialization tests (16 tests)
+  - `tests/peer_connection_tests.rs`: PeerConnection protocol logic tests (16 tests)
+  - `tests/peer_manager_tests.rs`: PeerManager orchestration tests (27 tests)
+  - `tests/helpers/fakes.rs`: Test doubles (FakeMessageIO, MockTrackerClient, MockPeerConnector)
+
+**Total: 87 tests achieving 70%+ coverage on core modules**
+
+### Coverage
+```bash
+make coverage
+```
+
+Runs `cargo tarpaulin --all-targets --engine llvm --out Stdout` to measure test coverage:
+- **messages.rs**: 78.26% coverage (108/138 lines)
+- **peer_manager.rs**: 71.35% coverage (264/370 lines)
+- **peer_connection.rs**: 73.25% coverage (178/243 lines)
+- **Overall**: 55.70% coverage (753/1352 lines)
 
 ### Code Quality
 Always run the following after implementing a plan to fix formatting and linting errors:
@@ -41,24 +59,49 @@ The application uses `env_logger` with debug level enabled by default in main.rs
 - **main.rs**: Entry point, initializes components and CLI
 - **cli.rs**: Command-line argument parsing using clap
 - **encoding.rs**: Bencode encoder/decoder implementation
-- **types.rs**: Core types including peer messages, connections, and protocol structs
-- **file_manager.rs**: Manages torrent metadata, file I/O, piece verification, and download progress tracking
-- **peer_manager.rs**: Orchestrates peer lifecycle, download coordination, and piece-to-peer assignment
+- **messages.rs**: BitTorrent peer protocol message types and serialization
+- **types.rs**: Core types including PeerConnection, PeerManagerHandle, and protocol structs
+- **peer_connection.rs**: Individual peer connection lifecycle and piece download logic
+- **peer_manager.rs**: Peer pool orchestration, piece assignment, and retry logic
+- **file_manager.rs**: Torrent metadata, file I/O, piece verification, and download progress tracking
+- **tracker_client.rs**: HTTP tracker communication
+- **tcp_connector.rs**: TCP connection establishment
+- **io.rs**: Message I/O implementation using tokio_util::codec
+- **traits/mod.rs**: Trait abstractions for testability (MessageIO, TcpConnector, TrackerClient, PeerConnector)
 
 ### Key Architecture Patterns
 
 **Async I/O with Tokio**: The entire project uses Tokio for async runtime. TCP connections follow the recommended pattern of dedicated read/write tasks with message passing via `mpsc` channels (see docs/ASYNC_IO.md for rationale).
 
+**Dependency Injection for Testability**: Core I/O operations are abstracted behind traits to enable testing without network/disk access:
+- **TcpConnector**: Abstracts TCP connection establishment (real vs in-memory)
+- **MessageIO**: Abstracts peer message I/O (TCP streams vs channels)
+- **TrackerClient**: Abstracts HTTP tracker communication (reqwest vs mock responses)
+- **PeerConnector**: Abstracts peer connection lifecycle (real TCP vs test doubles)
+
+Production code uses concrete implementations (`RealTcpConnector`, `TcpMessageIO`, `HttpTrackerClient`), while tests inject fakes (`FakeMessageIO`) and mocks (`MockTrackerClient`, `MockPeerConnector`).
+
 **Peer Connection Model**: Each `PeerConnection` splits TCP stream into reader/writer tasks after handshake. Inbound messages flow through `inbound_tx` channel, outbound messages through `outbound_tx` channel. This avoids locking and provides natural backpressure.
 
 **Message Codec**: Uses `tokio_util::codec` with custom `PeerMessageDecoder` and `PeerMessageEncoder` for framing peer protocol messages.
 
+**Background Task Orchestration**: PeerManager spawns background tasks with graceful shutdown:
+- **Peer connector task**: Periodically connects to new peers (up to max_peers limit)
+- **Piece assignment task**: Continuously assigns pending pieces to available peers
+- **Completion handler**: Processes completed pieces, forwards to FileManager, tracks progress
+- **Failure handler**: Handles failed pieces with retry logic (up to 3 attempts)
+- **Disconnect handler**: Cleans up disconnected peers, requeues in-flight pieces
+- **Tracker refresh task**: Periodically announces to tracker for new peers
+- **Progress reporter**: Displays download progress once per minute
+
+All tasks listen on a `broadcast::Receiver<()>` shutdown channel and terminate gracefully via `tokio::select!` when `PeerManagerHandle.shutdown()` is called.
+
 **Download Orchestration**: The architecture cleanly separates concerns:
 - **FileManager**: Handles torrent metadata, writes completed pieces to disk, verifies file integrity, and displays download progress
-- **PeerManager**: Manages the peer connection pool (up to 5 concurrent peers), assigns pieces to optimal peers based on bitfield availability, handles retry logic for failed pieces
-- **PeerConnection**: Handles raw TCP I/O with individual peers, downloads piece blocks, and reports completion/failure
+- **PeerManager**: Manages the peer connection pool (up to 50 concurrent peers), assigns pieces to least-busy peers based on bitfield availability, handles retry logic for failed pieces (up to 3 attempts)
+- **PeerConnection**: Handles raw TCP I/O with individual peers, downloads piece blocks using pipelined requests (5 blocks ahead), reports completion/failure via channels
 
-Pieces flow through channels: FileManager requests pieces → PeerManager assigns to peers → PeerConnection downloads → completion reported back to FileManager for writing.
+Pieces flow through channels: FileManager requests pieces → PeerManager assigns to optimal peers → PeerConnection downloads → completion reported back to FileManager for writing.
 
 ### BitTorrent Protocol Implementation
 
@@ -76,18 +119,20 @@ Pieces flow through channels: FileManager requests pieces → PeerManager assign
 The "pieces" field in .torrent files contains concatenated SHA1 hashes (20 bytes each). The encoder/decoder has special handling for this field to preserve raw bytes instead of attempting UTF-8 conversion.
 
 ### Error Handling
-Current error handling relies on string matching (e.g., `e.to_string().contains("incomplete message")`). This is noted as technical debt in the code and should be refactored to use proper error types.
+Uses `anyhow::Result<T>` for error propagation throughout the codebase. Incomplete message errors are handled via the custom `PeerMessageDecoder` which returns `Ok(None)` when more data is needed.
 
 ### Retry Logic
-Handshake has exponential backoff retry logic (3 attempts with 200ms, 400ms, 800ms delays).
+- **Handshake**: Exponential backoff retry logic (3 attempts with 200ms, 400ms, 800ms delays)
+- **Piece downloads**: Failed pieces are retried up to 3 times (MAX_FAILED_PIECE_RETRY constant)
+- **Tracker announces**: Background task retries on failure with exponential backoff
 
 ### Current State
-The refactoring is complete. The BitTorrent client now has a clean separation of concerns:
-- **FileManager** (`file_manager.rs:197-351`): Orchestrates the download process, writes pieces to disk, verifies file integrity with SHA1 hashes, and displays download progress as "Downloaded X/Y pieces (Z%)"
-- **PeerManager** (`peer_manager.rs`): Manages a pool of connected peers, assigns pieces based on peer bitfield availability, handles retry logic (up to 3 attempts per piece), and maintains connection health
-- **PeerConnection** (`types.rs`): Handles block-level downloads using the BitTorrent peer protocol
+The BitTorrent client has achieved 70%+ test coverage on core modules and has a clean separation of concerns:
+- **FileManager** (`file_manager.rs`): Orchestrates the download process, writes pieces to disk, verifies file integrity with SHA1 hashes, and displays download progress
+- **PeerManager** (`peer_manager.rs`): Manages a pool of connected peers (up to 50), assigns pieces to least-busy peers based on bitfield availability, handles retry logic for failed pieces (up to 3 attempts), spawns 7 background tasks for orchestration
+- **PeerConnection** (`peer_connection.rs`): Handles block-level downloads using the BitTorrent peer protocol with pipelined requests (5 blocks ahead)
 
-The client uses eager piece assignment (all pieces requested at once) for better parallelism and downloads from up to 5 peers simultaneously.
+The client uses eager piece assignment (all pieces requested at once) for better parallelism and supports multi-peer parallel downloads.
 
 ## Common Gotchas
 
@@ -184,6 +229,26 @@ Following Rust async testing best practices (Tokio, Jon Gjengset's Rust for Rust
 - Keeping "future-proofing" code that isn't currently needed
 - Panicking. Prefer always returning an error instead.
 
-**Coverage Goals:**
-- peer_manager.rs: 70%+ coverage
-- peer_connection.rs: 70%+ coverage
+**Coverage Achieved:**
+- messages.rs: 78.26% (exceeds 70% target)
+- peer_manager.rs: 71.35% (exceeds 70% target)
+- peer_connection.rs: 73.25% (exceeds 70% target)
+
+### Test Infrastructure
+
+**Test Helpers** (`tests/helpers/fakes.rs`):
+- **FakeMessageIO**: Channel-based bidirectional message I/O using `tokio::sync::mpsc::unbounded_channel()`
+  - Creates pairs of connected MessageIO instances
+  - Messages written to one side can be read from the other
+  - Real async behavior without network I/O
+
+- **MockTrackerClient**: VecDeque-based tracker response mock using `tokio::sync::Mutex`
+  - `expect_announce(peers, interval)`: Queue successful response
+  - `expect_failure(error_msg)`: Queue error response
+  - Falls back to empty peer list if queue exhausted
+
+- **MockPeerConnector**: Always-successful peer connection mock
+  - Returns ConnectedPeer with empty bitfield
+  - Allows testing PeerManager orchestration without real TCP
+
+**Background Task Testing**: All infinite loop background tasks accept `shutdown_rx: broadcast::Receiver<()>` and use `tokio::select!` to enable graceful shutdown in tests. Tests can verify task behavior by calling `handle.shutdown()` and awaiting completion.

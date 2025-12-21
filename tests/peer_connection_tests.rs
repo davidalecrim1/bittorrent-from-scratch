@@ -896,4 +896,222 @@ mod tests {
             other => panic!("Expected CompletedPiece, got: {:?}", other),
         }
     }
+
+    #[tokio::test]
+    async fn test_get_peer_id_initially_none() {
+        let (completion_tx, _) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, _) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, _) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, _, _) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        // Initially, peer_id should be None (not set until handshake)
+        assert_eq!(peer_conn.get_peer_id(), None);
+    }
+
+    #[tokio::test]
+    async fn test_write_error_triggers_disconnect() {
+        use bittorrent_from_scratch::traits::MessageIO;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        // Create a MessageIO that fails on write
+        #[derive(Debug)]
+        struct FailingMessageIO {
+            write_count: Arc<Mutex<usize>>,
+        }
+
+        #[async_trait::async_trait]
+        impl MessageIO for FailingMessageIO {
+            async fn write_message(&mut self, _msg: &PeerMessage) -> anyhow::Result<()> {
+                let mut count = self.write_count.lock().await;
+                *count += 1;
+                Err(anyhow::anyhow!("Write failed"))
+            }
+
+            async fn read_message(&mut self) -> anyhow::Result<Option<PeerMessage>> {
+                // Keep returning None to simulate no messages
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                Ok(None)
+            }
+        }
+
+        let (completion_tx, _) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, _) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, _, _) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        let write_count = Arc::new(Mutex::new(0));
+        let failing_io = FailingMessageIO {
+            write_count: write_count.clone(),
+        };
+
+        // Start the peer connection with failing IO
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(failing_io)).await;
+        });
+
+        // Wait for the Interested message to be written (and fail)
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Should receive a disconnect notification
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(200),
+            disconnect_rx.recv(),
+        )
+        .await
+        {
+            Ok(Some(disconnect)) => {
+                assert!(
+                    disconnect.reason.contains("write_error"),
+                    "Disconnect reason should mention write error"
+                );
+            }
+            other => panic!("Expected disconnect notification, got: {:?}", other),
+        }
+
+        // Verify write was attempted
+        let count = *write_count.lock().await;
+        assert!(count > 0, "Write should have been attempted");
+    }
+
+    #[tokio::test]
+    async fn test_stream_closed_triggers_disconnect() {
+        use bittorrent_from_scratch::traits::MessageIO;
+
+        // Create a MessageIO that simulates stream closure
+        #[derive(Debug)]
+        struct ClosedStreamMessageIO {}
+
+        #[async_trait::async_trait]
+        impl MessageIO for ClosedStreamMessageIO {
+            async fn write_message(&mut self, _msg: &PeerMessage) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            async fn read_message(&mut self) -> anyhow::Result<Option<PeerMessage>> {
+                // Return None to indicate stream closed
+                Ok(None)
+            }
+        }
+
+        let (completion_tx, _) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, _) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, _, _) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        let closed_io = ClosedStreamMessageIO {};
+
+        // Start the peer connection with closed stream
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(closed_io)).await;
+        });
+
+        // Should receive a disconnect notification when stream is detected as closed
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(200),
+            disconnect_rx.recv(),
+        )
+        .await
+        {
+            Ok(Some(disconnect)) => {
+                assert_eq!(
+                    disconnect.reason, "stream_closed",
+                    "Disconnect reason should be stream_closed"
+                );
+            }
+            other => panic!("Expected disconnect notification, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_read_error_triggers_disconnect() {
+        use bittorrent_from_scratch::traits::MessageIO;
+
+        // Create a MessageIO that fails on read
+        #[derive(Debug)]
+        struct FailingReadMessageIO {}
+
+        #[async_trait::async_trait]
+        impl MessageIO for FailingReadMessageIO {
+            async fn write_message(&mut self, _msg: &PeerMessage) -> anyhow::Result<()> {
+                Ok(())
+            }
+
+            async fn read_message(&mut self) -> anyhow::Result<Option<PeerMessage>> {
+                Err(anyhow::anyhow!("Read error"))
+            }
+        }
+
+        let (completion_tx, _) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, _) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, _, _) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        let failing_io = FailingReadMessageIO {};
+
+        // Start the peer connection with failing read
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(failing_io)).await;
+        });
+
+        // Should receive a disconnect notification
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(200),
+            disconnect_rx.recv(),
+        )
+        .await
+        {
+            Ok(Some(disconnect)) => {
+                assert!(
+                    disconnect.reason.contains("read_error"),
+                    "Disconnect reason should mention read error"
+                );
+            }
+            other => panic!("Expected disconnect notification, got: {:?}", other),
+        }
+    }
 }

@@ -520,4 +520,647 @@ mod tests {
         assert!(result.is_ok());
         assert!(!result.unwrap(), "should return false when queue is empty");
     }
+
+    #[tokio::test]
+    async fn test_cleanup_piece_tracking() {
+        use bittorrent_from_scratch::types::ConnectedPeer;
+        use tokio::sync::mpsc;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        let peer = bittorrent_from_scratch::types::Peer::new("192.168.1.1".to_string(), 6881);
+        let peer_addr = peer.get_addr();
+        let (download_request_tx, _rx) = mpsc::channel(10);
+        let bitfield = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let mut connected_peer = ConnectedPeer::new(peer, download_request_tx, bitfield);
+        connected_peer.active_downloads.insert(5);
+
+        {
+            let mut connected_peers = peer_manager.connected_peers.write().await;
+            connected_peers.insert(peer_addr.clone(), connected_peer);
+        }
+
+        {
+            let mut in_flight = peer_manager.in_flight_pieces.write().await;
+            in_flight.insert(5, peer_addr.clone());
+        }
+
+        let result = peer_manager.cleanup_piece_tracking(5).await;
+        assert_eq!(result, Some(peer_addr.clone()));
+
+        {
+            let in_flight = peer_manager.in_flight_pieces.read().await;
+            assert!(!in_flight.contains_key(&5));
+        }
+
+        {
+            let connected_peers = peer_manager.connected_peers.read().await;
+            let peer = connected_peers.get(&peer_addr).unwrap();
+            assert!(!peer.active_downloads.contains(&5));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_piece_tracking_not_found() {
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        let result = peer_manager.cleanup_piece_tracking(99).await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_assign_piece_to_peer_selects_least_busy() {
+        use bittorrent_from_scratch::types::{ConnectedPeer, PieceDownloadRequest};
+        use tokio::sync::mpsc;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        let peer1 = bittorrent_from_scratch::types::Peer::new("192.168.1.1".to_string(), 6881);
+        let peer2 = bittorrent_from_scratch::types::Peer::new("192.168.1.2".to_string(), 6882);
+        let peer1_addr = peer1.get_addr();
+        let peer2_addr = peer2.get_addr();
+
+        let (tx1, _rx1) = mpsc::channel(10);
+        let (tx2, _rx2) = mpsc::channel(10);
+
+        let mut bitfield1 = vec![false; 10];
+        bitfield1[5] = true;
+        let mut bitfield2 = vec![false; 10];
+        bitfield2[5] = true;
+
+        let bitfield1_arc = Arc::new(tokio::sync::RwLock::new(bitfield1));
+        let bitfield2_arc = Arc::new(tokio::sync::RwLock::new(bitfield2));
+
+        let mut connected_peer1 = ConnectedPeer::new(peer1, tx1, bitfield1_arc);
+        let connected_peer2 = ConnectedPeer::new(peer2, tx2, bitfield2_arc);
+
+        connected_peer1.active_downloads.insert(1);
+        connected_peer1.active_downloads.insert(2);
+
+        {
+            let mut connected_peers = peer_manager.connected_peers.write().await;
+            connected_peers.insert(peer1_addr.clone(), connected_peer1);
+            connected_peers.insert(peer2_addr.clone(), connected_peer2);
+        }
+
+        let request = PieceDownloadRequest {
+            piece_index: 5,
+            piece_length: 16384,
+            expected_hash: [0u8; 20],
+        };
+
+        let result = peer_manager.assign_piece_to_peer(request).await;
+        assert!(result.is_ok());
+
+        {
+            let in_flight = peer_manager.in_flight_pieces.read().await;
+            assert_eq!(in_flight.get(&5), Some(&peer2_addr));
+        }
+
+        {
+            let connected_peers = peer_manager.connected_peers.read().await;
+            let peer2 = connected_peers.get(&peer2_addr).unwrap();
+            assert!(peer2.active_downloads.contains(&5));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_assign_piece_to_peer_no_peers_available() {
+        use bittorrent_from_scratch::types::PieceDownloadRequest;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        let request = PieceDownloadRequest {
+            piece_index: 5,
+            piece_length: 16384,
+            expected_hash: [0u8; 20],
+        };
+
+        let result = peer_manager.assign_piece_to_peer(request).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_assign_piece_to_peer_already_downloading() {
+        use bittorrent_from_scratch::types::{ConnectedPeer, PieceDownloadRequest};
+        use tokio::sync::mpsc;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        let peer = bittorrent_from_scratch::types::Peer::new("192.168.1.1".to_string(), 6881);
+        let peer_addr = peer.get_addr();
+        let (tx, _rx) = mpsc::channel(10);
+
+        let mut bitfield = vec![false; 10];
+        bitfield[5] = true;
+        let bitfield_arc = Arc::new(tokio::sync::RwLock::new(bitfield));
+
+        let mut connected_peer = ConnectedPeer::new(peer, tx, bitfield_arc);
+        connected_peer.active_downloads.insert(5);
+
+        {
+            let mut connected_peers = peer_manager.connected_peers.write().await;
+            connected_peers.insert(peer_addr.clone(), connected_peer);
+        }
+
+        let request = PieceDownloadRequest {
+            piece_index: 5,
+            piece_length: 16384,
+            expected_hash: [0u8; 20],
+        };
+
+        let result = peer_manager.assign_piece_to_peer(request).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_try_assign_piece_requeues_on_failure() {
+        use bittorrent_from_scratch::types::PieceDownloadRequest;
+        use tokio::sync::mpsc;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        {
+            let mut pending = peer_manager.pending_pieces.write().await;
+            pending.push_back(PieceDownloadRequest {
+                piece_index: 5,
+                piece_length: 16384,
+                expected_hash: [0u8; 20],
+            });
+        }
+
+        let result = peer_manager.try_assign_piece().await;
+        assert!(result.is_err(), "Should fail when no peers available");
+
+        {
+            let pending = peer_manager.pending_pieces.read().await;
+            assert_eq!(pending.len(), 1, "Piece should be re-queued after failure");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_try_assign_piece_empty_queue() {
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        let result = peer_manager.try_assign_piece().await;
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            false,
+            "Should return false when queue is empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_connect_peer_success() {
+        use tokio::sync::mpsc;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        let peer = bittorrent_from_scratch::types::Peer::new("192.168.1.1".to_string(), 6881);
+        let (completion_tx, _rx1) = mpsc::channel(10);
+        let (failure_tx, _rx2) = mpsc::channel(10);
+        let (disconnect_tx, _rx3) = mpsc::channel(10);
+
+        let result = peer_manager
+            .connect_peer(peer, completion_tx, failure_tx, disconnect_tx)
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "Connection should succeed with mock connector"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_completion_with_cleanup() {
+        use bittorrent_from_scratch::types::{CompletedPiece, ConnectedPeer};
+        use tokio::sync::mpsc;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        let peer = bittorrent_from_scratch::types::Peer::new("192.168.1.1".to_string(), 6881);
+        let peer_addr = peer.get_addr();
+        let (download_request_tx, _rx) = mpsc::channel(10);
+        let bitfield = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let mut connected_peer = ConnectedPeer::new(peer, download_request_tx, bitfield);
+        connected_peer.active_downloads.insert(5);
+
+        {
+            let mut connected_peers = peer_manager.connected_peers.write().await;
+            connected_peers.insert(peer_addr.clone(), connected_peer);
+        }
+
+        {
+            let mut in_flight = peer_manager.in_flight_pieces.write().await;
+            in_flight.insert(5, peer_addr.clone());
+        }
+
+        let (file_writer_tx, mut file_writer_rx) = mpsc::channel(10);
+        let (download_complete_tx, _) = mpsc::channel(1);
+
+        let completed = CompletedPiece {
+            piece_index: 5,
+            data: vec![1, 2, 3, 4],
+        };
+
+        let result = peer_manager
+            .process_completion(
+                completed.clone(),
+                &file_writer_tx,
+                &download_complete_tx,
+                10,
+            )
+            .await;
+
+        assert!(result, "Should continue processing");
+
+        let forwarded = file_writer_rx.recv().await;
+        assert!(forwarded.is_some());
+        assert_eq!(forwarded.unwrap().piece_index, 5);
+
+        {
+            let in_flight = peer_manager.in_flight_pieces.read().await;
+            assert!(!in_flight.contains_key(&5));
+        }
+
+        {
+            let completed_count = peer_manager.completed_pieces.read().await;
+            assert_eq!(*completed_count, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_process_failure_missing_request() {
+        use bittorrent_from_scratch::types::FailedPiece;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        let failed = FailedPiece {
+            piece_index: 99,
+            reason: "Test failure".to_string(),
+        };
+
+        let result = peer_manager.process_failure(failed).await;
+        assert!(
+            result.is_err(),
+            "Should fail when original request not found"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_disconnect_with_multiple_active_downloads() {
+        use bittorrent_from_scratch::types::{ConnectedPeer, PeerDisconnected};
+        use tokio::sync::mpsc;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        let peer = bittorrent_from_scratch::types::Peer::new("192.168.1.1".to_string(), 6881);
+        let peer_addr = peer.get_addr();
+        let (download_request_tx, _rx) = mpsc::channel(10);
+        let bitfield = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let mut connected_peer = ConnectedPeer::new(peer.clone(), download_request_tx, bitfield);
+
+        connected_peer.active_downloads.insert(3);
+        connected_peer.active_downloads.insert(5);
+        connected_peer.active_downloads.insert(7);
+
+        {
+            let mut connected_peers = peer_manager.connected_peers.write().await;
+            connected_peers.insert(peer_addr.clone(), connected_peer);
+        }
+
+        {
+            let mut in_flight = peer_manager.in_flight_pieces.write().await;
+            in_flight.insert(3, peer_addr.clone());
+            in_flight.insert(5, peer_addr.clone());
+            in_flight.insert(7, peer_addr.clone());
+        }
+
+        let (failure_tx, mut failure_rx) = mpsc::channel(10);
+        let disconnect = PeerDisconnected {
+            peer,
+            reason: "Connection lost".to_string(),
+        };
+
+        let result = peer_manager
+            .process_disconnect(disconnect, &failure_tx)
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 3, "Should have re-queued 3 pieces");
+
+        {
+            let connected_peers = peer_manager.connected_peers.read().await;
+            assert!(!connected_peers.contains_key(&peer_addr));
+        }
+
+        {
+            let in_flight = peer_manager.in_flight_pieces.read().await;
+            assert!(!in_flight.contains_key(&3));
+            assert!(!in_flight.contains_key(&5));
+            assert!(!in_flight.contains_key(&7));
+        }
+
+        let mut failures_received = 0;
+        while let Ok(Some(_)) =
+            tokio::time::timeout(tokio::time::Duration::from_millis(50), failure_rx.recv()).await
+        {
+            failures_received += 1;
+        }
+        assert_eq!(failures_received, 3, "Should have sent 3 failure events");
+    }
+
+    #[tokio::test]
+    async fn test_process_disconnect_with_no_active_downloads() {
+        use bittorrent_from_scratch::types::{ConnectedPeer, PeerDisconnected};
+        use tokio::sync::mpsc;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        let peer = bittorrent_from_scratch::types::Peer::new("192.168.1.1".to_string(), 6881);
+        let peer_addr = peer.get_addr();
+        let (download_request_tx, _rx) = mpsc::channel(10);
+        let bitfield = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let connected_peer = ConnectedPeer::new(peer.clone(), download_request_tx, bitfield);
+
+        {
+            let mut connected_peers = peer_manager.connected_peers.write().await;
+            connected_peers.insert(peer_addr.clone(), connected_peer);
+        }
+
+        let (failure_tx, mut failure_rx) = mpsc::channel(10);
+        let disconnect = PeerDisconnected {
+            peer,
+            reason: "Connection lost".to_string(),
+        };
+
+        let result = peer_manager
+            .process_disconnect(disconnect, &failure_tx)
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0, "Should have re-queued 0 pieces");
+
+        let failures_received =
+            tokio::time::timeout(tokio::time::Duration::from_millis(50), failure_rx.recv()).await;
+        assert!(
+            failures_received.is_err(),
+            "Should not have sent any failure events"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_background_tasks_shutdown_gracefully() {
+        use tokio::sync::mpsc;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        let (piece_completion_tx, _) = mpsc::channel(10);
+        let (download_complete_tx, _) = mpsc::channel(1);
+
+        let peer_manager = Arc::new(peer_manager);
+
+        let handle = peer_manager
+            .clone()
+            .start(
+                "http://tracker.example.com".to_string(),
+                piece_completion_tx,
+                download_complete_tx,
+            )
+            .await
+            .unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        handle.shutdown();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    #[tokio::test]
+    async fn test_piece_assignment_loop_processes_queue() {
+        use bittorrent_from_scratch::types::{ConnectedPeer, PieceDownloadRequest};
+        use tokio::sync::mpsc;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+                max_peers: 5,
+            })
+            .await
+            .unwrap();
+
+        let peer = bittorrent_from_scratch::types::Peer::new("192.168.1.1".to_string(), 6881);
+        let peer_addr = peer.get_addr();
+        let (download_request_tx, _rx) = mpsc::channel(10);
+
+        let mut bitfield = vec![false; 10];
+        bitfield[5] = true;
+        let bitfield_arc = Arc::new(tokio::sync::RwLock::new(bitfield));
+
+        let connected_peer = ConnectedPeer::new(peer, download_request_tx, bitfield_arc);
+
+        {
+            let mut connected_peers = peer_manager.connected_peers.write().await;
+            connected_peers.insert(peer_addr.clone(), connected_peer);
+        }
+
+        {
+            let mut pending = peer_manager.pending_pieces.write().await;
+            pending.push_back(PieceDownloadRequest {
+                piece_index: 5,
+                piece_length: 16384,
+                expected_hash: [0u8; 20],
+            });
+        }
+
+        let result = peer_manager.try_assign_piece().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true, "Should successfully assign piece");
+
+        {
+            let in_flight = peer_manager.in_flight_pieces.read().await;
+            assert!(in_flight.contains_key(&5), "Piece should be in flight");
+        }
+
+        {
+            let pending = peer_manager.pending_pieces.read().await;
+            assert_eq!(pending.len(), 0, "Queue should be empty after assignment");
+        }
+    }
 }
