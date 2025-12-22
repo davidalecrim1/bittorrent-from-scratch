@@ -93,4 +93,12 @@ impl DownloadState {
 
         None
     }
+
+    pub fn expected_hash(&self) -> &[u8; 20] {
+        &self.expected_hash
+    }
+
+    pub fn piece_length(&self) -> usize {
+        self.piece_length
+    }
 }

@@ -79,28 +79,19 @@ impl PeerConnector for RealPeerConnector {
 }
 
 pub struct PeerManager {
+    // Some fields are public to allow testability.
     tracker_client: Arc<dyn TrackerClient>,
 
-    available_peers: Arc<RwLock<HashMap<String, Peer>>>,
-
-    /// Public for testing purposes - not part of stable API
+    pub available_peers: Arc<RwLock<HashMap<String, Peer>>>,
     pub connected_peers: Arc<RwLock<HashMap<String, ConnectedPeer>>>,
 
     config: Option<PeerManagerConfig>,
 
-    /// Public for testing purposes - not part of stable API
     pub pending_pieces: Arc<RwLock<VecDeque<PieceDownloadRequest>>>,
-
-    /// Public for testing purposes - not part of stable API
     pub in_flight_pieces: Arc<RwLock<HashMap<u32, String>>>,
-
-    /// Public for testing purposes - not part of stable API
     pub completed_pieces: Arc<RwLock<usize>>,
 
-    /// Public for testing purposes - not part of stable API
     pub failed_attempts: Arc<RwLock<HashMap<u32, usize>>>,
-
-    /// Public for testing purposes - not part of stable API
     pub piece_requests: Arc<RwLock<HashMap<u32, PieceDownloadRequest>>>,
 
     connector: Arc<dyn PeerConnector>,
@@ -828,28 +819,51 @@ impl PeerManager {
             peers_to_connect.len()
         );
 
+        // Spawn concurrent connection attempts
+        let mut tasks = Vec::new();
         for peer in peers_to_connect {
-            let peer_addr = peer.get_addr();
+            let completion_tx = completion_tx.clone();
+            let failure_tx = failure_tx.clone();
+            let disconnect_tx = disconnect_tx.clone();
+            let config = self.config()?.clone();
+            let connector = self.connector.clone();
 
-            match self
-                .connect_peer(
-                    peer,
-                    completion_tx.clone(),
-                    failure_tx.clone(),
-                    disconnect_tx.clone(),
-                )
-                .await
-            {
-                Ok(connected_peer) => {
+            let task = tokio::spawn(async move {
+                let peer_addr = peer.get_addr();
+                let result = connector
+                    .connect(
+                        peer.clone(),
+                        completion_tx,
+                        failure_tx,
+                        disconnect_tx,
+                        config.client_peer_id,
+                        config.info_hash,
+                        config.num_pieces,
+                    )
+                    .await;
+
+                (peer_addr, result)
+            });
+            tasks.push(task);
+        }
+
+        // Collect results
+        for task in tasks {
+            match task.await {
+                Ok((peer_addr, Ok(connected_peer))) => {
+                    info!("Successfully connected to peer {}", peer_addr);
                     self.connected_peers
                         .write()
                         .await
                         .insert(peer_addr.clone(), connected_peer);
                     successful_connections += 1;
                 }
-                Err(e) => {
+                Ok((peer_addr, Err(e))) => {
                     debug!("Failed to connect to peer {}: {}", peer_addr, e);
                     self.available_peers.write().await.remove(&peer_addr);
+                }
+                Err(e) => {
+                    error!("Connection task panicked: {}", e);
                 }
             }
         }

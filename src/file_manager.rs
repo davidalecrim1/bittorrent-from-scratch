@@ -191,7 +191,8 @@ impl BitTorrent {
         let (completion_tx, mut completion_rx) = mpsc::channel::<CompletedPiece>(100);
         let (download_complete_tx, mut download_complete_rx) = mpsc::channel::<DownloadComplete>(1);
 
-        self.peer_manager
+        let _peer_manager_handle = self
+            .peer_manager
             .clone()
             .start(announce_url.clone(), completion_tx, download_complete_tx)
             .await?;
@@ -261,6 +262,10 @@ impl BitTorrent {
                 }
                 Some(_) = download_complete_rx.recv() => {
                     debug!("All pieces downloaded, exiting write loop");
+                    break;
+                }
+                else => {
+                    debug!("Both channels closed, exiting write loop");
                     break;
                 }
             }

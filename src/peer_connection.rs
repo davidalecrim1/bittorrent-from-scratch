@@ -477,10 +477,18 @@ impl PeerConnection {
                     .map_err(|_| anyhow!("Failed to send completed piece to manager"))?;
             }
             false => {
+                use sha1::{Digest, Sha1};
+                let computed_hash = Sha1::new().chain_update(&piece_data).finalize();
+                let computed_hash_bytes: [u8; 20] = computed_hash.into();
+
                 debug!(
-                    "Peer {} failed downloading the piece {}",
+                    "Peer {} - Hash mismatch for piece {}: expected {:02x?}, got {:02x?}, piece_length={}, data_length={}",
                     self.peer.get_addr().clone(),
-                    download_state.piece_index
+                    download_state.piece_index,
+                    download_state.expected_hash(),
+                    computed_hash_bytes,
+                    download_state.piece_length(),
+                    piece_data.len()
                 );
 
                 let failed = FailedPiece {
@@ -492,8 +500,6 @@ impl PeerConnection {
                     .send(failed)
                     .await
                     .map_err(|_| anyhow!("Failed to send failed piece to manager"))?;
-
-                debug!("Hash mismatch for piece {}", download_state.piece_index);
             }
         }
 

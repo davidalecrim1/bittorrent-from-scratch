@@ -238,6 +238,14 @@ mod tests {
 
         assert_eq!(peers.len(), 1, "should have 1 peer");
 
+        // Manually populate available_peers since get_peers doesn't do it
+        {
+            let mut available = peer_manager.available_peers.write().await;
+            for peer in peers {
+                available.insert(peer.get_addr(), peer);
+            }
+        }
+
         let peer_manager = Arc::new(peer_manager);
 
         // Try connecting with peers
@@ -250,6 +258,15 @@ mod tests {
             .await;
 
         assert!(result.is_ok(), "connect_with_peers should succeed");
+        assert_eq!(result.unwrap(), 1, "should connect to 1 peer");
+
+        // Verify the peer was added to connected_peers
+        let connected_peers = peer_manager.connected_peers.read().await;
+        assert_eq!(connected_peers.len(), 1, "should have 1 connected peer");
+        assert!(
+            connected_peers.contains_key("192.168.1.1:6881"),
+            "should contain the connected peer"
+        );
     }
 
     #[tokio::test]
