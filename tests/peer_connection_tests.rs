@@ -1114,4 +1114,67 @@ mod tests {
             other => panic!("Expected disconnect notification, got: {:?}", other),
         }
     }
+
+    #[tokio::test]
+    async fn test_bitfield_received_immediately_after_start() {
+        // This test verifies the fix for the bitfield race condition.
+        // Previously, sending interested before spawning the message handler
+        // caused bitfield messages to be lost if peers responded quickly.
+
+        let (completion_tx, _completion_rx) = mpsc::channel::<CompletedPiece>(10);
+        let (failure_tx, _failure_rx) = mpsc::channel::<FailedPiece>(10);
+        let (disconnect_tx, _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+
+        let (peer_conn, _download_request_tx, bitfield) = PeerConnection::new(
+            peer,
+            completion_tx,
+            failure_tx,
+            disconnect_tx,
+            tcp_connector,
+        );
+
+        // Create fake I/O with aggressive timing - peer sends bitfield IMMEDIATELY
+        let (mut client_io, mut peer_io) = FakeMessageIO::pair();
+
+        // Start the peer connection
+        tokio::spawn(async move {
+            peer_conn.start_with_io(Box::new(peer_io)).await.unwrap();
+        });
+
+        // Peer should receive interested message first
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(100),
+            client_io.read_message(),
+        )
+        .await
+        {
+            Ok(Ok(Some(PeerMessage::Interested(_)))) => {
+                // Good - peer connection sent interested
+            }
+            other => panic!("Expected Interested message, got: {:?}", other),
+        }
+
+        // Immediately send bitfield response (simulating fast peer)
+        let bitfield_msg =
+            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+                bitfield: vec![true, true, true, true, false],
+            });
+        client_io.write_message(&bitfield_msg).await.unwrap();
+
+        // Give message handler time to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Verify bitfield was populated (not lost due to race condition)
+        let bf = bitfield.read().await;
+        assert_eq!(bf.len(), 5, "Bitfield should have 5 pieces");
+        assert_eq!(bf[0], true, "Piece 0 should be available");
+        assert_eq!(bf[1], true, "Piece 1 should be available");
+        assert_eq!(bf[2], true, "Piece 2 should be available");
+        assert_eq!(bf[3], true, "Piece 3 should be available");
+        assert_eq!(bf[4], false, "Piece 4 should not be available");
+    }
 }

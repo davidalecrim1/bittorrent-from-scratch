@@ -57,6 +57,10 @@ impl PeerMessage {
                 let message = UnchokeMessage::from_bytes(src)?;
                 Ok((total_size, Self::Unchoke(message)))
             }
+            2 => {
+                let message = InterestedMessage::from_bytes(src)?;
+                Ok((total_size, Self::Interested(message)))
+            }
             3 => {
                 let message = NotInterestedMessage::from_bytes(src)?;
                 Ok((total_size, Self::NotInterested(message)))
@@ -69,6 +73,10 @@ impl PeerMessage {
                 let payload = &src[5..];
                 let message = BitfieldMessage::from_bytes(payload, num_pieces)?;
                 Ok((total_size, Self::Bitfield(message)))
+            }
+            6 => {
+                let message = RequestMessage::from_bytes(src)?;
+                Ok((total_size, Self::Request(message)))
             }
             7 => {
                 let message = PieceMessage::from_bytes(src)?;
@@ -164,6 +172,10 @@ impl Debug for BitfieldMessage {
 pub struct InterestedMessage {}
 
 impl InterestedMessage {
+    pub fn from_bytes(_bytes: &[u8]) -> Result<Self> {
+        Ok(Self {})
+    }
+
     pub fn to_bytes(&self) -> [u8; 5] {
         let mut bytes = [0u8; 5];
         bytes[0..4].copy_from_slice(&1u32.to_be_bytes());
@@ -198,6 +210,23 @@ pub struct RequestMessage {
 }
 
 impl RequestMessage {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < 17 {
+            return Err(anyhow!("Request message too short: {} bytes", bytes.len()));
+        }
+
+        let mut cursor = Cursor::new(&bytes[5..17]);
+        let piece_index = cursor.read_u32::<BigEndian>()?;
+        let begin = cursor.read_u32::<BigEndian>()?;
+        let length = cursor.read_u32::<BigEndian>()?;
+
+        Ok(Self {
+            piece_index,
+            begin,
+            length,
+        })
+    }
+
     pub fn to_bytes(&self) -> [u8; 17] {
         let mut bytes = [0u8; 17];
         bytes[0..4].copy_from_slice(&13u32.to_be_bytes());
@@ -218,9 +247,9 @@ pub struct PieceMessage {
 
 impl PieceMessage {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < 9 {
+        if bytes.len() < 13 {
             return Err(anyhow!(
-                "the provided data has less than 9 bytes, it has {}",
+                "Piece message too short: {} bytes (need at least 13)",
                 bytes.len()
             ));
         }
@@ -228,14 +257,14 @@ impl PieceMessage {
         let _length = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
         let msg_id = ReadBytesExt::read_u8(&mut cursor)?;
         if msg_id != 7 {
-            return Err(anyhow!("the provided data is not a valid piece message"));
+            return Err(anyhow!("Invalid message ID for Piece message: {}", msg_id));
         }
         let piece_index = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
         let begin = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
-        let mut block = vec![0u8; bytes.len() - 9];
-        if std::io::Read::read_exact(&mut cursor, &mut block).is_err() {
-            std::io::Read::read_to_end(&mut cursor, &mut block)?;
-        }
+
+        let block_size = bytes.len() - 13;
+        let mut block = vec![0u8; block_size];
+        std::io::Read::read_exact(&mut cursor, &mut block)?;
 
         Ok(PieceMessage {
             piece_index,

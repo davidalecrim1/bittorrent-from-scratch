@@ -5,6 +5,7 @@ use crate::types::{BencodeTypes, Peer};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Url};
+use std::net::Ipv6Addr;
 
 pub struct HttpTrackerClient {
     http_client: Client,
@@ -106,16 +107,36 @@ impl HttpTrackerClient {
                         Ok(peers)
                     }
                     BencodeTypes::Raw(peer_bytes) => {
-                        // Compact format: 6 bytes per peer (4 for IP, 2 for port)
                         let mut peers = Vec::new();
-                        for chunk in peer_bytes.chunks(6) {
-                            if chunk.len() == 6 {
-                                let ip =
-                                    format!("{}.{}.{}.{}", chunk[0], chunk[1], chunk[2], chunk[3]);
-                                let port = u16::from_be_bytes([chunk[4], chunk[5]]);
-                                peers.push(Peer::new(ip, port));
+
+                        // Auto-detect format based on byte length
+                        if peer_bytes.len() % 18 == 0 {
+                            // IPv6 compact format: 18 bytes per peer (16 IP + 2 port)
+                            for chunk in peer_bytes.chunks(18) {
+                                if chunk.len() == 18 {
+                                    let ip_bytes: [u8; 16] = match chunk[0..16].try_into() {
+                                        Ok(bytes) => bytes,
+                                        Err(_) => continue,
+                                    };
+                                    let ip = Ipv6Addr::from(ip_bytes);
+                                    let port = u16::from_be_bytes([chunk[16], chunk[17]]);
+                                    peers.push(Peer::new(ip.to_string(), port));
+                                }
+                            }
+                        } else if peer_bytes.len() % 6 == 0 {
+                            // IPv4 compact format: 6 bytes per peer (4 IP + 2 port)
+                            for chunk in peer_bytes.chunks(6) {
+                                if chunk.len() == 6 {
+                                    let ip = format!(
+                                        "{}.{}.{}.{}",
+                                        chunk[0], chunk[1], chunk[2], chunk[3]
+                                    );
+                                    let port = u16::from_be_bytes([chunk[4], chunk[5]]);
+                                    peers.push(Peer::new(ip, port));
+                                }
                             }
                         }
+                        // Mixed or invalid format - return what we got (possibly empty)
                         Ok(peers)
                     }
                     _ => Err(AppError::InvalidFieldType {
@@ -185,5 +206,97 @@ impl TrackerClient for HttpTrackerClient {
         };
 
         Ok(AnnounceResponse { peers, interval })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ipv4_compact_peers() {
+        // IPv4 compact format: 6 bytes per peer (4 IP + 2 port)
+        let peer_bytes = vec![
+            192, 168, 1, 1, 0x1A, 0xE1, // 192.168.1.1:6881 (0x1AE1 = 6881)
+            10, 0, 0, 5, 0x1A, 0xE2, // 10.0.0.5:6882 (0x1AE2 = 6882)
+        ];
+
+        let bencode = BencodeTypes::Raw(peer_bytes);
+        let dict = std::collections::BTreeMap::from([("peers".to_string(), bencode)]);
+
+        let decoder = crate::encoding::Decoder {};
+        let client = HttpTrackerClient::new(reqwest::Client::new(), decoder);
+
+        let result = client.parse_peers(BencodeTypes::Dictionary(dict));
+        assert!(result.is_ok(), "Should parse IPv4 compact format");
+
+        let peers = result.unwrap();
+        assert_eq!(peers.len(), 2, "Should have 2 peers");
+        assert_eq!(peers[0].get_addr(), "192.168.1.1:6881");
+        assert_eq!(peers[1].get_addr(), "10.0.0.5:6882");
+    }
+
+    #[test]
+    fn test_parse_ipv6_compact_peers() {
+        // IPv6 compact format: 18 bytes per peer (16 IP + 2 port)
+        let peer_bytes = vec![
+            // First peer: 2001:db8::1:6881
+            0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x01, 0x1A, 0xE1, // port 6881
+            // Second peer: fe80::1:6882
+            0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x01, 0x1A, 0xE2, // port 6882
+        ];
+
+        let bencode = BencodeTypes::Raw(peer_bytes);
+        let dict = std::collections::BTreeMap::from([("peers".to_string(), bencode)]);
+
+        let decoder = crate::encoding::Decoder {};
+        let client = HttpTrackerClient::new(reqwest::Client::new(), decoder);
+
+        let result = client.parse_peers(BencodeTypes::Dictionary(dict));
+        assert!(result.is_ok(), "Should parse IPv6 compact format");
+
+        let peers = result.unwrap();
+        assert_eq!(peers.len(), 2, "Should have 2 peers");
+        assert_eq!(peers[0].get_addr(), "[2001:db8::1]:6881");
+        assert_eq!(peers[1].get_addr(), "[fe80::1]:6882");
+    }
+
+    #[test]
+    fn test_parse_empty_peers() {
+        let peer_bytes = vec![];
+        let bencode = BencodeTypes::Raw(peer_bytes);
+        let dict = std::collections::BTreeMap::from([("peers".to_string(), bencode)]);
+
+        let decoder = crate::encoding::Decoder {};
+        let client = HttpTrackerClient::new(reqwest::Client::new(), decoder);
+
+        let result = client.parse_peers(BencodeTypes::Dictionary(dict));
+        assert!(result.is_ok(), "Should handle empty peer list");
+
+        let peers = result.unwrap();
+        assert_eq!(peers.len(), 0, "Should have 0 peers");
+    }
+
+    #[test]
+    fn test_parse_invalid_peer_length() {
+        // Invalid: 7 bytes (not divisible by 6 or 18)
+        let peer_bytes = vec![192, 168, 1, 1, 0x1A, 0xE1, 0xFF];
+        let bencode = BencodeTypes::Raw(peer_bytes);
+        let dict = std::collections::BTreeMap::from([("peers".to_string(), bencode)]);
+
+        let decoder = crate::encoding::Decoder {};
+        let client = HttpTrackerClient::new(reqwest::Client::new(), decoder);
+
+        let result = client.parse_peers(BencodeTypes::Dictionary(dict));
+        assert!(result.is_ok(), "Should handle invalid length gracefully");
+
+        let peers = result.unwrap();
+        assert_eq!(
+            peers.len(),
+            0,
+            "Should return empty list for invalid format"
+        );
     }
 }

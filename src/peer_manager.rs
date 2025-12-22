@@ -21,6 +21,7 @@ use tokio::time;
 
 const MAX_FAILED_PIECE_RETRY: usize = 10;
 const CHANNEL_SIZE: usize = 100;
+const WATCH_TRACKER_DELAY: u64 = 2 * 60;
 
 #[async_trait]
 pub trait PeerConnector: Send + Sync {
@@ -222,7 +223,7 @@ impl PeerManager {
 
         self.clone()
             .watch_tracker(
-                Duration::from_secs(2 * 60),
+                Duration::from_secs(WATCH_TRACKER_DELAY),
                 announce_url,
                 info_hash,
                 file_size,
@@ -509,6 +510,7 @@ impl PeerManager {
         }
     }
 
+    /// Creates the connection with a peer over the network.
     pub async fn connect_peer(
         &self,
         peer: Peer,
@@ -554,7 +556,8 @@ impl PeerManager {
             let num_pieces = peer.piece_count().await;
             let bitfield_len = peer.bitfield_len().await;
             debug!(
-                "Peer {} - has_piece={}, already_downloading={}, active_downloads={}, total_pieces={}/{}",
+                "Peer {}, piece={}, has_piece={}, already_downloading={}, active_downloads={}, total_pieces={}/{}",
+                piece_index,
                 addr,
                 has_piece,
                 is_busy,
@@ -603,10 +606,10 @@ impl PeerManager {
         Ok(())
     }
 
-    // Watch the tracker server provided in the torrent file
-    // and update the available peers for the peer manager to be able to manager them.
-    //
-    // Won't block, just spawn a task to run.
+    /// Watch the tracker server provided in the torrent file
+    /// and update the available peers for the peer manager to be able to manager them.
+    ///
+    /// Won't block, just spawn a task to run.
     pub async fn watch_tracker(
         self: Arc<Self>,
         interval: Duration,
@@ -669,6 +672,7 @@ impl PeerManager {
         Ok(())
     }
 
+    /// Fetches peers from the tracker server to connect with.
     pub async fn get_peers(
         &self,
         endpoint: String,
@@ -779,12 +783,6 @@ impl PeerManager {
     /// the background orchestration task in `start()`, but can also be invoked manually
     /// when immediate peer connections are needed.
     ///
-    /// # Arguments
-    /// * `max_peers` - Maximum number of concurrent peer connections to maintain
-    /// * `completion_tx` - Channel to send completed piece notifications
-    /// * `failure_tx` - Channel to send failed piece notifications
-    ///
-    /// # Returns
     /// Returns `Ok(usize)` with the number of successfully connected peers, or an error if
     /// the operation fails critically.
     pub async fn connect_with_peers(
@@ -875,6 +873,7 @@ impl PeerManager {
         Ok(successful_connections)
     }
 
+    /// Fetches a piece from the pending list and try to assign it to a connected peer.
     pub async fn download_piece(&self, request: PieceDownloadRequest) -> Result<()> {
         // Add to pending queue first (safety net)
         {

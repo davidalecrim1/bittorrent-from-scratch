@@ -134,7 +134,13 @@ impl Peer {
     }
 
     pub fn get_addr(&self) -> String {
-        format!("{}:{}", &self.ip, &self.port)
+        if self.ip.is_ipv6() {
+            // IPv6 requires bracket notation for socket addresses
+            format!("[{}]:{}", &self.ip, &self.port)
+        } else {
+            // IPv4 standard notation
+            format!("{}:{}", &self.ip, &self.port)
+        }
     }
 }
 
@@ -244,6 +250,7 @@ pub struct AnnounceResponse {
 
 #[cfg(test)]
 mod tests {
+    use super::Peer;
     use crate::messages::BitfieldMessage;
 
     #[test]
@@ -418,5 +425,31 @@ mod tests {
                 i
             );
         }
+    }
+
+    #[test]
+    fn test_peer_ipv4_address_formatting() {
+        let peer = Peer::new("192.168.1.100".to_string(), 6881);
+        assert_eq!(peer.get_addr(), "192.168.1.100:6881");
+    }
+
+    #[test]
+    fn test_peer_ipv6_address_formatting() {
+        // IPv6 addresses require bracket notation for socket addresses
+        let peer = Peer::new("2001:db8::1".to_string(), 6881);
+        assert_eq!(peer.get_addr(), "[2001:db8::1]:6881");
+
+        let peer2 = Peer::new("fe80::1".to_string(), 8080);
+        assert_eq!(peer2.get_addr(), "[fe80::1]:8080");
+
+        let peer3 = Peer::new("::1".to_string(), 6882);
+        assert_eq!(peer3.get_addr(), "[::1]:6882");
+    }
+
+    #[test]
+    fn test_peer_ipv6_full_address_formatting() {
+        // Full IPv6 address (not compressed)
+        let peer = Peer::new("2001:0db8:0000:0000:0000:0000:0000:0001".to_string(), 6881);
+        assert_eq!(peer.get_addr(), "[2001:db8::1]:6881");
     }
 }

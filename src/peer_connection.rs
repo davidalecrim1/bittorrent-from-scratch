@@ -21,7 +21,7 @@ const OUTBOUND_CHANNEL_SIZE: usize = 32;
 const INBOUND_CHANNEL_SIZE: usize = 64;
 const DOWNLOAD_REQUEST_CHANNEL_SIZE: usize = 200;
 
-const MAX_RETRIES_HANDSHAKE: usize = 3;
+const MAX_RETRIES_HANDSHAKE: usize = 5;
 
 #[derive(Debug)]
 pub struct PeerConnection {
@@ -165,6 +165,11 @@ impl PeerConnection {
             .take()
             .ok_or_else(|| anyhow!("handshake not done"))?;
 
+        debug!(
+            "Starting peer connection for {} with num_pieces={}",
+            self.peer.get_addr(),
+            num_pieces
+        );
         let message_io = crate::io::TcpMessageIO::from_stream(stream, num_pieces);
         self.start_with_io(Box::new(message_io)).await
     }
@@ -226,8 +231,16 @@ impl PeerConnection {
             }
         });
 
-        self.send_interested_message().await;
+        // Clone outbound_tx before handle_incoming_messages consumes self
+        let outbound_tx = self.outbound_tx.clone();
+
+        // Spawn message handler first (ensures it's ready before we trigger responses)
         self.handle_incoming_messages();
+
+        // Now send interested message (peer will respond with bitfield)
+        let _ = outbound_tx
+            .send(PeerMessage::Interested(InterestedMessage {}))
+            .await;
 
         Ok(())
     }
@@ -265,11 +278,12 @@ impl PeerConnection {
                     result = download_request_rx.recv() => {
                         match result {
                             Some(request) => {
-                                debug!("Peer {} received download request for piece {}", peer_addr.clone(), request.piece_index);
+                                debug!("Peer Connector received a download request for piece {}, sending to Peer {}", request.piece_index,peer_addr.clone());
 
                                 let piece_index = request.piece_index;
                                 if let Err(e) = self.start_piece_download(peer_addr.clone(), request).await {
-                                    debug!("Peer {} failed to start piece download: {}", peer_addr.clone(), e);
+                                    // TODO: Check how to better handle this in the future. Either by queueing or assigning better.
+                                    debug!("Peer Connector failed to start piece {} download from Peer {}, with error: {}", piece_index, peer_addr.clone(), e);
                                     let _ = self.piece_failure_tx.send(FailedPiece {
                                         piece_index,
                                         reason: e.to_string(),
@@ -278,7 +292,7 @@ impl PeerConnection {
                             }
                             None => {
                                 // Download request channel closed (shouldn't happen during normal operation)
-                                debug!("Peer {} download_request channel closed unexpectedly", peer_addr);
+                                debug!("Peer Connector download_request channel closed unexpectedly from Peer {}", peer_addr);
                                 let _ = disconnect_tx.send(PeerDisconnected {
                                     peer: peer.clone(),
                                     reason: "download_request_channel_closed".to_string(),
@@ -295,9 +309,11 @@ impl PeerConnection {
     async fn handle_peer_message(&mut self, peer_addr: String, msg: PeerMessage) -> Result<()> {
         match msg {
             PeerMessage::KeepAlive => {
-                // No-op for now
-                //
-                // TODO: Consider refreshing the connection.
+                debug!(
+                    // TODO: Check later on how to support this.
+                    "Peer Connector received a Keep Alive message from Peer {} - (ignored - keep alive not supported)",
+                    peer_addr
+                );
             }
 
             PeerMessage::Choke(_) => {
@@ -310,10 +326,10 @@ impl PeerConnection {
             PeerMessage::Bitfield(bitfield) => {
                 let num_pieces_available = bitfield.bitfield.iter().filter(|&&has| has).count();
                 debug!(
-                    "Peer {} received Bitfield message with {}/{} pieces available",
-                    peer_addr,
+                    "Peer Connector received Bitfield with {}/{} pieces available from Peer {}",
                     num_pieces_available,
-                    bitfield.bitfield.len()
+                    bitfield.bitfield.len(),
+                    peer_addr,
                 );
 
                 let mut bf = self.bitfield.write().await;
@@ -321,6 +337,7 @@ impl PeerConnection {
             }
 
             PeerMessage::Unchoke(_) => {
+                debug!("Peer Connector received Unchoke from Peer {}", peer_addr);
                 self.is_choking = false;
 
                 if self.current_download.is_some() {
@@ -329,14 +346,23 @@ impl PeerConnection {
             }
 
             PeerMessage::Interested(_) => {
+                debug!("Peer Connector received Interested from Peer {}", peer_addr);
                 self.is_interested = true;
             }
 
             PeerMessage::NotInterested(_) => {
                 self.is_interested = false;
+                debug!(
+                    "Peer Connector received NotInterested from Peer {}",
+                    peer_addr
+                );
             }
 
             PeerMessage::Have(have) => {
+                debug!(
+                    "Peer Connector received Have (now has piece {}) from Peer {}",
+                    have.piece_index, peer_addr,
+                );
                 let piece_index = have.piece_index as usize;
                 let mut bf = self.bitfield.write().await;
                 if piece_index < bf.len() {
@@ -344,18 +370,27 @@ impl PeerConnection {
                 }
             }
 
-            PeerMessage::Request(_request) => {
-                // We don't support uploading yet
-                // TODO: Implement request handling
+            PeerMessage::Request(request) => {
+                debug!(
+                    "Peer Connector received Request for piece {} from Peer {} (ignored - upload not supported)",
+                    request.piece_index, peer_addr
+                );
             }
 
             PeerMessage::Piece(piece) => {
+                debug!(
+                    "Peer Connector received Piece for index {}, begin {} from Peer {}",
+                    piece.piece_index, piece.begin, peer_addr
+                );
                 self.handle_piece_block(piece).await?;
             }
 
-            PeerMessage::Cancel(_cancel) => {
-                // We don't support uploading yet, so no-op
-                // TODO: Implement cancel handling
+            PeerMessage::Cancel(cancel) => {
+                // TODO: Check how to support this.
+                debug!(
+                    "Peer Connector received Cancel for piece {} from Peer {} (ignored - upload not supported)",
+                    cancel.piece_index, peer_addr,
+                );
             }
         }
 
@@ -514,24 +549,6 @@ impl PeerConnection {
     pub async fn can_download_pieces(&self) -> bool {
         let bf = self.bitfield.read().await;
         !self.is_choking && !bf.is_empty()
-    }
-
-    // Sends an interested message to the peer.
-    async fn send_interested_message(&self) {
-        let outbound_tx = self.outbound_tx.clone();
-
-        match outbound_tx
-            .send(PeerMessage::Interested(InterestedMessage {}))
-            .await
-        {
-            Ok(_) => {}
-            Err(err) => {
-                debug!(
-                    "Failed to send interested message to peer {:?}: {}",
-                    self.peer_id, err
-                );
-            }
-        }
     }
 
     // Controls the blocks in the requests messages to download pieces from the peer.

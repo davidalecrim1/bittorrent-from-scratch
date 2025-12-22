@@ -101,11 +101,12 @@ mod tests {
     #[test]
     fn test_piece_message_from_bytes() {
         let bytes = vec![
-            0, 0, 0, 13, // Length = 13
+            0, 0, 0,
+            13, // Length = 13 (1 byte msg_id + 4 bytes piece_index + 4 bytes begin + 4 bytes block)
             7,  // Type = 7 (piece)
             0, 0, 0, 5, // piece index = 5
             0, 0, 0, 100, // begin = 100
-            1, 2, 3, 4, // data = 4 bytes
+            1, 2, 3, 4, // block data = 4 bytes
         ];
         let (size, message) = PeerMessage::from_bytes(&bytes, 100).unwrap();
 
@@ -114,9 +115,34 @@ mod tests {
         if let PeerMessage::Piece(piece_msg) = message {
             assert_eq!(piece_msg.piece_index, 5);
             assert_eq!(piece_msg.begin, 100);
-            // Block calculated as bytes.len() - 9 = 17 - 9 = 8, but only 4 bytes available
-            // so will read what's available
-            assert!(piece_msg.block.len() <= 8);
+            assert_eq!(piece_msg.block.len(), 4);
+            assert_eq!(piece_msg.block, vec![1, 2, 3, 4]);
+        } else {
+            panic!("Expected Piece message");
+        }
+    }
+
+    #[test]
+    fn test_piece_message_with_16kb_block() {
+        // Simulate a real 16 KiB block download
+        let block_data: Vec<u8> = (0..16384).map(|i| (i % 256) as u8).collect();
+        let mut bytes = vec![
+            0, 0, 0x40, 0x09, // Length = 16393 (1 + 4 + 4 + 16384)
+            7,    // Type = 7 (piece)
+            0, 0, 0x12, 0x34, // piece index = 4660
+            0, 0, 0x40, 0x00, // begin = 16384
+        ];
+        bytes.extend_from_slice(&block_data);
+
+        let (size, message) = PeerMessage::from_bytes(&bytes, 24208).unwrap();
+
+        // total size = 4 (length prefix) + 16393 (message length) = 16397
+        assert_eq!(size, 16397);
+        if let PeerMessage::Piece(piece_msg) = message {
+            assert_eq!(piece_msg.piece_index, 0x1234);
+            assert_eq!(piece_msg.begin, 0x4000);
+            assert_eq!(piece_msg.block.len(), 16384);
+            assert_eq!(piece_msg.block, block_data);
         } else {
             panic!("Expected Piece message");
         }

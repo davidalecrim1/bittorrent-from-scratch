@@ -4,6 +4,12 @@ This file tracks pending tasks and improvements identified in the codebase.
 
 ## High Priority
 
+### Bugs
+- [ ] The Peer Connection is now silently failing for some reason. We see muiltiple available peers but cannot connected with any.
+- [ ] Understand what is going on what pieces are not being downloaded.
+- [ ] Add unit tests and more logs to easy undertand if things break.
+- [ ] The Pieces after downloaded are having hash mismatch.
+
 ### Code Organization & Cleanup
 - [x] **Consolidate peer_manager tests**: Merge `tests/coverage_boost_tests.rs` (15 tests) into `tests/peer_manager_tests.rs` (13 tests) to have all peer_manager tests in one logical location. The name "coverage_boost_tests" is a code smell indicating the file is not organized by responsibility.
 - [x] **Remove unused mock code**: Delete `set_fail_next()` method from `MockPeerConnector` in `tests/helpers/fakes.rs` (currently unused and triggering dead_code warnings)
