@@ -11,6 +11,7 @@ This file tracks pending tasks and improvements identified in the codebase.
   - Fixed: Bitfield message reception and parsing now works correctly
 - [x] The Pieces after downloaded are having hash mismatch.
   - Fixed: Piece message parsing was using `bytes.len() - 13` instead of `length - 9`, causing block data corruption
+- [ ] The application seems to be blocking after some time, and only the tracker loop seems to be working, causing the whole torrent file to not download.
 
 ### Performance Improvements
 - [x] **Limit concurrent downloads per peer**: Currently enforced at 1 piece per peer to ensure stability

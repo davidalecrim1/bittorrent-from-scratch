@@ -810,7 +810,7 @@ impl PeerManager {
         let mut successful_connections = 0;
 
         debug!(
-            "Connection attempt: available_peers={}, connected_peers={}, needed={}, attempting={}",
+            "Connection attempt: available_peers={}, connected_peers={}, need_peers={}, attempting={}",
             available_count,
             connected_count,
             needed,
