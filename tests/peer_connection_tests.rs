@@ -13,9 +13,9 @@ mod tests {
     #[tokio::test]
     async fn test_peer_connection_sends_interested_on_start() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -57,9 +57,9 @@ mod tests {
     #[tokio::test]
     async fn test_bitfield_message_updates_peer_bitfield() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -104,9 +104,9 @@ mod tests {
     #[tokio::test]
     async fn test_unchoke_message_starts_piece_download() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -185,9 +185,9 @@ mod tests {
     #[tokio::test]
     async fn test_piece_download_complete_flow() {
         // Create channels for PeerConnection
-        let (completion_tx, mut completion_rx) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -286,9 +286,9 @@ mod tests {
     #[tokio::test]
     async fn test_piece_download_with_hash_mismatch() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, mut failure_rx) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, mut failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -382,9 +382,9 @@ mod tests {
     #[tokio::test]
     async fn test_have_message_updates_bitfield() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -444,9 +444,9 @@ mod tests {
     #[tokio::test]
     async fn test_choke_message_stops_new_requests() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -522,9 +522,9 @@ mod tests {
     #[tokio::test]
     async fn test_wrong_piece_index_ignored() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -607,9 +607,9 @@ mod tests {
     #[tokio::test]
     async fn test_download_request_for_unavailable_piece() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, mut failure_rx) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, mut failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -675,9 +675,9 @@ mod tests {
     #[tokio::test]
     async fn test_keep_alive_and_other_messages() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -744,9 +744,9 @@ mod tests {
     #[tokio::test]
     async fn test_piece_message_without_active_download() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -786,9 +786,9 @@ mod tests {
     #[tokio::test]
     async fn test_large_piece_with_multiple_blocks() {
         // Create channels for PeerConnection
-        let (completion_tx, mut completion_rx) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, mut _failure_rx) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -899,9 +899,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_peer_id_initially_none() {
-        let (completion_tx, _) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, _) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, _) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, _) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, _) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, _) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -946,9 +946,9 @@ mod tests {
             }
         }
 
-        let (completion_tx, _) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, _) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, _) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, _) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -1016,9 +1016,9 @@ mod tests {
             }
         }
 
-        let (completion_tx, _) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, _) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, _) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, _) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -1075,9 +1075,9 @@ mod tests {
             }
         }
 
-        let (completion_tx, _) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, _) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, _) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, _) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, mut disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
@@ -1121,9 +1121,9 @@ mod tests {
         // Previously, sending interested before spawning the message handler
         // caused bitfield messages to be lost if peers responded quickly.
 
-        let (completion_tx, _completion_rx) = mpsc::channel::<CompletedPiece>(10);
-        let (failure_tx, _failure_rx) = mpsc::channel::<FailedPiece>(10);
-        let (disconnect_tx, _disconnect_rx) = mpsc::channel::<PeerDisconnected>(10);
+        let (completion_tx, _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
+        let (disconnect_tx, _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =

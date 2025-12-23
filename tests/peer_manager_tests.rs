@@ -112,7 +112,7 @@ mod tests {
         peer_manager.initialize(config).await.unwrap();
 
         let peer_manager = Arc::new(peer_manager);
-        let (completion_tx, _completion_rx) = mpsc::channel(100);
+        let (completion_tx, _completion_rx) = mpsc::unbounded_channel();
         let (download_complete_tx, _download_complete_rx) = mpsc::channel(1);
 
         let result = peer_manager
@@ -249,9 +249,9 @@ mod tests {
         let peer_manager = Arc::new(peer_manager);
 
         // Try connecting with peers
-        let (completion_tx, _completion_rx) = mpsc::channel(100);
-        let (failure_tx, _failure_rx) = mpsc::channel(100);
-        let (disconnect_tx, _disconnect_rx) = mpsc::channel(100);
+        let (completion_tx, _completion_rx) = mpsc::unbounded_channel();
+        let (failure_tx, _failure_rx) = mpsc::unbounded_channel();
+        let (disconnect_tx, _disconnect_rx) = mpsc::unbounded_channel();
 
         let result = peer_manager
             .connect_with_peers(5, completion_tx, failure_tx, disconnect_tx)
@@ -288,7 +288,7 @@ mod tests {
         };
         peer_manager.initialize(config).await.unwrap();
 
-        let (file_writer_tx, mut file_writer_rx) = mpsc::channel(10);
+        let (file_writer_tx, mut file_writer_rx) = mpsc::unbounded_channel();
         let (download_complete_tx, _) = mpsc::channel(1);
 
         let completed = CompletedPiece {
@@ -336,7 +336,7 @@ mod tests {
             *completed_count = 9;
         }
 
-        let (file_writer_tx, _) = mpsc::channel(10);
+        let (file_writer_tx, _) = mpsc::unbounded_channel();
         let (download_complete_tx, mut download_complete_rx) = mpsc::channel(1);
 
         let completed = CompletedPiece {
@@ -491,7 +491,7 @@ mod tests {
             in_flight.insert(3, peer_addr.clone());
         }
 
-        let (failure_tx, mut failure_rx) = mpsc::channel(10);
+        let (failure_tx, mut failure_rx) = mpsc::unbounded_channel();
 
         let disconnect = PeerDisconnected {
             peer,
@@ -839,9 +839,9 @@ mod tests {
             .unwrap();
 
         let peer = bittorrent_from_scratch::types::Peer::new("192.168.1.1".to_string(), 6881);
-        let (completion_tx, _rx1) = mpsc::channel(10);
-        let (failure_tx, _rx2) = mpsc::channel(10);
-        let (disconnect_tx, _rx3) = mpsc::channel(10);
+        let (completion_tx, _rx1) = mpsc::unbounded_channel();
+        let (failure_tx, _rx2) = mpsc::unbounded_channel();
+        let (disconnect_tx, _rx3) = mpsc::unbounded_channel();
 
         let result = peer_manager
             .connect_peer(peer, completion_tx, failure_tx, disconnect_tx)
@@ -890,7 +890,7 @@ mod tests {
             in_flight.insert(5, peer_addr.clone());
         }
 
-        let (file_writer_tx, mut file_writer_rx) = mpsc::channel(10);
+        let (file_writer_tx, mut file_writer_rx) = mpsc::unbounded_channel();
         let (download_complete_tx, _) = mpsc::channel(1);
 
         let completed = CompletedPiece {
@@ -997,7 +997,7 @@ mod tests {
             in_flight.insert(7, peer_addr.clone());
         }
 
-        let (failure_tx, mut failure_rx) = mpsc::channel(10);
+        let (failure_tx, mut failure_rx) = mpsc::unbounded_channel();
         let disconnect = PeerDisconnected {
             peer,
             reason: "Connection lost".to_string(),
@@ -1061,7 +1061,7 @@ mod tests {
             connected_peers.insert(peer_addr.clone(), connected_peer);
         }
 
-        let (failure_tx, mut failure_rx) = mpsc::channel(10);
+        let (failure_tx, mut failure_rx) = mpsc::unbounded_channel();
         let disconnect = PeerDisconnected {
             peer,
             reason: "Connection lost".to_string(),
@@ -1100,7 +1100,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (piece_completion_tx, _) = mpsc::channel(10);
+        let (piece_completion_tx, _) = mpsc::unbounded_channel();
         let (download_complete_tx, _) = mpsc::channel(1);
 
         let peer_manager = Arc::new(peer_manager);

@@ -1,3 +1,5 @@
+use std::fs::{self, OpenOptions};
+
 use bittorrent_from_scratch::{
     cli::Args,
     encoding::{Decoder, Encoder},
@@ -5,15 +7,26 @@ use bittorrent_from_scratch::{
     file_manager::BitTorrent,
     peer_manager::PeerManager,
 };
+use chrono::Utc;
 use clap::Parser;
+use env_logger::{Builder, Target};
 use log::debug;
 use reqwest::Client;
 
 #[tokio::main]
 async fn main() {
-    env_logger::Builder::new()
+    fs::create_dir_all("./logs").unwrap();
+    let filename = format!("./logs/app-{}.log", Utc::now().format("%Y-%m-%d_%H-%M-%S"));
+
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(filename)
+        .unwrap();
+
+    Builder::new()
+        .target(Target::Pipe(Box::new(file)))
         .filter_level(log::LevelFilter::Debug)
-        .target(env_logger::Target::Stdout)
         .init();
 
     let http_client = Client::new();

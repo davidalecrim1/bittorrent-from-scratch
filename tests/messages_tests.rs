@@ -149,6 +149,48 @@ mod tests {
     }
 
     #[test]
+    fn test_piece_message_with_smaller_last_block() {
+        // Test the bug fix: last block is often smaller than 16 KiB
+        // For a 262144 byte piece with 16384 byte blocks:
+        // - 15 full blocks of 16384 bytes
+        // - 1 last block of 16384 bytes (happens to be full in this case)
+        // But for a 270000 byte piece:
+        // - 16 full blocks of 16384 bytes = 262144 bytes
+        // - 1 last block of 7856 bytes
+
+        let last_block_size = 7856;
+        let block_data: Vec<u8> = (0..last_block_size).map(|i| (i % 256) as u8).collect();
+        let mut bytes = vec![
+            0, 0, 0x1e, 0xb9, // Length = 7865 (1 + 4 + 4 + 7856)
+            7,    // Type = 7 (piece)
+            0, 0, 0x00, 0x05, // piece index = 5
+            0, 0x04, 0x00, 0x00, // begin = 262144 (offset for last block)
+        ];
+        bytes.extend_from_slice(&block_data);
+
+        let (size, message) = PeerMessage::from_bytes(&bytes, 24208).unwrap();
+
+        // total size = 4 (length prefix) + 7865 (message length) = 7869
+        assert_eq!(size, 7869);
+        if let PeerMessage::Piece(piece_msg) = message {
+            assert_eq!(piece_msg.piece_index, 5);
+            assert_eq!(piece_msg.begin, 262144);
+            assert_eq!(
+                piece_msg.block.len(),
+                last_block_size,
+                "Block should be exactly {} bytes, not 16384",
+                last_block_size
+            );
+            assert_eq!(
+                piece_msg.block, block_data,
+                "Block data should match exactly without extra padding"
+            );
+        } else {
+            panic!("Expected Piece message");
+        }
+    }
+
+    #[test]
     fn test_cancel_message_from_bytes() {
         let bytes = vec![
             0, 0, 0, 13, // Length = 13

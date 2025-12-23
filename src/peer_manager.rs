@@ -20,7 +20,6 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::time;
 
 const MAX_FAILED_PIECE_RETRY: usize = 10;
-const CHANNEL_SIZE: usize = 100;
 const WATCH_TRACKER_DELAY: u64 = 2 * 60;
 
 #[async_trait]
@@ -29,9 +28,9 @@ pub trait PeerConnector: Send + Sync {
     async fn connect(
         &self,
         peer: Peer,
-        completion_tx: mpsc::Sender<CompletedPiece>,
-        failure_tx: mpsc::Sender<FailedPiece>,
-        disconnect_tx: mpsc::Sender<PeerDisconnected>,
+        completion_tx: mpsc::UnboundedSender<CompletedPiece>,
+        failure_tx: mpsc::UnboundedSender<FailedPiece>,
+        disconnect_tx: mpsc::UnboundedSender<PeerDisconnected>,
         client_peer_id: [u8; 20],
         info_hash: [u8; 20],
         num_pieces: usize,
@@ -45,9 +44,9 @@ impl PeerConnector for RealPeerConnector {
     async fn connect(
         &self,
         peer: Peer,
-        completion_tx: mpsc::Sender<CompletedPiece>,
-        failure_tx: mpsc::Sender<FailedPiece>,
-        disconnect_tx: mpsc::Sender<PeerDisconnected>,
+        completion_tx: mpsc::UnboundedSender<CompletedPiece>,
+        failure_tx: mpsc::UnboundedSender<FailedPiece>,
+        disconnect_tx: mpsc::UnboundedSender<PeerDisconnected>,
         client_peer_id: [u8; 20],
         info_hash: [u8; 20],
         num_pieces: usize,
@@ -149,7 +148,7 @@ impl PeerManager {
     pub async fn start(
         self: Arc<Self>,
         announce_url: String,
-        piece_completion_tx: mpsc::Sender<CompletedPiece>,
+        piece_completion_tx: mpsc::UnboundedSender<CompletedPiece>,
         download_complete_tx: mpsc::Sender<DownloadComplete>,
     ) -> Result<PeerManagerHandle> {
         let config = self.config()?;
@@ -163,11 +162,11 @@ impl PeerManager {
         let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
 
         // Create shared disconnect channel for all peers
-        let (disconnect_tx, disconnect_rx) = mpsc::channel::<PeerDisconnected>(CHANNEL_SIZE);
+        let (disconnect_tx, disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
 
         // Create channels for PeerConnections to send events
-        let (completion_tx, completion_rx) = mpsc::channel::<CompletedPiece>(CHANNEL_SIZE);
-        let (failure_tx, failure_rx) = mpsc::channel::<FailedPiece>(CHANNEL_SIZE);
+        let (completion_tx, completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
+        let (failure_tx, failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
 
         // Spawn completion handler task
         tokio::task::spawn(self.clone().handle_completion_events(
@@ -239,7 +238,7 @@ impl PeerManager {
     pub async fn process_completion(
         &self,
         completed: CompletedPiece,
-        file_writer_tx: &mpsc::Sender<CompletedPiece>,
+        file_writer_tx: &mpsc::UnboundedSender<CompletedPiece>,
         download_complete_tx: &mpsc::Sender<DownloadComplete>,
         num_pieces: usize,
     ) -> bool {
@@ -266,7 +265,7 @@ impl PeerManager {
         };
 
         // Forward to FileManager (only successful pieces)
-        let _ = file_writer_tx.send(completed).await;
+        let _ = file_writer_tx.send(completed);
 
         // Check if all pieces complete
         if progress >= num_pieces {
@@ -284,8 +283,8 @@ impl PeerManager {
     /// Handle completed piece events - extracted for testing
     async fn handle_completion_events(
         self: Arc<Self>,
-        mut completion_rx: mpsc::Receiver<CompletedPiece>,
-        file_writer_tx: mpsc::Sender<CompletedPiece>,
+        mut completion_rx: mpsc::UnboundedReceiver<CompletedPiece>,
+        file_writer_tx: mpsc::UnboundedSender<CompletedPiece>,
         download_complete_tx: mpsc::Sender<DownloadComplete>,
         num_pieces: usize,
     ) {
@@ -367,7 +366,10 @@ impl PeerManager {
     }
 
     /// Handle failed piece events - extracted for testing
-    async fn handle_failure_events(self: Arc<Self>, mut failure_rx: mpsc::Receiver<FailedPiece>) {
+    async fn handle_failure_events(
+        self: Arc<Self>,
+        mut failure_rx: mpsc::UnboundedReceiver<FailedPiece>,
+    ) {
         while let Some(failed) = failure_rx.recv().await {
             let _ = self.process_failure(failed).await;
         }
@@ -379,7 +381,7 @@ impl PeerManager {
     pub async fn process_disconnect(
         &self,
         disconnect: PeerDisconnected,
-        failure_tx: &mpsc::Sender<FailedPiece>,
+        failure_tx: &mpsc::UnboundedSender<FailedPiece>,
     ) -> Result<usize> {
         let peer_addr = disconnect.peer.get_addr();
         debug!("Peer {} disconnected: {}", peer_addr, disconnect.reason);
@@ -410,12 +412,10 @@ impl PeerManager {
                 in_flight.remove(&piece_idx);
 
                 // Send to internal failure handler for retry logic
-                let _ = failure_tx
-                    .send(FailedPiece {
-                        piece_index: piece_idx,
-                        reason: "peer_disconnected".to_string(),
-                    })
-                    .await;
+                let _ = failure_tx.send(FailedPiece {
+                    piece_index: piece_idx,
+                    reason: "peer_disconnected".to_string(),
+                });
             }
 
             Ok(count)
@@ -427,8 +427,8 @@ impl PeerManager {
     /// Handle peer disconnect events - extracted for testing
     async fn handle_disconnect_events(
         self: Arc<Self>,
-        mut disconnect_rx: mpsc::Receiver<PeerDisconnected>,
-        failure_tx: mpsc::Sender<FailedPiece>,
+        mut disconnect_rx: mpsc::UnboundedReceiver<PeerDisconnected>,
+        failure_tx: mpsc::UnboundedSender<FailedPiece>,
     ) {
         while let Some(disconnect) = disconnect_rx.recv().await {
             let _ = self.process_disconnect(disconnect, &failure_tx).await;
@@ -439,9 +439,9 @@ impl PeerManager {
     async fn handle_peer_connector(
         self: Arc<Self>,
         max_peers: usize,
-        completion_tx: mpsc::Sender<CompletedPiece>,
-        failure_tx: mpsc::Sender<FailedPiece>,
-        disconnect_tx: mpsc::Sender<PeerDisconnected>,
+        completion_tx: mpsc::UnboundedSender<CompletedPiece>,
+        failure_tx: mpsc::UnboundedSender<FailedPiece>,
+        disconnect_tx: mpsc::UnboundedSender<PeerDisconnected>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
@@ -514,9 +514,9 @@ impl PeerManager {
     pub async fn connect_peer(
         &self,
         peer: Peer,
-        completion_tx: mpsc::Sender<CompletedPiece>,
-        failure_tx: mpsc::Sender<FailedPiece>,
-        disconnect_tx: mpsc::Sender<PeerDisconnected>,
+        completion_tx: mpsc::UnboundedSender<CompletedPiece>,
+        failure_tx: mpsc::UnboundedSender<FailedPiece>,
+        disconnect_tx: mpsc::UnboundedSender<PeerDisconnected>,
     ) -> Result<ConnectedPeer> {
         let config = self.config()?;
 
@@ -788,9 +788,9 @@ impl PeerManager {
     pub async fn connect_with_peers(
         &self,
         max_peers: usize,
-        completion_tx: mpsc::Sender<CompletedPiece>,
-        failure_tx: mpsc::Sender<FailedPiece>,
-        disconnect_tx: mpsc::Sender<PeerDisconnected>,
+        completion_tx: mpsc::UnboundedSender<CompletedPiece>,
+        failure_tx: mpsc::UnboundedSender<FailedPiece>,
+        disconnect_tx: mpsc::UnboundedSender<PeerDisconnected>,
     ) -> Result<usize> {
         let (peers_to_connect, available_count, connected_count, needed) = {
             let available = self.available_peers.read().await;

@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use log::{debug, error, info};
 use sha1::{Digest, Sha1};
 use std::sync::Arc;
 use std::{collections::BTreeMap, fs};
@@ -11,9 +12,7 @@ use crate::types::{BencodeTypes, Piece, PieceStatus};
 use crate::types::{CompletedPiece, DownloadComplete, PeerManagerConfig, PieceDownloadRequest};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
-use tokio::sync::mpsc::{self, Receiver};
-
-use log::{debug, info};
+use tokio::sync::mpsc::{self, Receiver, UnboundedReceiver};
 
 const MAX_PEERS_TO_CONNECT: usize = 50;
 
@@ -188,7 +187,7 @@ impl BitTorrent {
             .await?;
 
         // Peer Manager will let the File Manager know when the pieces are completed.
-        let (completion_tx, mut completion_rx) = mpsc::channel::<CompletedPiece>(100);
+        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
         let (download_complete_tx, mut download_complete_rx) = mpsc::channel::<DownloadComplete>(1);
 
         let _peer_manager_handle = self
@@ -237,7 +236,7 @@ impl BitTorrent {
     async fn watch_for_completed_pieces(
         &self,
         file: &mut File,
-        completion_rx: &mut Receiver<CompletedPiece>,
+        completion_rx: &mut UnboundedReceiver<CompletedPiece>,
         download_complete_rx: &mut Receiver<DownloadComplete>,
         num_pieces: usize,
         piece_length: usize,
@@ -248,9 +247,18 @@ impl BitTorrent {
             tokio::select! {
                 Some(completed) = completion_rx.recv() => {
                     let offset = completed.piece_index as u64 * piece_length as u64;
-                    file.seek(SeekFrom::Start(offset)).await?;
-                    file.write_all(&completed.data).await?;
-                    file.flush().await?;
+                    if let Err(e) = file.seek(SeekFrom::Start(offset)).await {
+                        error!("Failed to seek to offset {} for piece {}: {}", offset, completed.piece_index, e);
+                        return Err(e.into());
+                    }
+                    if let Err(e) = file.write_all(&completed.data).await {
+                        error!("Failed to write piece {} ({} bytes): {}", completed.piece_index, completed.data.len(), e);
+                        return Err(e.into());
+                    }
+                    if let Err(e) = file.flush().await {
+                        error!("Failed to flush file after writing piece {}: {}", completed.piece_index, e);
+                        return Err(e.into());
+                    }
 
                     downloaded_pieces += 1;
                     let percentage = (downloaded_pieces * 100) / num_pieces;

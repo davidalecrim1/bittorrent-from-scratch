@@ -111,9 +111,9 @@ impl PeerConnector for MockPeerConnector {
     async fn connect(
         &self,
         peer: Peer,
-        _completion_tx: mpsc::Sender<bittorrent_from_scratch::types::CompletedPiece>,
-        _failure_tx: mpsc::Sender<FailedPiece>,
-        _disconnect_tx: mpsc::Sender<bittorrent_from_scratch::types::PeerDisconnected>,
+        _completion_tx: mpsc::UnboundedSender<bittorrent_from_scratch::types::CompletedPiece>,
+        _failure_tx: mpsc::UnboundedSender<FailedPiece>,
+        _disconnect_tx: mpsc::UnboundedSender<bittorrent_from_scratch::types::PeerDisconnected>,
         _client_peer_id: [u8; 20],
         _info_hash: [u8; 20],
         _num_pieces: usize,

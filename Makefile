@@ -1,9 +1,4 @@
 sample-run-1:
-	rm ./output/logs.txt | \
-	rm -rf output/* && RUST_BACKTRACE=1 cargo run -- -i ./tests/testdata/ubuntu-24.04.3-desktop-amd64.iso.torrent -o ./output/ > ./output/logs.txt
-
-sample-run-2:
-	rm /output/logs.txt | \
 	rm -rf output/* && RUST_BACKTRACE=1 cargo run -- -i ./tests/testdata/ubuntu-24.04.3-desktop-amd64.iso.torrent -o ./output/
 
 format:

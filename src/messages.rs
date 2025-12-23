@@ -254,7 +254,7 @@ impl PieceMessage {
             ));
         }
         let mut cursor = Cursor::new(bytes);
-        let _length = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
+        let length = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)? as usize;
         let msg_id = ReadBytesExt::read_u8(&mut cursor)?;
         if msg_id != 7 {
             return Err(anyhow!("Invalid message ID for Piece message: {}", msg_id));
@@ -262,7 +262,8 @@ impl PieceMessage {
         let piece_index = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
         let begin = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
 
-        let block_size = bytes.len() - 13;
+        // Block size = message length - msg_id (1) - piece_index (4) - begin (4) = length - 9
+        let block_size = length - 9;
         let mut block = vec![0u8; block_size];
         std::io::Read::read_exact(&mut cursor, &mut block)?;
 

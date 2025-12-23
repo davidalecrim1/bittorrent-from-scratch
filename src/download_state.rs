@@ -35,8 +35,21 @@ impl DownloadState {
 
     pub fn add_block(&mut self, begin: u32, data: Vec<u8>) -> Result<()> {
         if self.received_blocks.contains_key(&begin) {
+            log::debug!(
+                "Piece {}: Duplicate block at offset {} (size {}), skipping",
+                self.piece_index,
+                begin,
+                data.len()
+            );
             return Ok(());
         }
+
+        log::debug!(
+            "Piece {}: Storing block at offset {} with size {}",
+            self.piece_index,
+            begin,
+            data.len()
+        );
 
         self.received_blocks.insert(begin, data);
         self.pending_blocks.remove(&begin);
@@ -55,17 +68,51 @@ impl DownloadState {
         let mut piece_data = Vec::with_capacity(self.piece_length);
         let mut offset = 0u32;
 
-        for _ in 0..self.total_blocks {
-            let block = self
-                .received_blocks
-                .get(&offset)
-                .ok_or_else(|| anyhow::Error::from(AppError::IncompletePiece(self.piece_index)))?;
+        log::debug!(
+            "Piece {}: Assembling {} blocks, expected piece length {}",
+            self.piece_index,
+            self.total_blocks,
+            self.piece_length
+        );
+
+        for block_num in 0..self.total_blocks {
+            let block = self.received_blocks.get(&offset).ok_or_else(|| {
+                log::error!(
+                    "Piece {}: Missing block at offset {} (block {})",
+                    self.piece_index,
+                    offset,
+                    block_num
+                );
+                anyhow::Error::from(AppError::IncompletePiece(self.piece_index))
+            })?;
+
+            log::debug!(
+                "Piece {}: Assembling block {} at offset {} with size {}",
+                self.piece_index,
+                block_num,
+                offset,
+                block.len()
+            );
 
             piece_data.extend_from_slice(block);
             offset += self.block_size as u32;
         }
 
+        log::debug!(
+            "Piece {}: Assembled data length {} (expected {}), truncating to piece_length",
+            self.piece_index,
+            piece_data.len(),
+            self.piece_length
+        );
+
         piece_data.truncate(self.piece_length);
+
+        log::debug!(
+            "Piece {}: Final data length after truncate: {}",
+            self.piece_index,
+            piece_data.len()
+        );
+
         Ok(piece_data)
     }
 

@@ -44,11 +44,11 @@ pub struct PeerConnection {
 
     // Piece download channels
     download_request_rx: Option<mpsc::Receiver<PieceDownloadRequest>>,
-    piece_completion_tx: mpsc::Sender<CompletedPiece>,
-    piece_failure_tx: mpsc::Sender<FailedPiece>,
+    piece_completion_tx: mpsc::UnboundedSender<CompletedPiece>,
+    piece_failure_tx: mpsc::UnboundedSender<FailedPiece>,
 
     // Peer disconnection notification
-    peer_disconnect_tx: mpsc::Sender<PeerDisconnected>,
+    peer_disconnect_tx: mpsc::UnboundedSender<PeerDisconnected>,
 
     // Peer Status
     is_choking: bool,
@@ -66,9 +66,9 @@ pub struct PeerConnection {
 impl PeerConnection {
     pub fn new(
         peer: Peer,
-        piece_completion_tx: mpsc::Sender<CompletedPiece>,
-        piece_failure_tx: mpsc::Sender<FailedPiece>,
-        peer_disconnect_tx: mpsc::Sender<PeerDisconnected>,
+        piece_completion_tx: mpsc::UnboundedSender<CompletedPiece>,
+        piece_failure_tx: mpsc::UnboundedSender<FailedPiece>,
+        peer_disconnect_tx: mpsc::UnboundedSender<PeerDisconnected>,
         tcp_connector: Arc<dyn crate::traits::TcpConnector>,
     ) -> (
         Self,
@@ -196,7 +196,7 @@ impl PeerConnection {
                             let _ = disconnect_tx.send(PeerDisconnected {
                                 peer: peer.clone(),
                                 reason: format!("write_error: {}", e),
-                            }).await;
+                            });
                             break;
                         }
                     }
@@ -215,14 +215,14 @@ impl PeerConnection {
                                 let _ = disconnect_tx.send(PeerDisconnected {
                                     peer: peer.clone(),
                                     reason: "stream_closed".to_string(),
-                                }).await;
+                                });
                                 break;
                             }
                             Err(e) => {
                                 let _ = disconnect_tx.send(PeerDisconnected {
                                     peer: peer.clone(),
                                     reason: format!("read_error: {}", e),
-                                }).await;
+                                });
                                 break;
                             }
                         }
@@ -270,7 +270,7 @@ impl PeerConnection {
                                 let _ = disconnect_tx.send(PeerDisconnected {
                                     peer: peer.clone(),
                                     reason: "inbound_channel_closed".to_string(),
-                                }).await;
+                                });
                                 break;
                             }
                         }
@@ -287,7 +287,7 @@ impl PeerConnection {
                                     let _ = self.piece_failure_tx.send(FailedPiece {
                                         piece_index,
                                         reason: e.to_string(),
-                                    }).await;
+                                    });
                                 }
                             }
                             None => {
@@ -296,7 +296,7 @@ impl PeerConnection {
                                 let _ = disconnect_tx.send(PeerDisconnected {
                                     peer: peer.clone(),
                                     reason: "download_request_channel_closed".to_string(),
-                                }).await;
+                                });
                                 break;
                             }
                         }
@@ -420,23 +420,13 @@ impl PeerConnection {
             return Ok(());
         }
 
-        debug!(
-            "Peer {} received block at offset {} for piece {} ({} bytes) - progress: {}/{}",
-            self.peer.get_addr(),
-            piece_msg.begin,
-            piece_msg.piece_index,
-            piece_msg.block.len(),
-            download_state.received_blocks.len() + 1,
-            download_state.total_blocks
-        );
-
         download_state.add_block(piece_msg.begin, piece_msg.block)?;
 
         if download_state.is_complete() {
             debug!(
-                "Peer {} all blocks received for piece {}, finishing download",
+                "Peer Connector all blocks received for piece {}, finishing download from Peer {}",
+                download_state.piece_index,
                 self.peer.get_addr(),
-                download_state.piece_index
             );
             self.finish_piece_download().await?;
         } else {
@@ -508,7 +498,6 @@ impl PeerConnection {
 
                 self.piece_completion_tx
                     .send(completed)
-                    .await
                     .map_err(|_| anyhow!("Failed to send completed piece to manager"))?;
             }
             false => {
@@ -533,7 +522,6 @@ impl PeerConnection {
 
                 self.piece_failure_tx
                     .send(failed)
-                    .await
                     .map_err(|_| anyhow!("Failed to send failed piece to manager"))?;
             }
         }
@@ -565,10 +553,10 @@ impl PeerConnection {
             match download_state.get_next_block_to_request() {
                 Some((begin, length)) => {
                     debug!(
-                        "Peer {} sending request message for piece {} and block {}",
-                        self.peer.get_addr().clone(),
+                        "Peer Connector sending request for piece {} block {} from Peer {}",
                         download_state.piece_index,
-                        begin
+                        begin,
+                        self.peer.get_addr(),
                     );
 
                     let request = RequestMessage {

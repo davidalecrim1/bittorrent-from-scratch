@@ -5,10 +5,20 @@ This file tracks pending tasks and improvements identified in the codebase.
 ## High Priority
 
 ### Bugs
-- [ ] The Peer Connection is now silently failing for some reason. We see muiltiple available peers but cannot connected with any.
-- [ ] Understand what is going on what pieces are not being downloaded.
-- [ ] Add unit tests and more logs to easy undertand if things break.
-- [ ] The Pieces after downloaded are having hash mismatch.
+- [x] The Peer Connection is now silently failing for some reason. We see muiltiple available peers but cannot connected with any.
+  - Fixed: Missing message type handlers for Interested (ID 2) and Request (ID 6)
+- [x] Understand what is going on what pieces are not being downloaded.
+  - Fixed: Bitfield message reception and parsing now works correctly
+- [x] The Pieces after downloaded are having hash mismatch.
+  - Fixed: Piece message parsing was using `bytes.len() - 13` instead of `length - 9`, causing block data corruption
+
+### Performance Improvements
+- [x] **Limit concurrent downloads per peer**: Currently enforced at 1 piece per peer to ensure stability
+- [ ] **Enable multiple concurrent downloads per peer**: Future improvement to allow each peer to download multiple pieces simultaneously
+  - Requires: Update `assign_piece_to_peer` to remove `not_busy` check
+  - Requires: Test with varying concurrency limits (2, 5, 10 pieces per peer)
+  - Requires: Monitor memory usage and connection stability
+  - Benefits: Improved download speeds by better utilizing peer bandwidth
 
 ### Code Organization & Cleanup
 - [x] **Consolidate peer_manager tests**: Merge `tests/coverage_boost_tests.rs` (15 tests) into `tests/peer_manager_tests.rs` (13 tests) to have all peer_manager tests in one logical location. The name "coverage_boost_tests" is a code smell indicating the file is not organized by responsibility.
