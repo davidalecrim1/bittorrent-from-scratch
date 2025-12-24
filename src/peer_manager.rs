@@ -207,45 +207,16 @@ impl PeerManager {
         tokio::task::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
-                debug!("Progress reporter: waiting for tick");
                 interval.tick().await;
-                debug!("Progress reporter: tick received, starting to read locks");
-
-                debug!("Progress reporter: acquiring completed_pieces read lock");
                 let completed = *peer_manager_progress.completed_pieces.read().await;
-                debug!(
-                    "Progress reporter: acquired completed_pieces read lock, value={}",
-                    completed
-                );
-
-                debug!("Progress reporter: acquiring connected_peers read lock");
                 let connected_peers = peer_manager_progress.connected_peers.read().await.len();
-                debug!(
-                    "Progress reporter: acquired connected_peers read lock, count={}",
-                    connected_peers
-                );
-
-                debug!("Progress reporter: acquiring pending_pieces read lock");
                 let pending = peer_manager_progress.pending_pieces.read().await.len();
-                debug!(
-                    "Progress reporter: acquired pending_pieces read lock, count={}",
-                    pending
-                );
-
-                debug!("Progress reporter: acquiring in_flight_pieces read lock");
                 let in_flight = peer_manager_progress.in_flight_pieces.read().await.len();
-                debug!(
-                    "Progress reporter: acquired in_flight_pieces read lock, count={}",
-                    in_flight
-                );
-
                 let percentage = (completed * 100) / num_pieces;
-
                 info!(
                     "[Progress] {}/{} pieces ({}%) | {} connected peers | {} pending pieces | {} in-flight pieces",
                     completed, num_pieces, percentage, connected_peers, pending, in_flight
                 );
-                debug!("Progress reporter: finished logging progress");
             }
         });
 
