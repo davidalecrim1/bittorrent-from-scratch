@@ -258,7 +258,10 @@ mod tests {
             .await;
 
         assert!(result.is_ok(), "connect_with_peers should succeed");
-        assert_eq!(result.unwrap(), 1, "should connect to 1 peer");
+        assert_eq!(result.unwrap(), 1, "should start 1 connection attempt");
+
+        // Wait for the spawned connection tasks to complete
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Verify the peer was added to connected_peers
         let connected_peers = peer_manager.connected_peers.read().await;

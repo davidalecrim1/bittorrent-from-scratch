@@ -147,6 +147,46 @@ Bitfield messages use MSB-first bit ordering. Bit 0 of byte 0 represents piece 0
 
 ## Rust Coding Best Practices
 
+### Tokio Interval Pattern Standard
+
+When using `tokio::time::interval` in background loops, use one of these patterns:
+
+**PATTERN A - Tick at start (RECOMMENDED):**
+```rust
+let mut interval = tokio::time::interval(Duration::from_secs(60));
+loop {
+    interval.tick().await;  // First tick immediate, subsequent ticks wait
+    // Do work here
+}
+```
+
+**PATTERN B - Skip first immediate tick:**
+```rust
+let mut interval = tokio::time::interval(Duration::from_secs(60));
+interval.tick().await;  // Consume immediate tick
+loop {
+    interval.tick().await;  // All ticks now wait for full duration
+    // Do work here
+}
+```
+
+**ANTI-PATTERN (DO NOT USE):**
+```rust
+let mut interval = tokio::time::interval(Duration::from_secs(60));
+loop {
+    // Do work first
+    interval.tick().await;  // WRONG: work happens immediately, then waits
+}
+```
+
+**Why Pattern A is recommended:**
+- The first tick completes immediately by design (allows loops to start working right away)
+- Subsequent ticks wait for the specified duration
+- Work happens at predictable intervals: T+0 (immediate), T+60, T+120, etc.
+
+**Common pitfall:**
+Placing `interval.tick().await` at the END of the loop causes work to execute immediately on the first iteration (before any async state is ready), then enters a long wait. This creates duplicate logs at startup and incorrect timing.
+
 ### Avoid Deep Nesting (TL;DR)
 - **Avoid deep nesting** → prefer early returns (`return`, `?`, `let-else`)
 - **Use `?` aggressively** to eliminate match/if pyramids

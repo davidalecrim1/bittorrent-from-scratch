@@ -205,18 +205,45 @@ impl PeerManager {
         tokio::task::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
+                debug!("Progress reporter: waiting for tick");
+                interval.tick().await;
+                debug!("Progress reporter: tick received, starting to read locks");
+
+                debug!("Progress reporter: acquiring completed_pieces read lock");
                 let completed = *peer_manager_progress.completed_pieces.read().await;
+                debug!(
+                    "Progress reporter: acquired completed_pieces read lock, value={}",
+                    completed
+                );
+
+                debug!("Progress reporter: acquiring connected_peers read lock");
                 let connected_peers = peer_manager_progress.connected_peers.read().await.len();
+                debug!(
+                    "Progress reporter: acquired connected_peers read lock, count={}",
+                    connected_peers
+                );
+
+                debug!("Progress reporter: acquiring pending_pieces read lock");
                 let pending = peer_manager_progress.pending_pieces.read().await.len();
+                debug!(
+                    "Progress reporter: acquired pending_pieces read lock, count={}",
+                    pending
+                );
+
+                debug!("Progress reporter: acquiring in_flight_pieces read lock");
                 let in_flight = peer_manager_progress.in_flight_pieces.read().await.len();
+                debug!(
+                    "Progress reporter: acquired in_flight_pieces read lock, count={}",
+                    in_flight
+                );
+
                 let percentage = (completed * 100) / num_pieces;
 
                 info!(
                     "[Progress] {}/{} pieces ({}%) | {} connected peers | {} pending pieces | {} in-flight pieces",
                     completed, num_pieces, percentage, connected_peers, pending, in_flight
                 );
-
-                interval.tick().await;
+                debug!("Progress reporter: finished logging progress");
             }
         });
 
@@ -783,8 +810,6 @@ impl PeerManager {
     /// the background orchestration task in `start()`, but can also be invoked manually
     /// when immediate peer connections are needed.
     ///
-    /// Returns `Ok(usize)` with the number of successfully connected peers, or an error if
-    /// the operation fails critically.
     pub async fn connect_with_peers(
         &self,
         max_peers: usize,
@@ -807,30 +832,44 @@ impl PeerManager {
             (peers, available.len(), connected.len(), needed)
         };
 
-        let mut successful_connections = 0;
+        if peers_to_connect.is_empty() {
+            if needed > 0 {
+                debug!(
+                    "Peer connector heartbeat: need {} more peers but no new peers available (available={}, connected={})",
+                    needed, available_count, connected_count
+                );
+            } else {
+                debug!(
+                    "Peer connector heartbeat: at capacity ({}/{} peers connected)",
+                    connected_count, max_peers
+                );
+            }
+        } else {
+            debug!(
+                "Connection attempt: available_peers={}, connected_peers={}, need_peers={}, attempting={}",
+                available_count,
+                connected_count,
+                needed,
+                peers_to_connect.len()
+            );
+        }
 
-        debug!(
-            "Connection attempt: available_peers={}, connected_peers={}, need_peers={}, attempting={}",
-            available_count,
-            connected_count,
-            needed,
-            peers_to_connect.len()
-        );
-
-        // Spawn concurrent connection attempts
-        let mut tasks = Vec::new();
+        // Spawn connection attempts without waiting (non-blocking)
+        let num_attempts = peers_to_connect.len();
         for peer in peers_to_connect {
+            let connected_peers = self.connected_peers.clone();
+            let available_peers = self.available_peers.clone();
+            let connector = self.connector.clone();
+            let config = self.config()?.clone();
             let completion_tx = completion_tx.clone();
             let failure_tx = failure_tx.clone();
             let disconnect_tx = disconnect_tx.clone();
-            let config = self.config()?.clone();
-            let connector = self.connector.clone();
 
-            let task = tokio::spawn(async move {
+            tokio::spawn(async move {
                 let peer_addr = peer.get_addr();
-                let result = connector
+                match connector
                     .connect(
-                        peer.clone(),
+                        peer,
                         completion_tx,
                         failure_tx,
                         disconnect_tx,
@@ -838,39 +877,24 @@ impl PeerManager {
                         config.info_hash,
                         config.num_pieces,
                     )
-                    .await;
-
-                (peer_addr, result)
+                    .await
+                {
+                    Ok(connected_peer) => {
+                        info!("Successfully connected to peer {}", peer_addr);
+                        connected_peers
+                            .write()
+                            .await
+                            .insert(peer_addr, connected_peer);
+                    }
+                    Err(e) => {
+                        debug!("Failed to connect to peer {}: {}", peer_addr, e);
+                        available_peers.write().await.remove(&peer_addr);
+                    }
+                }
             });
-            tasks.push(task);
         }
 
-        // Collect results
-        for task in tasks {
-            match task.await {
-                Ok((peer_addr, Ok(connected_peer))) => {
-                    info!("Successfully connected to peer {}", peer_addr);
-                    self.connected_peers
-                        .write()
-                        .await
-                        .insert(peer_addr.clone(), connected_peer);
-                    successful_connections += 1;
-                }
-                Ok((peer_addr, Err(e))) => {
-                    debug!("Failed to connect to peer {}: {}", peer_addr, e);
-                    self.available_peers.write().await.remove(&peer_addr);
-                }
-                Err(e) => {
-                    error!("Connection task panicked: {}", e);
-                }
-            }
-        }
-
-        if successful_connections > 0 {
-            debug!("Connected {} new peers", successful_connections);
-        }
-
-        Ok(successful_connections)
+        Ok(num_attempts)
     }
 
     /// Fetches a piece from the pending list and try to assign it to a connected peer.

@@ -11,7 +11,9 @@ This file tracks pending tasks and improvements identified in the codebase.
   - Fixed: Bitfield message reception and parsing now works correctly
 - [x] The Pieces after downloaded are having hash mismatch.
   - Fixed: Piece message parsing was using `bytes.len() - 13` instead of `length - 9`, causing block data corruption
-- [ ] The application seems to be blocking after some time, and only the tracker loop seems to be working, causing the whole torrent file to not download.
+- [x] The application seems to be blocking after some time, and only the tracker loop seems to be working, causing the whole torrent file to not download.
+  - Root cause: TCP connections without timeout (hanging for minutes on unreachable IPv6 addresses) + blocking await pattern in connect_with_peers (waiting for all 50 connection tasks to complete ~21 minutes) + wrong interval pattern in progress reporter
+  - Fixed: Added 5-second TCP timeout, made connect_with_peers non-blocking (spawn-and-forget), fixed progress reporter interval pattern, reduced handshake retries from 5 to 3, added heartbeat logging
 
 ### Performance Improvements
 - [x] **Limit concurrent downloads per peer**: Currently enforced at 1 piece per peer to ensure stability

@@ -21,7 +21,7 @@ const OUTBOUND_CHANNEL_SIZE: usize = 32;
 const INBOUND_CHANNEL_SIZE: usize = 64;
 const DOWNLOAD_REQUEST_CHANNEL_SIZE: usize = 200;
 
-const MAX_RETRIES_HANDSHAKE: usize = 5;
+const MAX_RETRIES_HANDSHAKE: usize = 3;
 
 #[derive(Debug)]
 pub struct PeerConnection {
