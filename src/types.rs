@@ -68,6 +68,10 @@ impl ConnectedPeer {
             .await
             .map_err(|e| anyhow!("Failed to send download request: {}", e))
     }
+
+    pub fn get_sender(&self) -> mpsc::Sender<PieceDownloadRequest> {
+        self.download_request_tx.clone()
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -134,8 +134,10 @@ impl PeerManager {
 
     /// Cleanup piece tracking after completion/failure.
     pub async fn cleanup_piece_tracking(&self, piece_index: u32) -> Option<String> {
-        let mut in_flight = self.in_flight_pieces.write().await;
-        let peer_addr = in_flight.remove(&piece_index)?;
+        let peer_addr = {
+            let mut in_flight = self.in_flight_pieces.write().await;
+            in_flight.remove(&piece_index)?
+        };
 
         let mut connected_peers = self.connected_peers.write().await;
         if let Some(peer) = connected_peers.get_mut(&peer_addr) {
@@ -574,61 +576,89 @@ impl PeerManager {
     pub async fn assign_piece_to_peer(&self, request: PieceDownloadRequest) -> Result<()> {
         let piece_index = request.piece_index;
 
-        let mut connected_peers = self.connected_peers.write().await;
+        // Phase 1: Collect candidates and debug info with READ lock
+        // Strategy: Collect all data in one pass to minimize lock hold time
+        let (best_peer_addr, debug_info) = {
+            let connected_peers = self.connected_peers.read().await;
 
-        // Debug: Log bitfield state for all connected peers
-        for (addr, peer) in connected_peers.iter() {
-            let has_piece = peer.has_piece(piece_index as usize).await;
-            let is_busy = peer.active_downloads.contains(&piece_index);
-            let num_pieces = peer.piece_count().await;
-            let bitfield_len = peer.bitfield_len().await;
+            // Collect debug info for all peers (data only, no formatting under lock)
+            let mut peer_debug_data = Vec::new();
+            let mut candidates: Vec<(String, usize)> = Vec::new();
+
+            for (addr, peer) in connected_peers.iter() {
+                let has_piece = peer.has_piece(piece_index as usize).await;
+                let is_busy = peer.active_downloads.contains(&piece_index);
+                let active_count = peer.active_downloads.len();
+                let num_pieces = peer.piece_count().await;
+                let bitfield_len = peer.bitfield_len().await;
+
+                peer_debug_data.push((
+                    addr.clone(),
+                    has_piece,
+                    is_busy,
+                    active_count,
+                    num_pieces,
+                    bitfield_len,
+                ));
+
+                if has_piece && !is_busy {
+                    candidates.push((addr.clone(), active_count));
+                }
+            }
+
+            let best_addr = candidates
+                .iter()
+                .min_by_key(|(_, active_count)| active_count)
+                .map(|(addr, _)| addr.clone())
+                .ok_or(anyhow::Error::from(AppError::NoPeersAvailable))?;
+
+            (best_addr, peer_debug_data)
+        }; // Read lock released here
+
+        // Debug logging happens WITHOUT holding any locks
+        for (addr, has_piece, is_busy, active_count, num_pieces, bitfield_len) in debug_info {
             debug!(
                 "Peer {}, piece={}, has_piece={}, already_downloading={}, active_downloads={}, total_pieces={}/{}",
-                piece_index,
-                addr,
-                has_piece,
-                is_busy,
-                peer.active_downloads.len(),
-                num_pieces,
-                bitfield_len
+                addr, piece_index, has_piece, is_busy, active_count, num_pieces, bitfield_len
             );
         }
 
-        // Selects the best peer to request the piece
-        // Collect candidates that have the piece and aren't already downloading it
-        let mut candidates: Vec<(String, usize)> = Vec::new();
-        for (addr, peer) in connected_peers.iter() {
-            let has_piece = peer.has_piece(piece_index as usize).await;
-            if has_piece && !peer.active_downloads.contains(&piece_index) {
-                candidates.push((addr.clone(), peer.active_downloads.len()));
-            }
-        }
-
-        let best_peer_addr = candidates
-            .iter()
-            .min_by_key(|(_, active_count)| active_count)
-            .map(|(addr, _)| addr.clone())
-            .ok_or(anyhow::Error::from(AppError::NoPeersAvailable))?;
-
-        let best_peer = connected_peers
-            .get_mut(&best_peer_addr)
-            .ok_or(anyhow::Error::from(AppError::NoPeersAvailable))?;
-
         debug!(
             "Peer {} selected to download the piece {}",
-            best_peer.peer.get_addr(),
-            piece_index
+            best_peer_addr, piece_index
         );
 
-        best_peer.request_piece(request.clone()).await?;
-        best_peer.active_downloads.insert(piece_index);
+        // Phase 2: Get sender channel with brief read lock
+        let sender = {
+            let connected_peers = self.connected_peers.read().await;
+            connected_peers
+                .get(&best_peer_addr)
+                .ok_or(anyhow::Error::from(AppError::NoPeersAvailable))?
+                .get_sender()
+        }; // Read lock released here
 
-        let mut in_flight = self.in_flight_pieces.write().await;
-        in_flight.insert(piece_index, best_peer.peer.get_addr());
+        // Phase 3: Send request WITHOUT holding any locks
+        sender.send(request.clone()).await?;
 
-        // Store the request for potential retries
-        let mut piece_requests = self.piece_requests.write().await;
-        piece_requests.insert(piece_index, request);
+        // Phase 4: Update state with brief WRITE lock
+        {
+            let mut connected_peers = self.connected_peers.write().await;
+            if let Some(peer) = connected_peers.get_mut(&best_peer_addr) {
+                peer.active_downloads.insert(piece_index);
+            }
+        } // Write lock released here
+
+        // Phase 5: Update in_flight tracking
+        {
+            let mut in_flight = self.in_flight_pieces.write().await;
+            in_flight.insert(piece_index, best_peer_addr);
+        }
+
+        // Phase 6: Store the request for potential retries
+        {
+            let mut piece_requests = self.piece_requests.write().await;
+            piece_requests.insert(piece_index, request);
+        }
 
         Ok(())
     }
@@ -881,10 +911,8 @@ impl PeerManager {
                 {
                     Ok(connected_peer) => {
                         info!("Successfully connected to peer {}", peer_addr);
-                        connected_peers
-                            .write()
-                            .await
-                            .insert(peer_addr, connected_peer);
+                        let mut connected = connected_peers.write().await;
+                        connected.insert(peer_addr, connected_peer);
                     }
                     Err(e) => {
                         debug!("Failed to connect to peer {}: {}", peer_addr, e);
