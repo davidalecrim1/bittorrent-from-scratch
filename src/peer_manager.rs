@@ -19,7 +19,8 @@ use reqwest::Client;
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::time;
 
-const WATCH_TRACKER_DELAY: u64 = 2 * 60;
+const WATCH_TRACKER_DELAY: u64 = 30;
+const MAX_PEERS_TO_CONNECT: usize = 50;
 
 #[async_trait]
 pub trait PeerConnector: Send + Sync {
@@ -156,7 +157,6 @@ impl PeerManager {
 
         let info_hash = config.info_hash;
         let file_size = config.file_size;
-        let max_peers = config.max_peers;
         let num_pieces = config.num_pieces;
 
         // Create shutdown channel for graceful termination in tests
@@ -188,7 +188,7 @@ impl PeerManager {
 
         // Spawn task to connect with peers
         tokio::task::spawn(self.clone().handle_peer_connector(
-            max_peers,
+            MAX_PEERS_TO_CONNECT,
             completion_tx.clone(),
             failure_tx.clone(),
             disconnect_tx.clone(),
@@ -218,7 +218,8 @@ impl PeerManager {
                 use std::io::Write;
 
                 // Use ANSI escape codes to clear the line properly
-                print!("\x1B[2K\r[Progress] {}/{} pieces ({}%) | {} peers | {} pending | {} in-flight",
+                print!(
+                    "\x1B[2K\r[Progress] {}/{} pieces ({}%) | {} peers | {} pending | {} in-flight",
                     completed, num_pieces, percentage, connected_peers, pending, in_flight
                 );
                 std::io::stdout().flush().unwrap();

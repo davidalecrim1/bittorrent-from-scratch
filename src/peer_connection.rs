@@ -17,9 +17,9 @@ use crate::types::{
 const DEFAULT_BLOCK_SIZE: usize = 16 * 1024; // 16 KiB per BitTorrent spec
 const BLOCK_PIPELINE_SIZE: usize = 5; // Request 5 blocks ahead
 
-const OUTBOUND_CHANNEL_SIZE: usize = 32;
-const INBOUND_CHANNEL_SIZE: usize = 64;
-const DOWNLOAD_REQUEST_CHANNEL_SIZE: usize = 200;
+const OUTBOUND_CHANNEL_SIZE: usize = 1024;
+const INBOUND_CHANNEL_SIZE: usize = 1024;
+const DOWNLOAD_REQUEST_CHANNEL_SIZE: usize = 256;
 
 const MAX_RETRIES_HANDSHAKE: usize = 3;
 

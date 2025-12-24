@@ -23,7 +23,6 @@ pub struct PeerManagerConfig {
     pub client_peer_id: [u8; 20],
     pub file_size: usize,
     pub num_pieces: usize,
-    pub max_peers: usize,
 }
 
 #[derive(Debug)]

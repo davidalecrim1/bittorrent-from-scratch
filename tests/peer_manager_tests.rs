@@ -19,7 +19,6 @@ mod tests {
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 64,
-            max_peers: 5,
         };
 
         let result = peer_manager.initialize(config).await;
@@ -40,7 +39,6 @@ mod tests {
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 64,
-            max_peers: 5,
         };
 
         peer_manager.initialize(config).await.unwrap();
@@ -77,7 +75,6 @@ mod tests {
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 64,
-            max_peers: 5,
         };
 
         peer_manager.initialize(config).await.unwrap();
@@ -106,7 +103,6 @@ mod tests {
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 10,
-            max_peers: 5,
         };
 
         peer_manager.initialize(config).await.unwrap();
@@ -142,7 +138,6 @@ mod tests {
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 100,
-            max_peers: 5,
         };
 
         peer_manager.initialize(config).await.unwrap();
@@ -183,7 +178,6 @@ mod tests {
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 64,
-            max_peers: 5,
         };
 
         peer_manager.initialize(config).await.unwrap();
@@ -221,7 +215,6 @@ mod tests {
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 64,
-            max_peers: 5,
         };
 
         peer_manager.initialize(config).await.unwrap();
@@ -287,7 +280,6 @@ mod tests {
             client_peer_id: [2u8; 20],
             file_size: 1024,
             num_pieces: 10,
-            max_peers: 5,
         };
         peer_manager.initialize(config).await.unwrap();
 
@@ -329,7 +321,6 @@ mod tests {
             client_peer_id: [2u8; 20],
             file_size: 1024,
             num_pieces: 10,
-            max_peers: 5,
         };
         peer_manager.initialize(config).await.unwrap();
 
@@ -369,7 +360,6 @@ mod tests {
             client_peer_id: [2u8; 20],
             file_size: 1024,
             num_pieces: 10,
-            max_peers: 5,
         };
         peer_manager.initialize(config).await.unwrap();
 
@@ -415,7 +405,6 @@ mod tests {
             client_peer_id: [2u8; 20],
             file_size: 1024,
             num_pieces: 10,
-            max_peers: 5,
         };
         peer_manager.initialize(config).await.unwrap();
 
@@ -474,7 +463,6 @@ mod tests {
             client_peer_id: [2u8; 20],
             file_size: 1024,
             num_pieces: 10,
-            max_peers: 5,
         };
         peer_manager.initialize(config).await.unwrap();
 
@@ -540,7 +528,6 @@ mod tests {
             client_peer_id: [2u8; 20],
             file_size: 1024,
             num_pieces: 10,
-            max_peers: 5,
         };
         peer_manager.initialize(config).await.unwrap();
 
@@ -565,7 +552,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();
@@ -614,7 +600,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();
@@ -638,7 +623,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();
@@ -706,7 +690,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();
@@ -736,7 +719,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();
@@ -782,7 +764,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();
@@ -817,7 +798,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();
@@ -845,7 +825,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();
@@ -880,7 +859,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();
@@ -950,7 +928,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();
@@ -982,7 +959,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();
@@ -1057,7 +1033,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();
@@ -1107,7 +1082,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();
@@ -1149,7 +1123,6 @@ mod tests {
                 client_peer_id: [2u8; 20],
                 file_size: 1024,
                 num_pieces: 10,
-                max_peers: 5,
             })
             .await
             .unwrap();

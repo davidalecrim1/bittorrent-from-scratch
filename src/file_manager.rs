@@ -178,7 +178,6 @@ impl BitTorrent {
             client_peer_id,
             file_size,
             num_pieces,
-            max_peers: MAX_PEERS_TO_CONNECT,
         };
 
         Arc::get_mut(&mut self.peer_manager)
