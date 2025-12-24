@@ -23,6 +23,9 @@ This file tracks pending tasks and improvements identified in the codebase.
   - Requires: Monitor memory usage and connection stability
   - Benefits: Improved download speeds by better utilizing peer bandwidth
 
+### UI/UX Improvements
+- [x] Add a progress bar on the terminal to display the percetage of downloads for the file.
+
 ### Code Organization & Cleanup
 - [x] **Consolidate peer_manager tests**: Merge `tests/coverage_boost_tests.rs` (15 tests) into `tests/peer_manager_tests.rs` (13 tests) to have all peer_manager tests in one logical location. The name "coverage_boost_tests" is a code smell indicating the file is not organized by responsibility.
 - [x] **Remove unused mock code**: Delete `set_fail_next()` method from `MockPeerConnector` in `tests/helpers/fakes.rs` (currently unused and triggering dead_code warnings)

@@ -19,7 +19,6 @@ use reqwest::Client;
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::time;
 
-const MAX_FAILED_PIECE_RETRY: usize = 10;
 const WATCH_TRACKER_DELAY: u64 = 2 * 60;
 
 #[async_trait]
@@ -205,7 +204,7 @@ impl PeerManager {
         // Spawn task to show the current status of the pieces
         let peer_manager_progress = self.clone();
         tokio::task::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
             loop {
                 interval.tick().await;
                 let completed = *peer_manager_progress.completed_pieces.read().await;
@@ -213,10 +212,16 @@ impl PeerManager {
                 let pending = peer_manager_progress.pending_pieces.read().await.len();
                 let in_flight = peer_manager_progress.in_flight_pieces.read().await.len();
                 let percentage = (completed * 100) / num_pieces;
-                info!(
-                    "[Progress] {}/{} pieces ({}%) | {} connected peers | {} pending pieces | {} in-flight pieces",
+
+                // Print to terminal on same line (overwrites previous)
+                // Note: We use print! (not info!) to avoid newlines from the logger
+                use std::io::Write;
+
+                // Use ANSI escape codes to clear the line properly
+                print!("\x1B[2K\r[Progress] {}/{} pieces ({}%) | {} peers | {} pending | {} in-flight",
                     completed, num_pieces, percentage, connected_peers, pending, in_flight
                 );
+                std::io::stdout().flush().unwrap();
             }
         });
 
@@ -322,7 +327,7 @@ impl PeerManager {
             );
         }
 
-        // Check retry attempts
+        // Track retry attempts (unlimited retries)
         let attempts = {
             let mut failed_attempts = self.failed_attempts.write().await;
             let attempts = failed_attempts.entry(piece_index).or_insert(0);
@@ -330,17 +335,9 @@ impl PeerManager {
             *attempts
         };
 
-        if attempts >= MAX_FAILED_PIECE_RETRY {
-            error!(
-                "Piece {} failed after {} attempts ({}), aborting download",
-                piece_index, MAX_FAILED_PIECE_RETRY, failed.reason
-            );
-            return Ok(false); // Max retries exceeded
-        }
-
         debug!(
-            "Piece {} failed (attempt {}/{}): {}, re-queuing",
-            piece_index, attempts, MAX_FAILED_PIECE_RETRY, failed.reason
+            "Piece {} failed (attempt {}): {}, re-queuing",
+            piece_index, attempts, failed.reason
         );
 
         // Re-queue for retry using stored request

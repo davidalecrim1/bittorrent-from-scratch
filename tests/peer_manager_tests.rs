@@ -402,7 +402,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_failure_max_retries_exceeded() {
+    async fn test_process_failure_unlimited_retries() {
         use bittorrent_from_scratch::types::{FailedPiece, PieceDownloadRequest};
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
@@ -432,10 +432,10 @@ mod tests {
             );
         }
 
-        // Simulate 10 failed attempts already
+        // Simulate many failed attempts already (e.g., 100)
         {
             let mut failed_attempts = peer_manager.failed_attempts.write().await;
-            failed_attempts.insert(5, 10);
+            failed_attempts.insert(5, 100);
         }
 
         let failed = FailedPiece {
@@ -446,7 +446,16 @@ mod tests {
         let result = peer_manager.process_failure(failed).await;
 
         assert!(result.is_ok());
-        assert!(!result.unwrap(), "should not requeue after max retries");
+        assert!(
+            result.unwrap(),
+            "should always requeue with unlimited retries"
+        );
+
+        // Verify attempts counter incremented
+        {
+            let failed_attempts = peer_manager.failed_attempts.read().await;
+            assert_eq!(*failed_attempts.get(&5).unwrap(), 101);
+        }
     }
 
     #[tokio::test]
