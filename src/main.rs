@@ -10,7 +10,7 @@ use bittorrent_from_scratch::{
 use chrono::Utc;
 use clap::Parser;
 use env_logger::{Builder, Target};
-use log::debug;
+use log::{LevelFilter, debug};
 use reqwest::Client;
 
 #[tokio::main]
@@ -24,9 +24,21 @@ async fn main() {
         .open(filename)
         .unwrap();
 
+    let log_level = std::env::var("LOG_LEVEL")
+        .ok()
+        .and_then(|level| match level.to_uppercase().as_str() {
+            "ERROR" => Some(LevelFilter::Error),
+            "WARN" => Some(LevelFilter::Warn),
+            "INFO" => Some(LevelFilter::Info),
+            "DEBUG" => Some(LevelFilter::Debug),
+            "TRACE" => Some(LevelFilter::Trace),
+            _ => None,
+        })
+        .unwrap_or(LevelFilter::Info);
+
     Builder::new()
         .target(Target::Pipe(Box::new(file)))
-        .filter_level(log::LevelFilter::Debug)
+        .filter_level(log_level)
         .init();
 
     let http_client = Client::new();
