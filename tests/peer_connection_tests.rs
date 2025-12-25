@@ -3,8 +3,8 @@ mod helpers;
 #[cfg(test)]
 mod tests {
     use super::helpers::fakes::FakeMessageIO;
+    use bittorrent_from_scratch::io::MessageIO;
     use bittorrent_from_scratch::messages::{PeerMessage, PieceMessage};
-    use bittorrent_from_scratch::traits::MessageIO;
     use bittorrent_from_scratch::types::{
         CompletedPiece, FailedPiece, Peer, PeerConnection, PeerDisconnected, PieceDownloadRequest,
     };
@@ -19,7 +19,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, _download_request_tx, _bitfield) = PeerConnection::new(
             peer,
@@ -63,7 +63,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, _download_request_tx, bitfield) = PeerConnection::new(
             peer,
@@ -110,7 +110,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
             peer,
@@ -191,7 +191,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
             peer,
@@ -292,7 +292,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
             peer,
@@ -388,7 +388,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, _download_request_tx, bitfield) = PeerConnection::new(
             peer,
@@ -450,7 +450,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
             peer,
@@ -528,7 +528,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
             peer,
@@ -613,7 +613,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
             peer,
@@ -681,7 +681,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, _download_request_tx, _bitfield) = PeerConnection::new(
             peer,
@@ -750,7 +750,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, _download_request_tx, _bitfield) = PeerConnection::new(
             peer,
@@ -792,7 +792,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
             peer,
@@ -898,30 +898,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_peer_id_initially_none() {
-        let (completion_tx, _) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, _) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, _) = mpsc::unbounded_channel::<PeerDisconnected>();
-
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
-        let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
-
-        let (peer_conn, _, _) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
-
-        // Initially, peer_id should be None (not set until handshake)
-        assert_eq!(peer_conn.get_peer_id(), None);
-    }
-
-    #[tokio::test]
     async fn test_write_error_triggers_disconnect() {
-        use bittorrent_from_scratch::traits::MessageIO;
+        use bittorrent_from_scratch::io::MessageIO;
         use std::sync::Arc;
         use tokio::sync::Mutex;
 
@@ -952,7 +930,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, _, _) = PeerConnection::new(
             peer,
@@ -998,7 +976,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_closed_triggers_disconnect() {
-        use bittorrent_from_scratch::traits::MessageIO;
+        use bittorrent_from_scratch::io::MessageIO;
 
         // Create a MessageIO that simulates stream closure
         #[derive(Debug)]
@@ -1022,7 +1000,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, _, _) = PeerConnection::new(
             peer,
@@ -1058,7 +1036,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_error_triggers_disconnect() {
-        use bittorrent_from_scratch::traits::MessageIO;
+        use bittorrent_from_scratch::io::MessageIO;
 
         // Create a MessageIO that fails on read
         #[derive(Debug)]
@@ -1081,7 +1059,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, _, _) = PeerConnection::new(
             peer,
@@ -1127,7 +1105,7 @@ mod tests {
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
-            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::RealTcpConnector);
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
         let (peer_conn, _download_request_tx, bitfield) = PeerConnection::new(
             peer,

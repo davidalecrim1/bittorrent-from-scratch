@@ -1,5 +1,6 @@
 use bittorrent_from_scratch::messages::{
-    CancelMessage, InterestedMessage, PeerMessage, PieceMessage, RequestMessage,
+    BitfieldMessage, CancelMessage, ChokeMessage, HaveMessage, InterestedMessage,
+    NotInterestedMessage, PeerMessage, PieceMessage, RequestMessage, UnchokeMessage,
 };
 
 #[cfg(test)]
@@ -268,5 +269,112 @@ mod tests {
         assert_eq!(message.piece_index, 7);
         assert_eq!(message.begin, 200);
         assert_eq!(message.length, 300);
+    }
+
+    #[test]
+    fn test_interested_message_from_bytes() {
+        let bytes = vec![0, 0, 0, 1, 2]; // Length = 1, Type = 2 (interested)
+        let (size, message) = PeerMessage::from_bytes(&bytes, 0).unwrap();
+
+        assert_eq!(size, 5);
+        assert!(matches!(message, PeerMessage::Interested(_)));
+    }
+
+    #[test]
+    fn test_choke_message_to_bytes() {
+        let message = ChokeMessage {};
+        let bytes = PeerMessage::Choke(message).to_bytes().unwrap();
+
+        assert_eq!(bytes.len(), 5);
+        assert_eq!(bytes[0..4], [0, 0, 0, 1]); // Length = 1
+        assert_eq!(bytes[4], 0); // Type = 0 (choke)
+    }
+
+    #[test]
+    fn test_unchoke_message_to_bytes() {
+        let message = UnchokeMessage {};
+        let bytes = PeerMessage::Unchoke(message).to_bytes().unwrap();
+
+        assert_eq!(bytes.len(), 5);
+        assert_eq!(bytes[0..4], [0, 0, 0, 1]); // Length = 1
+        assert_eq!(bytes[4], 1); // Type = 1 (unchoke)
+    }
+
+    #[test]
+    fn test_not_interested_message_to_bytes() {
+        let message = NotInterestedMessage {};
+        let bytes = PeerMessage::NotInterested(message).to_bytes().unwrap();
+
+        assert_eq!(bytes.len(), 5);
+        assert_eq!(bytes[0..4], [0, 0, 0, 1]); // Length = 1
+        assert_eq!(bytes[4], 3); // Type = 3 (not interested)
+    }
+
+    #[test]
+    fn test_have_message_to_bytes() {
+        let message = HaveMessage { piece_index: 42 };
+        let bytes = PeerMessage::Have(message).to_bytes().unwrap();
+
+        assert_eq!(bytes.len(), 9);
+        assert_eq!(bytes[0..4], [0, 0, 0, 5]); // Length = 5
+        assert_eq!(bytes[4], 4); // Type = 4 (have)
+        assert_eq!(&bytes[5..9], &[0, 0, 0, 42]); // piece_index = 42
+    }
+
+    #[test]
+    fn test_bitfield_message_to_bytes() {
+        let message = BitfieldMessage::from_bytes(&[0b11110000], 8).unwrap();
+        let bytes = PeerMessage::Bitfield(message).to_bytes().unwrap();
+
+        assert_eq!(bytes.len(), 6);
+        assert_eq!(bytes[0..4], [0, 0, 0, 2]); // Length = 2 (1 byte type + 1 byte data)
+        assert_eq!(bytes[4], 5); // Type = 5 (bitfield)
+        assert_eq!(bytes[5], 0b11110000); // Bitfield data
+    }
+
+    #[test]
+    fn test_piece_message_to_bytes() {
+        let message = PieceMessage {
+            piece_index: 10,
+            begin: 16384,
+            block: vec![0xaa, 0xbb, 0xcc, 0xdd],
+        };
+        let bytes = PeerMessage::Piece(message).to_bytes().unwrap();
+
+        assert_eq!(bytes.len(), 17); // 4 + 1 + 4 + 4 + 4
+        assert_eq!(bytes[0..4], [0, 0, 0, 13]); // Length = 13 (1 + 4 + 4 + 4)
+        assert_eq!(bytes[4], 7); // Type = 7 (piece)
+        assert_eq!(&bytes[13..17], &[0xaa, 0xbb, 0xcc, 0xdd]); // Block data
+    }
+
+    #[test]
+    fn test_cancel_message_to_bytes() {
+        let message = CancelMessage {
+            piece_index: 5,
+            begin: 100,
+            length: 200,
+        };
+        let bytes = PeerMessage::Cancel(message).to_bytes().unwrap();
+
+        assert_eq!(bytes.len(), 17);
+        assert_eq!(bytes[0..4], [0, 0, 0, 13]); // Length = 13
+        assert_eq!(bytes[4], 8); // Type = 8 (cancel)
+    }
+
+    #[test]
+    fn test_keep_alive_to_bytes() {
+        let bytes = PeerMessage::KeepAlive.to_bytes().unwrap();
+
+        assert_eq!(bytes.len(), 4);
+        assert_eq!(bytes, vec![0, 0, 0, 0]); // Length = 0
+    }
+
+    #[test]
+    fn test_message_length_too_short_error() {
+        // Test message with length field but less than 5 bytes total
+        let bytes = vec![0, 0, 0, 1]; // Says length is 1, but no type byte
+        let result = PeerMessage::from_bytes(&bytes, 0);
+
+        assert!(result.is_err());
     }
 }

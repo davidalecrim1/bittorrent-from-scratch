@@ -1,17 +1,16 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
     time::Duration,
 };
 
 use crate::encoding::Decoder;
 use crate::error::{AppError, Result};
-use crate::tcp_connector::RealTcpConnector;
-use crate::tracker_client::HttpTrackerClient;
-use crate::traits::{AnnounceRequest, TrackerClient};
+use crate::tcp_connector::DefaultTcpStreamFactory;
+use crate::tracker_client::{HttpTrackerClient, TrackerClient};
 use crate::types::{
-    CompletedPiece, ConnectedPeer, DownloadComplete, FailedPiece, Peer, PeerConnection,
-    PeerDisconnected, PeerManagerConfig, PeerManagerHandle, PieceDownloadRequest,
+    AnnounceRequest, CompletedPiece, ConnectedPeer, DownloadComplete, FailedPiece, Peer,
+    PeerConnection, PeerDisconnected, PeerManagerConfig, PeerManagerHandle, PieceDownloadRequest,
 };
 use async_trait::async_trait;
 use log::{debug, error, info};
@@ -23,7 +22,7 @@ const WATCH_TRACKER_DELAY: u64 = 30;
 const MAX_PEERS_TO_CONNECT: usize = 50;
 
 #[async_trait]
-pub trait PeerConnector: Send + Sync {
+pub trait PeerConnectionFactory: Send + Sync {
     #[allow(clippy::too_many_arguments)]
     async fn connect(
         &self,
@@ -37,10 +36,10 @@ pub trait PeerConnector: Send + Sync {
     ) -> Result<ConnectedPeer>;
 }
 
-pub struct RealPeerConnector;
+pub struct DefaultPeerConnectionFactory;
 
 #[async_trait]
-impl PeerConnector for RealPeerConnector {
+impl PeerConnectionFactory for DefaultPeerConnectionFactory {
     async fn connect(
         &self,
         peer: Peer,
@@ -51,7 +50,7 @@ impl PeerConnector for RealPeerConnector {
         info_hash: [u8; 20],
         num_pieces: usize,
     ) -> Result<ConnectedPeer> {
-        let tcp_connector = Arc::new(RealTcpConnector);
+        let tcp_connector = Arc::new(DefaultTcpStreamFactory);
         let (mut peer_conn, download_request_tx, bitfield) = PeerConnection::new(
             peer.clone(),
             completion_tx,
@@ -61,13 +60,6 @@ impl PeerConnector for RealPeerConnector {
         );
 
         peer_conn.handshake(client_peer_id, info_hash).await?;
-
-        let _ = peer_conn.get_peer_id().ok_or_else(|| {
-            anyhow::Error::from(AppError::handshake_failed(
-                "Failed to get peer ID after handshake",
-            ))
-        })?;
-
         peer_conn.start(num_pieces).await?;
 
         Ok(ConnectedPeer::new(
@@ -90,22 +82,23 @@ pub struct PeerManager {
     pub pending_pieces: Arc<RwLock<VecDeque<PieceDownloadRequest>>>,
     pub in_flight_pieces: Arc<RwLock<HashMap<u32, String>>>,
     pub completed_pieces: Arc<RwLock<usize>>,
+    pub completed_piece_indices: Arc<RwLock<HashSet<u32>>>,
 
     pub failed_attempts: Arc<RwLock<HashMap<u32, usize>>>,
     pub piece_requests: Arc<RwLock<HashMap<u32, PieceDownloadRequest>>>,
 
-    connector: Arc<dyn PeerConnector>,
+    connector: Arc<dyn PeerConnectionFactory>,
 }
 
 impl PeerManager {
     pub fn new(decoder: Decoder, http_client: Client) -> Self {
         let tracker_client = Arc::new(HttpTrackerClient::new(http_client, decoder));
-        Self::new_with_connector(tracker_client, Arc::new(RealPeerConnector))
+        Self::new_with_connector(tracker_client, Arc::new(DefaultPeerConnectionFactory))
     }
 
     pub fn new_with_connector(
         tracker_client: Arc<dyn TrackerClient>,
-        connector: Arc<dyn PeerConnector>,
+        connector: Arc<dyn PeerConnectionFactory>,
     ) -> Self {
         Self {
             tracker_client,
@@ -115,6 +108,7 @@ impl PeerManager {
             pending_pieces: Arc::new(RwLock::new(VecDeque::new())),
             in_flight_pieces: Arc::new(RwLock::new(HashMap::new())),
             completed_pieces: Arc::new(RwLock::new(0)),
+            completed_piece_indices: Arc::new(RwLock::new(HashSet::new())),
             failed_attempts: Arc::new(RwLock::new(HashMap::new())),
             piece_requests: Arc::new(RwLock::new(HashMap::new())),
             connector,
@@ -141,7 +135,7 @@ impl PeerManager {
 
         let mut connected_peers = self.connected_peers.write().await;
         if let Some(peer) = connected_peers.get_mut(&peer_addr) {
-            peer.active_downloads.remove(&piece_index);
+            peer.mark_complete(piece_index);
         }
 
         Some(peer_addr)
@@ -254,7 +248,7 @@ impl PeerManager {
             let connected_peers = self.connected_peers.read().await;
             let active_count = connected_peers
                 .get(&peer_addr)
-                .map(|p| p.active_downloads.len())
+                .map(|p| p.active_download_count())
                 .unwrap_or(0);
 
             debug!(
@@ -270,7 +264,25 @@ impl PeerManager {
             *completed_count
         };
 
-        // Forward to FileManager (only successful pieces)
+        // Track completed piece index and clean up from piece_requests
+        {
+            let mut completed_indices = self.completed_piece_indices.write().await;
+            completed_indices.insert(piece_index);
+        }
+
+        // Remove from piece_requests so it can't be re-queued
+        {
+            let mut piece_requests = self.piece_requests.write().await;
+            piece_requests.remove(&piece_index);
+        }
+
+        // Remove from pending queue if it's still there (defensive cleanup)
+        {
+            let mut pending = self.pending_pieces.write().await;
+            pending.retain(|req| req.piece_index != piece_index);
+        }
+
+        // Forward to BitTorrent client (only successful pieces)
         let _ = file_writer_tx.send(completed);
 
         // Check if all pieces complete
@@ -315,11 +327,23 @@ impl PeerManager {
     pub async fn process_failure(&self, failed: FailedPiece) -> Result<bool> {
         let piece_index = failed.piece_index;
 
+        // Check if piece is already completed (race condition)
+        {
+            let completed_indices = self.completed_piece_indices.read().await;
+            if completed_indices.contains(&piece_index) {
+                debug!(
+                    "Ignoring failure for piece {} - already completed",
+                    piece_index
+                );
+                return Ok(false); // Don't requeue
+            }
+        }
+
         if let Some(peer_addr) = self.cleanup_piece_tracking(piece_index).await {
             let connected_peers = self.connected_peers.read().await;
             let active_count = connected_peers
                 .get(&peer_addr)
-                .map(|p| p.active_downloads.len())
+                .map(|p| p.active_download_count())
                 .unwrap_or(0);
 
             debug!(
@@ -389,7 +413,7 @@ impl PeerManager {
             let mut connected_peers = self.connected_peers.write().await;
             connected_peers
                 .remove(&peer_addr)
-                .map(|peer| peer.active_downloads)
+                .map(|mut peer| peer.take_active_downloads())
         };
 
         // Clean up in-flight pieces for this peer
@@ -556,8 +580,8 @@ impl PeerManager {
 
             for (addr, peer) in connected_peers.iter() {
                 let has_piece = peer.has_piece(piece_index as usize).await;
-                let is_busy = peer.active_downloads.contains(&piece_index);
-                let active_count = peer.active_downloads.len();
+                let is_busy = peer.is_downloading(piece_index);
+                let active_count = peer.active_download_count();
                 let num_pieces = peer.piece_count().await;
                 let bitfield_len = peer.bitfield_len().await;
 
@@ -613,7 +637,7 @@ impl PeerManager {
         {
             let mut connected_peers = self.connected_peers.write().await;
             if let Some(peer) = connected_peers.get_mut(&best_peer_addr) {
-                peer.active_downloads.insert(piece_index);
+                peer.mark_downloading(piece_index);
             }
         } // Write lock released here
 

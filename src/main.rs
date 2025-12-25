@@ -1,10 +1,10 @@
 use std::fs::{self, OpenOptions};
 
 use bittorrent_from_scratch::{
+    bittorrent_client::BitTorrent,
     cli::Args,
     encoding::{Decoder, Encoder},
     error::AppError,
-    file_manager::BitTorrent,
     peer_manager::PeerManager,
 };
 use chrono::Utc;

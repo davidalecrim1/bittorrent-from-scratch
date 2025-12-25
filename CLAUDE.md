@@ -20,15 +20,15 @@ cargo test
 ```
 
 **Test Organization:**
-- **Unit tests**: Located in `src/**` files using `#[cfg(test)]` modules (18 tests)
-- **Integration tests**: Located in `tests/` directory for black-box testing of public APIs (69 tests)
-  - `tests/encoding_tests.rs`: Bencode encoding/decoding tests (10 tests)
-  - `tests/messages_tests.rs`: Peer protocol message serialization tests (16 tests)
+- **Unit tests**: Located in `src/**` files using `#[cfg(test)]` modules (25 tests)
+- **Integration tests**: Located in `tests/` directory for black-box testing of public APIs (72 tests)
+  - `tests/encoding_tests.rs`: Bencode encoding/decoding tests (15 tests)
+  - `tests/messages_tests.rs`: Peer protocol message serialization tests (28 tests)
   - `tests/peer_connection_tests.rs`: PeerConnection protocol logic tests (16 tests)
-  - `tests/peer_manager_tests.rs`: PeerManager orchestration tests (27 tests)
-  - `tests/helpers/fakes.rs`: Test doubles (FakeMessageIO, MockTrackerClient, MockPeerConnector)
+  - `tests/peer_manager_tests.rs`: PeerManager orchestration tests (28 tests)
+  - `tests/helpers/fakes.rs`: Test doubles (FakeMessageIO, MockTrackerClient, MockPeerConnectionFactory)
 
-**Total: 87 tests achieving 70%+ coverage on core modules**
+**Total: 97 tests achieving 70%+ coverage on core modules**
 
 ### Coverage
 ```bash
@@ -36,10 +36,11 @@ make coverage
 ```
 
 Runs `cargo tarpaulin --all-targets --engine llvm --out Stdout` to measure test coverage:
-- **messages.rs**: 78.26% coverage (108/138 lines)
-- **peer_manager.rs**: 71.35% coverage (264/370 lines)
-- **peer_connection.rs**: 73.25% coverage (178/243 lines)
-- **Overall**: 55.70% coverage (753/1352 lines)
+- **encoding.rs**: 82.04% coverage (169/206 lines)
+- **messages.rs**: 72.69% coverage (173/238 lines)
+- **peer_manager.rs**: 77.25% coverage (309/400 lines)
+- **peer_connection.rs**: 71.55% coverage (171/239 lines)
+- **Overall**: 56.70% coverage (829/1462 lines)
 
 ### Code Quality
 Always run the following after implementing a plan to fix formatting and linting errors:
@@ -62,24 +63,23 @@ The application uses `env_logger` with debug level enabled by default in main.rs
 - **messages.rs**: BitTorrent peer protocol message types and serialization
 - **types.rs**: Core types including PeerConnection, PeerManagerHandle, and protocol structs
 - **peer_connection.rs**: Individual peer connection lifecycle and piece download logic
-- **peer_manager.rs**: Peer pool orchestration, piece assignment, and retry logic
-- **file_manager.rs**: Torrent metadata, file I/O, piece verification, and download progress tracking
-- **tracker_client.rs**: HTTP tracker communication
-- **tcp_connector.rs**: TCP connection establishment
-- **io.rs**: Message I/O implementation using tokio_util::codec
-- **traits/mod.rs**: Trait abstractions for testability (MessageIO, TcpConnector, TrackerClient, PeerConnector)
+- **peer_manager.rs**: Peer pool orchestration, piece assignment, retry logic, and PeerConnectionFactory trait
+- **bittorrent_client.rs**: Torrent metadata, file I/O, piece verification, and download progress tracking
+- **tracker_client.rs**: HTTP tracker communication and TrackerClient trait
+- **tcp_connector.rs**: TCP connection establishment and TcpStreamFactory trait
+- **io.rs**: Message I/O implementation using tokio_util::codec and MessageIO trait
 
 ### Key Architecture Patterns
 
 **Async I/O with Tokio**: The entire project uses Tokio for async runtime. TCP connections follow the recommended pattern of dedicated read/write tasks with message passing via `mpsc` channels (see docs/ASYNC_IO.md for rationale).
 
-**Dependency Injection for Testability**: Core I/O operations are abstracted behind traits to enable testing without network/disk access:
-- **TcpConnector**: Abstracts TCP connection establishment (real vs in-memory)
-- **MessageIO**: Abstracts peer message I/O (TCP streams vs channels)
-- **TrackerClient**: Abstracts HTTP tracker communication (reqwest vs mock responses)
-- **PeerConnector**: Abstracts peer connection lifecycle (real TCP vs test doubles)
+**Dependency Injection for Testability**: Core I/O operations are abstracted behind traits to enable testing without network/disk access. Traits are co-located with their implementations:
+- **TcpStreamFactory** (in `tcp_connector.rs`): Abstracts TCP connection establishment (real vs in-memory)
+- **MessageIO** (in `io.rs`): Abstracts peer message I/O (TCP streams vs channels)
+- **TrackerClient** (in `tracker_client.rs`): Abstracts HTTP tracker communication (reqwest vs mock responses)
+- **PeerConnectionFactory** (in `peer_manager.rs`): Abstracts peer connection lifecycle (real TCP vs test doubles)
 
-Production code uses concrete implementations (`RealTcpConnector`, `TcpMessageIO`, `HttpTrackerClient`), while tests inject fakes (`FakeMessageIO`) and mocks (`MockTrackerClient`, `MockPeerConnector`).
+Production code uses concrete implementations (`DefaultTcpStreamFactory`, `TcpMessageIO`, `HttpTrackerClient`, `DefaultPeerConnectionFactory`), while tests inject fakes (`FakeMessageIO`) and mocks (`MockTrackerClient`, `MockPeerConnectionFactory`).
 
 **Peer Connection Model**: Each `PeerConnection` splits TCP stream into reader/writer tasks after handshake. Inbound messages flow through `inbound_tx` channel, outbound messages through `outbound_tx` channel. This avoids locking and provides natural backpressure.
 
@@ -88,7 +88,7 @@ Production code uses concrete implementations (`RealTcpConnector`, `TcpMessageIO
 **Background Task Orchestration**: PeerManager spawns background tasks with graceful shutdown:
 - **Peer connector task**: Periodically connects to new peers (up to max_peers limit)
 - **Piece assignment task**: Continuously assigns pending pieces to available peers
-- **Completion handler**: Processes completed pieces, forwards to FileManager, tracks progress
+- **Completion handler**: Processes completed pieces, forwards to BitTorrent client, tracks progress
 - **Failure handler**: Handles failed pieces with retry logic (up to 3 attempts)
 - **Disconnect handler**: Cleans up disconnected peers, requeues in-flight pieces
 - **Tracker refresh task**: Periodically announces to tracker for new peers
@@ -97,11 +97,11 @@ Production code uses concrete implementations (`RealTcpConnector`, `TcpMessageIO
 All tasks listen on a `broadcast::Receiver<()>` shutdown channel and terminate gracefully via `tokio::select!` when `PeerManagerHandle.shutdown()` is called.
 
 **Download Orchestration**: The architecture cleanly separates concerns:
-- **FileManager**: Handles torrent metadata, writes completed pieces to disk, verifies file integrity, and displays download progress
-- **PeerManager**: Manages the peer connection pool (up to 50 concurrent peers), assigns pieces to least-busy peers based on bitfield availability, handles retry logic for failed pieces (up to 3 attempts)
+- **BitTorrent** (in `bittorrent_client.rs`): Handles torrent metadata, writes completed pieces to disk, verifies file integrity, and displays download progress with timing metrics
+- **PeerManager**: Manages the peer connection pool (up to 50 concurrent peers), assigns pieces to least-busy peers based on bitfield availability, handles retry logic for failed pieces (unlimited retries), tracks completed piece indices to prevent re-queuing
 - **PeerConnection**: Handles raw TCP I/O with individual peers, downloads piece blocks using pipelined requests (5 blocks ahead), reports completion/failure via channels
 
-Pieces flow through channels: FileManager requests pieces → PeerManager assigns to optimal peers → PeerConnection downloads → completion reported back to FileManager for writing.
+Pieces flow through channels: BitTorrent client requests pieces → PeerManager assigns to optimal peers → PeerConnection downloads → completion reported back to BitTorrent client for writing.
 
 ### BitTorrent Protocol Implementation
 
@@ -123,16 +123,16 @@ Uses `anyhow::Result<T>` for error propagation throughout the codebase. Incomple
 
 ### Retry Logic
 - **Handshake**: Exponential backoff retry logic (3 attempts with 200ms, 400ms, 800ms delays)
-- **Piece downloads**: Failed pieces are retried up to 3 times (MAX_FAILED_PIECE_RETRY constant)
+- **Piece downloads**: Failed pieces are retried with unlimited attempts
 - **Tracker announces**: Background task retries on failure with exponential backoff
 
 ### Current State
 The BitTorrent client has achieved 70%+ test coverage on core modules and has a clean separation of concerns:
-- **FileManager** (`file_manager.rs`): Orchestrates the download process, writes pieces to disk, verifies file integrity with SHA1 hashes, and displays download progress
-- **PeerManager** (`peer_manager.rs`): Manages a pool of connected peers (up to 50), assigns pieces to least-busy peers based on bitfield availability, handles retry logic for failed pieces (up to 3 attempts), spawns 7 background tasks for orchestration
+- **BitTorrent** (`bittorrent_client.rs`): Orchestrates the download process, writes pieces to disk, verifies file integrity with SHA1 hashes, displays download progress and timing metrics (duration, speed)
+- **PeerManager** (`peer_manager.rs`): Manages a pool of connected peers (up to 50), assigns pieces to least-busy peers based on bitfield availability, handles unlimited retry logic for failed pieces, tracks completed piece indices to prevent re-queuing, spawns 7 background tasks for orchestration
 - **PeerConnection** (`peer_connection.rs`): Handles block-level downloads using the BitTorrent peer protocol with pipelined requests (5 blocks ahead)
 
-The client uses eager piece assignment (all pieces requested at once) for better parallelism and supports multi-peer parallel downloads.
+The client uses eager piece assignment (all pieces requested at once) for better parallelism and supports multi-peer parallel downloads. Pieces are limited to 1 concurrent download per peer to ensure stability.
 
 ## Common Gotchas
 

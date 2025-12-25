@@ -2,19 +2,18 @@ use anyhow::{Result, anyhow};
 use log::{debug, error, info};
 use sha1::{Digest, Sha1};
 use std::sync::Arc;
+use std::time::Instant;
 use std::{collections::BTreeMap, fs};
-use tokio::sync::RwLock;
 
 use crate::encoding::Decoder;
 use crate::encoding::Encoder;
 use crate::peer_manager::PeerManager;
-use crate::types::{BencodeTypes, Piece, PieceStatus};
-use crate::types::{CompletedPiece, DownloadComplete, PeerManagerConfig, PieceDownloadRequest};
+use crate::types::{
+    BencodeTypes, CompletedPiece, DownloadComplete, PeerManagerConfig, PieceDownloadRequest,
+};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::mpsc::{self, Receiver, UnboundedReceiver};
-
-const MAX_PEERS_TO_CONNECT: usize = 50;
 
 pub struct BitTorrent {
     // Encoder and Decoder are used to encode and decode
@@ -26,12 +25,11 @@ pub struct BitTorrent {
     // after parsing the file.
     metadata: Option<BTreeMap<String, BencodeTypes>>,
 
-    // Keep track of the pieces status.
-    // TODO: Remove this and control all pieces within the peer manager.
-    pieces: Option<Arc<RwLock<Vec<Piece>>>>,
-
     // Peer manager to handle the communication with the peers.
     peer_manager: Arc<PeerManager>,
+
+    // Download timing metrics
+    start_time: Option<Instant>,
 }
 
 impl BitTorrent {
@@ -45,12 +43,11 @@ impl BitTorrent {
             decoder,
             encoder,
             metadata: None,
-            pieces: None,
             peer_manager: Arc::new(peer_manager),
+            start_time: None,
         };
 
         torrent.load_file(input_file_path)?;
-        torrent.load_pieces()?;
         Ok(torrent)
     }
 
@@ -68,17 +65,6 @@ impl BitTorrent {
                 return Err(anyhow!("the provided data is not a valid torrent file"));
             }
         }
-        Ok(())
-    }
-
-    // Loads the desired file pieces from the torrent source file metadata.
-    fn load_pieces(&mut self) -> Result<()> {
-        let n = self.get_num_pieces()?;
-        let pieces = (0..n)
-            .map(|i| Piece::new(i, PieceStatus::Pending))
-            .collect();
-
-        self.pieces = Some(Arc::new(RwLock::new(pieces)));
         Ok(())
     }
 
@@ -160,6 +146,9 @@ impl BitTorrent {
 
     // Starts downloading the desired file using the torrent source file metadata.
     pub async fn download_file(&mut self, output_directory_path: String) -> Result<()> {
+        // Record download start time
+        self.start_time = Some(Instant::now());
+
         let info_hash_bytes = self.get_info_hash()?;
         let info_hash: [u8; 20] = info_hash_bytes
             .as_slice()
@@ -228,6 +217,18 @@ impl BitTorrent {
 
         self.verify_file(&output_path, &pieces_hashes, piece_length, file_size)
             .await?;
+
+        // Display download metrics
+        if let Some(start_time) = self.start_time {
+            let duration = start_time.elapsed();
+            let duration_secs = duration.as_secs_f64();
+            let file_size_mb = file_size as f64 / (1024.0 * 1024.0);
+            let avg_speed_mbps = file_size_mb / duration_secs;
+
+            info!("📊 Download completed in {:.2}s", duration_secs);
+            info!("📦 File size: {:.2} MB", file_size_mb);
+            info!("⚡ Average speed: {:.2} MB/s", avg_speed_mbps);
+        }
 
         Ok(())
     }

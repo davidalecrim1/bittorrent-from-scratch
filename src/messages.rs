@@ -111,12 +111,16 @@ impl PeerMessage {
 
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         match self {
+            Self::KeepAlive => Ok(vec![0, 0, 0, 0]),
+            Self::Choke(message) => Ok(message.to_bytes().to_vec()),
+            Self::Unchoke(message) => Ok(message.to_bytes().to_vec()),
             Self::Interested(message) => Ok(message.to_bytes().to_vec()),
+            Self::NotInterested(message) => Ok(message.to_bytes().to_vec()),
+            Self::Have(message) => Ok(message.to_bytes().to_vec()),
+            Self::Bitfield(message) => Ok(message.to_bytes()),
             Self::Request(message) => Ok(message.to_bytes().to_vec()),
-            _ => Err(anyhow!(
-                "the message being encoded is not supported: {:?}",
-                &self
-            )),
+            Self::Piece(message) => Ok(message.to_bytes()),
+            Self::Cancel(message) => Ok(message.to_bytes().to_vec()),
         }
     }
 }
@@ -155,6 +159,28 @@ impl BitfieldMessage {
             .enumerate()
             .find_map(|(i, &has_piece)| if has_piece { Some(i) } else { None })
     }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        // Convert bitfield back to bytes
+        let num_bytes = self.bitfield.len().div_ceil(8);
+        let mut bytes = vec![0u8; num_bytes];
+
+        for (i, &has_piece) in self.bitfield.iter().enumerate() {
+            if has_piece {
+                let byte_index = i / 8;
+                let bit_index = 7 - (i % 8);
+                bytes[byte_index] |= 1 << bit_index;
+            }
+        }
+
+        // Build full message: length (4) + type (1) + bitfield data
+        let message_length = 1 + bytes.len();
+        let mut result = Vec::with_capacity(4 + message_length);
+        result.extend_from_slice(&(message_length as u32).to_be_bytes());
+        result.push(5); // Message type for bitfield
+        result.extend_from_slice(&bytes);
+        result
+    }
 }
 
 impl Debug for BitfieldMessage {
@@ -191,6 +217,13 @@ impl ChokeMessage {
     pub fn from_bytes(_bytes: &[u8]) -> Result<Self> {
         Ok(Self {})
     }
+
+    pub fn to_bytes(&self) -> [u8; 5] {
+        let mut bytes = [0u8; 5];
+        bytes[0..4].copy_from_slice(&1u32.to_be_bytes());
+        bytes[4] = 0; // Message type 0 for choke
+        bytes
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -199,6 +232,13 @@ pub struct UnchokeMessage {}
 impl UnchokeMessage {
     pub fn from_bytes(_bytes: &[u8]) -> Result<Self> {
         Ok(Self {})
+    }
+
+    pub fn to_bytes(&self) -> [u8; 5] {
+        let mut bytes = [0u8; 5];
+        bytes[0..4].copy_from_slice(&1u32.to_be_bytes());
+        bytes[4] = 1; // Message type 1 for unchoke
+        bytes
     }
 }
 
@@ -273,6 +313,17 @@ impl PieceMessage {
             block,
         })
     }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let message_length = 1 + 4 + 4 + self.block.len(); // msg_id + piece_index + begin + block
+        let mut bytes = Vec::with_capacity(4 + message_length);
+        bytes.extend_from_slice(&(message_length as u32).to_be_bytes());
+        bytes.push(7); // Message type 7 for piece
+        bytes.extend_from_slice(&self.piece_index.to_be_bytes());
+        bytes.extend_from_slice(&self.begin.to_be_bytes());
+        bytes.extend_from_slice(&self.block);
+        bytes
+    }
 }
 
 impl Debug for PieceMessage {
@@ -291,6 +342,13 @@ pub struct NotInterestedMessage {}
 impl NotInterestedMessage {
     pub fn from_bytes(_bytes: &[u8]) -> Result<Self> {
         Ok(Self {})
+    }
+
+    pub fn to_bytes(&self) -> [u8; 5] {
+        let mut bytes = [0u8; 5];
+        bytes[0..4].copy_from_slice(&1u32.to_be_bytes());
+        bytes[4] = 3; // Message type 3 for not interested
+        bytes
     }
 }
 
@@ -316,6 +374,14 @@ impl HaveMessage {
         let piece_index = ReadBytesExt::read_u32::<BigEndian>(&mut cursor)?;
 
         Ok(HaveMessage { piece_index })
+    }
+
+    pub fn to_bytes(&self) -> [u8; 9] {
+        let mut bytes = [0u8; 9];
+        bytes[0..4].copy_from_slice(&5u32.to_be_bytes()); // Length = 5
+        bytes[4] = 4; // Message type 4 for have
+        bytes[5..9].copy_from_slice(&self.piece_index.to_be_bytes());
+        bytes
     }
 }
 
@@ -352,5 +418,82 @@ impl CancelMessage {
             begin,
             length,
         })
+    }
+
+    pub fn to_bytes(&self) -> [u8; 17] {
+        let mut bytes = [0u8; 17];
+        bytes[0..4].copy_from_slice(&13u32.to_be_bytes());
+        bytes[4] = 8; // Message type 8 for cancel
+        bytes[5..9].copy_from_slice(&self.piece_index.to_be_bytes());
+        bytes[9..13].copy_from_slice(&self.begin.to_be_bytes());
+        bytes[13..17].copy_from_slice(&self.length.to_be_bytes());
+        bytes
+    }
+}
+
+/// Message during the handshake with a Peer.
+/// Not a standard message like the ones during the client is
+/// connected to the peer, but just for the handshake.
+pub struct PeerHandshakeMessage {
+    info_hash: [u8; 20], // NOT the hexadecimal string, but the actual bytes
+    peer_id: [u8; 20],
+    reserved: [u8; 8],
+}
+
+impl PeerHandshakeMessage {
+    pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
+        Self {
+            info_hash,
+            peer_id,
+            reserved: [0; 8],
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(68);
+        // pstrlen (1 byte)
+        bytes.push(19);
+        // pstr (19 bytes)
+        bytes.extend_from_slice(b"BitTorrent protocol");
+        // reserved (8 bytes)
+        bytes.extend_from_slice(&self.reserved);
+        // info_hash (20 bytes)
+        bytes.extend_from_slice(&self.info_hash);
+        // peer_id (20 bytes)
+        bytes.extend_from_slice(&self.peer_id);
+
+        bytes
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != 68 {
+            return Err(anyhow!("the provided data is not a valid handshake"));
+        }
+
+        let info_hash = &bytes[19..39];
+        let peer_id = &bytes[39..59];
+        let reserved = &bytes[59..67];
+
+        Ok(Self {
+            info_hash: info_hash.try_into()?,
+            peer_id: peer_id.try_into()?,
+            reserved: reserved.try_into()?,
+        })
+    }
+
+    pub fn get_peer_id(&self) -> [u8; 20] {
+        self.peer_id
+    }
+}
+
+impl Debug for PeerHandshakeMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let info_hash = hex::encode(self.info_hash);
+        let peer_id = hex::encode(self.peer_id);
+        write!(
+            f,
+            "PeerHandshakeMessage {{ info_hash: {:?}, peer_id: {:?} }}",
+            info_hash, peer_id
+        )
     }
 }

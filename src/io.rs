@@ -1,12 +1,23 @@
 use crate::encoding::{PeerMessageDecoder, PeerMessageEncoder};
 use crate::messages::PeerMessage;
-use crate::traits::MessageIO;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio_util::codec::{FramedRead, FramedWrite};
+
+/// Abstraction for peer-to-peer message I/O after handshake.
+/// Handles BitTorrent peer protocol message encoding/decoding.
+#[async_trait]
+pub trait MessageIO: Send + Sync + std::fmt::Debug {
+    /// Write a peer protocol message to the stream.
+    async fn write_message(&mut self, msg: &PeerMessage) -> Result<()>;
+
+    /// Read the next peer protocol message from the stream.
+    /// Returns None if the stream has ended gracefully.
+    async fn read_message(&mut self) -> Result<Option<PeerMessage>>;
+}
 
 /// Production implementation of MessageIO using TCP streams with framing codecs
 pub struct TcpMessageIO {

@@ -1,11 +1,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use bittorrent_from_scratch::io::MessageIO;
 use bittorrent_from_scratch::messages::PeerMessage;
-use bittorrent_from_scratch::peer_manager::PeerConnector;
-use bittorrent_from_scratch::traits::{
-    AnnounceRequest, AnnounceResponse, MessageIO, TrackerClient,
+use bittorrent_from_scratch::peer_manager::PeerConnectionFactory;
+use bittorrent_from_scratch::tracker_client::TrackerClient;
+use bittorrent_from_scratch::types::{
+    AnnounceRequest, AnnounceResponse, ConnectedPeer, FailedPiece, Peer,
 };
-use bittorrent_from_scratch::types::{ConnectedPeer, FailedPiece, Peer};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
@@ -97,17 +98,17 @@ impl TrackerClient for MockTrackerClient {
     }
 }
 
-/// Mock peer connector for testing
-pub struct MockPeerConnector {}
+/// Mock peer connection factory for testing
+pub struct MockPeerConnectionFactory {}
 
-impl MockPeerConnector {
+impl MockPeerConnectionFactory {
     pub fn new() -> Self {
         Self {}
     }
 }
 
 #[async_trait]
-impl PeerConnector for MockPeerConnector {
+impl PeerConnectionFactory for MockPeerConnectionFactory {
     async fn connect(
         &self,
         peer: Peer,

@@ -1,11 +1,18 @@
 use crate::encoding::Decoder;
 use crate::error::AppError;
-use crate::traits::{AnnounceRequest, AnnounceResponse, TrackerClient};
-use crate::types::{BencodeTypes, Peer};
+use crate::types::{AnnounceRequest, AnnounceResponse, BencodeTypes, Peer};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Url};
 use std::net::Ipv6Addr;
+
+/// Abstraction for tracker HTTP communication.
+/// Allows testing peer discovery logic without making real HTTP requests.
+#[async_trait]
+pub trait TrackerClient: Send + Sync {
+    /// Send an announce request to the tracker.
+    async fn announce(&self, request: AnnounceRequest) -> Result<AnnounceResponse>;
+}
 
 pub struct HttpTrackerClient {
     http_client: Client,

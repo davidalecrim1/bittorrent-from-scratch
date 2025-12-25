@@ -8,11 +8,9 @@ use tokio::sync::{RwLock, mpsc};
 use tokio::time::sleep;
 
 use crate::download_state::DownloadState;
+use crate::messages::PeerHandshakeMessage;
 use crate::messages::{InterestedMessage, PeerMessage, PieceMessage, RequestMessage};
-use crate::types::{
-    CompletedPiece, FailedPiece, Peer, PeerDisconnected, PeerHandshake, PeerId,
-    PieceDownloadRequest,
-};
+use crate::types::{CompletedPiece, FailedPiece, Peer, PeerDisconnected, PieceDownloadRequest};
 
 const DEFAULT_BLOCK_SIZE: usize = 16 * 1024; // 16 KiB per BitTorrent spec
 const BLOCK_PIPELINE_SIZE: usize = 5; // Request 5 blocks ahead
@@ -26,13 +24,12 @@ const MAX_RETRIES_HANDSHAKE: usize = 3;
 #[derive(Debug)]
 pub struct PeerConnection {
     peer: Peer,
-    peer_id: Option<PeerId>,
 
     // Stream is only present after handshake
     stream: Option<TcpStream>,
 
     // TCP connector for establishing connections
-    tcp_connector: Arc<dyn crate::traits::TcpConnector>,
+    tcp_connector: Arc<dyn crate::tcp_connector::TcpStreamFactory>,
 
     // Outbound messages the actor will write to the wire
     outbound_tx: mpsc::Sender<PeerMessage>,
@@ -69,7 +66,7 @@ impl PeerConnection {
         piece_completion_tx: mpsc::UnboundedSender<CompletedPiece>,
         piece_failure_tx: mpsc::UnboundedSender<FailedPiece>,
         peer_disconnect_tx: mpsc::UnboundedSender<PeerDisconnected>,
-        tcp_connector: Arc<dyn crate::traits::TcpConnector>,
+        tcp_connector: Arc<dyn crate::tcp_connector::TcpStreamFactory>,
     ) -> (
         Self,
         mpsc::Sender<PieceDownloadRequest>,
@@ -84,7 +81,6 @@ impl PeerConnection {
 
         let peer_conn = Self {
             peer,
-            peer_id: None,
             stream: None,
             tcp_connector,
             outbound_tx,
@@ -104,17 +100,13 @@ impl PeerConnection {
         (peer_conn, download_request_tx, bitfield)
     }
 
-    pub fn get_peer_id(&self) -> Option<[u8; 20]> {
-        self.peer_id
-    }
-
     // Handshake with the peer to initialize the connection.
     pub async fn handshake(
         &mut self,
         client_peer_id: [u8; 20],
         info_hash: [u8; 20],
-    ) -> Result<PeerHandshake> {
-        let handshake = PeerHandshake::new(info_hash, client_peer_id);
+    ) -> Result<PeerHandshakeMessage> {
+        let handshake = PeerHandshakeMessage::new(info_hash, client_peer_id);
         let bytes = handshake.to_bytes();
 
         let mut last_error = None;
@@ -143,15 +135,14 @@ impl PeerConnection {
     }
 
     // Attemps to perform the handshake. This can be unstable and may need retries.
-    async fn try_handshake(&mut self, handshake_bytes: &[u8]) -> Result<PeerHandshake> {
+    async fn try_handshake(&mut self, handshake_bytes: &[u8]) -> Result<PeerHandshakeMessage> {
         let mut stream = self.tcp_connector.connect(self.peer.get_addr()).await?;
         stream.write_all(handshake_bytes).await?;
 
         let mut buffer = vec![0u8; 68];
         let n = stream.read(&mut buffer).await?;
 
-        let response = PeerHandshake::from_bytes(&buffer[..n])?;
-        self.peer_id = Some(response.get_peer_id());
+        let response = PeerHandshakeMessage::from_bytes(&buffer[..n])?;
         self.stream = Some(stream);
 
         Ok(response)
@@ -178,7 +169,7 @@ impl PeerConnection {
     // Usually done for testing purposes.
     pub async fn start_with_io(
         mut self,
-        mut message_io: Box<dyn crate::traits::MessageIO>,
+        mut message_io: Box<dyn crate::io::MessageIO>,
     ) -> Result<()> {
         // Take the receivers out of self
         let mut outbound_rx = self.outbound_rx.take().unwrap();
@@ -487,7 +478,7 @@ impl PeerConnection {
             true => {
                 debug!(
                     "Peer {} finished downloading the piece {}",
-                    self.peer.get_addr().clone(),
+                    self.peer.get_addr(),
                     download_state.piece_index
                 );
 
@@ -507,7 +498,7 @@ impl PeerConnection {
 
                 debug!(
                     "Peer {} - Hash mismatch for piece {}: expected {:02x?}, got {:02x?}, piece_length={}, data_length={}",
-                    self.peer.get_addr().clone(),
+                    self.peer.get_addr(),
                     download_state.piece_index,
                     download_state.expected_hash(),
                     computed_hash_bytes,

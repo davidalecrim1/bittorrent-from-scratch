@@ -127,3 +127,99 @@ fn test_decode_empty_dictionary() {
 
     assert_eq!(decoded, BencodeTypes::Dictionary(BTreeMap::new()));
 }
+
+#[test]
+fn test_encode_raw_bytes() {
+    let encoder = Encoder {};
+
+    let raw_data = vec![0x01, 0x02, 0x03, 0x04];
+    let original = BencodeTypes::Raw(raw_data.clone());
+    let encoded = encoder.from_bencode_types(original).unwrap();
+
+    assert_eq!(encoded, raw_data);
+}
+
+#[test]
+fn test_encode_pieces_field_with_list_of_hashes() {
+    let encoder = Encoder {};
+
+    // SHA1 hashes are 20 bytes each, represented as hex strings
+    let hash1 = "0123456789abcdef0123456789abcdef01234567";
+    let hash2 = "fedcba9876543210fedcba9876543210fedcba98";
+
+    let mut dict = BTreeMap::new();
+    dict.insert(
+        "pieces".to_string(),
+        BencodeTypes::List(vec![
+            BencodeTypes::String(hash1.to_string()),
+            BencodeTypes::String(hash2.to_string()),
+        ]),
+    );
+
+    let original = BencodeTypes::Dictionary(dict);
+    let encoded = encoder.from_bencode_types(original).unwrap();
+
+    // Should encode as "d6:pieces40:<binary_data>e"
+    // Verify it starts with dictionary and pieces key
+    assert!(encoded.starts_with(b"d6:pieces40:"));
+    assert!(encoded.ends_with(b"e"));
+}
+
+#[test]
+fn test_encode_pieces_field_with_raw_bytes() {
+    let encoder = Encoder {};
+
+    // Raw binary hash data (20 bytes for one SHA1 hash)
+    let raw_hash = vec![
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+        0xef, 0x01, 0x23, 0x45, 0x67,
+    ];
+
+    let mut dict = BTreeMap::new();
+    dict.insert("pieces".to_string(), BencodeTypes::Raw(raw_hash.clone()));
+
+    let original = BencodeTypes::Dictionary(dict);
+    let encoded = encoder.from_bencode_types(original).unwrap();
+
+    // Should encode as "d6:pieces20:<binary_data>e"
+    assert!(encoded.starts_with(b"d6:pieces20:"));
+    assert!(encoded.ends_with(b"e"));
+}
+
+#[test]
+fn test_encode_pieces_field_error_on_invalid_type() {
+    let encoder = Encoder {};
+
+    // pieces field should be list or raw, not integer
+    let mut dict = BTreeMap::new();
+    dict.insert("pieces".to_string(), BencodeTypes::Integer(123));
+
+    let original = BencodeTypes::Dictionary(dict);
+    let result = encoder.from_bencode_types(original);
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("not a list or a string")
+    );
+}
+
+#[test]
+fn test_encode_pieces_list_error_on_non_string_item() {
+    let encoder = Encoder {};
+
+    // pieces list should contain strings (hex hashes), not integers
+    let mut dict = BTreeMap::new();
+    dict.insert(
+        "pieces".to_string(),
+        BencodeTypes::List(vec![BencodeTypes::Integer(123)]),
+    );
+
+    let original = BencodeTypes::Dictionary(dict);
+    let result = encoder.from_bencode_types(original);
+
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("not a string"));
+}

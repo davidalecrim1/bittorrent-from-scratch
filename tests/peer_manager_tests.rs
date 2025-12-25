@@ -10,7 +10,7 @@ mod tests {
     async fn test_peer_manager_initialization() {
         // Create a mock tracker client
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
 
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
@@ -30,7 +30,7 @@ mod tests {
         use bittorrent_from_scratch::types::PieceDownloadRequest;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
 
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
@@ -66,7 +66,7 @@ mod tests {
         use bittorrent_from_scratch::types::PieceDownloadRequest;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
 
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
@@ -94,7 +94,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
 
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
@@ -129,7 +129,7 @@ mod tests {
         use bittorrent_from_scratch::types::PieceDownloadRequest;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
 
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
@@ -160,7 +160,7 @@ mod tests {
         use bittorrent_from_scratch::types::Peer;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
 
         // Setup mock to return peers
         let expected_peers = vec![
@@ -201,7 +201,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
 
         // Setup tracker to return peers
         tracker_client
@@ -271,7 +271,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
 
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
@@ -312,7 +312,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
 
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
@@ -351,7 +351,7 @@ mod tests {
         use bittorrent_from_scratch::types::{FailedPiece, PieceDownloadRequest};
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
 
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
@@ -396,7 +396,7 @@ mod tests {
         use bittorrent_from_scratch::types::{FailedPiece, PieceDownloadRequest};
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
 
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
@@ -454,7 +454,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
 
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
@@ -474,9 +474,9 @@ mod tests {
         let mut connected_peer = ConnectedPeer::new(peer.clone(), download_request_tx, bitfield);
 
         // Mark pieces 1, 2, 3 as active downloads for this peer
-        connected_peer.active_downloads.insert(1);
-        connected_peer.active_downloads.insert(2);
-        connected_peer.active_downloads.insert(3);
+        connected_peer.mark_downloading(1);
+        connected_peer.mark_downloading(2);
+        connected_peer.mark_downloading(3);
 
         {
             let mut connected_peers = peer_manager.connected_peers.write().await;
@@ -519,7 +519,7 @@ mod tests {
     #[tokio::test]
     async fn test_try_assign_piece_returns_false_when_queue_empty() {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
 
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
@@ -543,7 +543,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -561,7 +561,7 @@ mod tests {
         let (download_request_tx, _rx) = mpsc::channel(10);
         let bitfield = Arc::new(tokio::sync::RwLock::new(Vec::new()));
         let mut connected_peer = ConnectedPeer::new(peer, download_request_tx, bitfield);
-        connected_peer.active_downloads.insert(5);
+        connected_peer.mark_downloading(5);
 
         {
             let mut connected_peers = peer_manager.connected_peers.write().await;
@@ -584,14 +584,14 @@ mod tests {
         {
             let connected_peers = peer_manager.connected_peers.read().await;
             let peer = connected_peers.get(&peer_addr).unwrap();
-            assert!(!peer.active_downloads.contains(&5));
+            assert!(!peer.is_downloading(5));
         }
     }
 
     #[tokio::test]
     async fn test_cleanup_piece_tracking_not_found() {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -614,7 +614,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -646,8 +646,8 @@ mod tests {
         let mut connected_peer1 = ConnectedPeer::new(peer1, tx1, bitfield1_arc);
         let connected_peer2 = ConnectedPeer::new(peer2, tx2, bitfield2_arc);
 
-        connected_peer1.active_downloads.insert(1);
-        connected_peer1.active_downloads.insert(2);
+        connected_peer1.mark_downloading(1);
+        connected_peer1.mark_downloading(2);
 
         {
             let mut connected_peers = peer_manager.connected_peers.write().await;
@@ -672,7 +672,7 @@ mod tests {
         {
             let connected_peers = peer_manager.connected_peers.read().await;
             let peer2 = connected_peers.get(&peer2_addr).unwrap();
-            assert!(peer2.active_downloads.contains(&5));
+            assert!(peer2.is_downloading(5));
         }
     }
 
@@ -681,7 +681,7 @@ mod tests {
         use bittorrent_from_scratch::types::PieceDownloadRequest;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -710,7 +710,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -732,7 +732,7 @@ mod tests {
         let bitfield_arc = Arc::new(tokio::sync::RwLock::new(bitfield));
 
         let mut connected_peer = ConnectedPeer::new(peer, tx, bitfield_arc);
-        connected_peer.active_downloads.insert(5);
+        connected_peer.mark_downloading(5);
 
         {
             let mut connected_peers = peer_manager.connected_peers.write().await;
@@ -755,7 +755,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -789,7 +789,7 @@ mod tests {
     #[tokio::test]
     async fn test_try_assign_piece_empty_queue() {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -816,7 +816,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -850,7 +850,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -868,7 +868,7 @@ mod tests {
         let (download_request_tx, _rx) = mpsc::channel(10);
         let bitfield = Arc::new(tokio::sync::RwLock::new(Vec::new()));
         let mut connected_peer = ConnectedPeer::new(peer, download_request_tx, bitfield);
-        connected_peer.active_downloads.insert(5);
+        connected_peer.mark_downloading(5);
 
         {
             let mut connected_peers = peer_manager.connected_peers.write().await;
@@ -919,7 +919,7 @@ mod tests {
         use bittorrent_from_scratch::types::FailedPiece;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -950,7 +950,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -969,9 +969,9 @@ mod tests {
         let bitfield = Arc::new(tokio::sync::RwLock::new(Vec::new()));
         let mut connected_peer = ConnectedPeer::new(peer.clone(), download_request_tx, bitfield);
 
-        connected_peer.active_downloads.insert(3);
-        connected_peer.active_downloads.insert(5);
-        connected_peer.active_downloads.insert(7);
+        connected_peer.mark_downloading(3);
+        connected_peer.mark_downloading(5);
+        connected_peer.mark_downloading(7);
 
         {
             let mut connected_peers = peer_manager.connected_peers.write().await;
@@ -1024,7 +1024,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -1073,7 +1073,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -1114,7 +1114,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
-        let connector = Arc::new(super::helpers::fakes::MockPeerConnector::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
         let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
 
         peer_manager
@@ -1163,6 +1163,124 @@ mod tests {
         {
             let pending = peer_manager.pending_pieces.read().await;
             assert_eq!(pending.len(), 0, "Queue should be empty after assignment");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_completed_piece_not_requeued_on_late_failure() {
+        use bittorrent_from_scratch::types::{
+            CompletedPiece, ConnectedPeer, FailedPiece, PieceDownloadRequest,
+        };
+        use tokio::sync::mpsc;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        peer_manager
+            .initialize(PeerManagerConfig {
+                info_hash: [1u8; 20],
+                client_peer_id: [2u8; 20],
+                file_size: 1024,
+                num_pieces: 10,
+            })
+            .await
+            .unwrap();
+
+        // Add piece request
+        let piece_request = PieceDownloadRequest {
+            piece_index: 5,
+            piece_length: 1024,
+            expected_hash: [0u8; 20],
+        };
+
+        peer_manager
+            .request_pieces(vec![piece_request])
+            .await
+            .unwrap();
+
+        // Setup a connected peer
+        let peer = bittorrent_from_scratch::types::Peer::new("192.168.1.1".to_string(), 6881);
+        let peer_addr = peer.get_addr();
+        let (download_request_tx, _rx) = mpsc::channel(10);
+        let mut bitfield = vec![true; 10];
+        let bitfield_arc = Arc::new(tokio::sync::RwLock::new(bitfield));
+        let mut connected_peer = ConnectedPeer::new(peer, download_request_tx, bitfield_arc);
+        connected_peer.mark_downloading(5);
+
+        {
+            let mut connected_peers = peer_manager.connected_peers.write().await;
+            connected_peers.insert(peer_addr.clone(), connected_peer);
+        }
+
+        {
+            let mut in_flight = peer_manager.in_flight_pieces.write().await;
+            in_flight.insert(5, peer_addr.clone());
+        }
+
+        // Process completion for piece 5
+        let (file_writer_tx, _file_writer_rx) = mpsc::unbounded_channel();
+        let (download_complete_tx, _download_complete_rx) = mpsc::channel(1);
+
+        peer_manager
+            .process_completion(
+                CompletedPiece {
+                    piece_index: 5,
+                    data: vec![0u8; 1024],
+                },
+                &file_writer_tx,
+                &download_complete_tx,
+                10,
+            )
+            .await;
+
+        // Verify piece 5 is completed
+        {
+            let completed = *peer_manager.completed_pieces.read().await;
+            assert_eq!(completed, 1);
+        }
+
+        // Verify it's no longer in pending or in-flight
+        {
+            let pending = peer_manager.pending_pieces.read().await;
+            assert_eq!(
+                pending.len(),
+                0,
+                "No pieces should be pending after completion"
+            );
+        }
+
+        {
+            let in_flight = peer_manager.in_flight_pieces.read().await;
+            assert!(
+                !in_flight.contains_key(&5),
+                "Piece 5 should not be in-flight after completion"
+            );
+        }
+
+        // Now simulate a late failure for piece 5 (race condition)
+        peer_manager
+            .process_failure(FailedPiece {
+                piece_index: 5,
+                reason: "late_failure".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // BUG: Piece 5 gets re-queued even though it's completed!
+        {
+            let pending = peer_manager.pending_pieces.read().await;
+            assert_eq!(
+                pending.len(),
+                0,
+                "Completed piece should NOT be re-queued on late failure"
+            );
+        }
+
+        // Also verify completed count didn't change
+        {
+            let completed = *peer_manager.completed_pieces.read().await;
+            assert_eq!(completed, 1, "Completed count should remain 1");
         }
     }
 }
