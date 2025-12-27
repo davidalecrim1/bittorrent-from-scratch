@@ -19,7 +19,7 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::time;
 
 const WATCH_TRACKER_DELAY: u64 = 30;
-const MAX_PEERS_TO_CONNECT: usize = 50;
+const MAX_PEERS_TO_CONNECT: usize = 20;
 
 #[async_trait]
 pub trait PeerConnectionFactory: Send + Sync {
@@ -327,6 +327,32 @@ impl PeerManager {
     pub async fn process_failure(&self, failed: FailedPiece) -> Result<bool> {
         let piece_index = failed.piece_index;
 
+        if failed.reason.contains("Peer queue full") || failed.reason.contains("queue full") {
+            debug!(
+                "Piece {} queue full on peer {}, retrying immediately with different peer",
+                piece_index, failed.peer_addr
+            );
+
+            self.cleanup_piece_tracking(piece_index).await;
+
+            let request = {
+                let piece_requests = self.piece_requests.read().await;
+                piece_requests.get(&piece_index).cloned()
+            };
+
+            if let Some(request) = request {
+                let mut pending = self.pending_pieces.write().await;
+                pending.push_front(request);
+                return Ok(true);
+            } else {
+                error!(
+                    "Cannot retry piece {}: original request not found",
+                    piece_index
+                );
+                return Ok(false);
+            }
+        }
+
         // Check if piece is already completed (race condition)
         {
             let completed_indices = self.completed_piece_indices.read().await;
@@ -436,6 +462,7 @@ impl PeerManager {
                 // Send to internal failure handler for retry logic
                 let _ = failure_tx.send(FailedPiece {
                     piece_index: piece_idx,
+                    peer_addr: peer_addr.clone(),
                     reason: "peer_disconnected".to_string(),
                 });
             }

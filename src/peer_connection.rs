@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use log::debug;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -8,12 +9,15 @@ use tokio::sync::{RwLock, mpsc};
 use tokio::time::sleep;
 
 use crate::download_state::DownloadState;
-use crate::messages::PeerHandshakeMessage;
-use crate::messages::{InterestedMessage, PeerMessage, PieceMessage, RequestMessage};
-use crate::types::{CompletedPiece, FailedPiece, Peer, PeerDisconnected, PieceDownloadRequest};
+use crate::messages::{self, PeerHandshakeMessage};
+use crate::messages::{InterestedMessage, PeerMessage};
+use crate::types::{
+    CompletedPiece, FailedPiece, Peer, PeerDisconnected, PieceDownloadRequest, PieceDownloadTask,
+};
 
 const DEFAULT_BLOCK_SIZE: usize = 16 * 1024; // 16 KiB per BitTorrent spec
 const BLOCK_PIPELINE_SIZE: usize = 5; // Request 5 blocks ahead
+const MAX_PIECES_PER_PEER: usize = 5; // Max concurrent pieces per peer
 
 const OUTBOUND_CHANNEL_SIZE: usize = 1024;
 const INBOUND_CHANNEL_SIZE: usize = 1024;
@@ -54,8 +58,13 @@ pub struct PeerConnection {
     // Peer Information (shared with PeerManager)
     bitfield: Arc<RwLock<Vec<bool>>>,
 
-    // Download state
-    current_download: Option<DownloadState>,
+    // Multi-piece download state
+    active_downloads: HashMap<u32, tokio::task::JoinHandle<()>>,
+    download_queue: VecDeque<PieceDownloadRequest>,
+    max_concurrent_pieces: usize,
+    // Block semaphore to limit the concurrent downloads of blocks (chunks of pieces) at the same time.
+    block_semaphore: Arc<tokio::sync::Semaphore>,
+    piece_channels: HashMap<u32, mpsc::Sender<messages::PieceMessage>>,
 }
 
 // Creates a connection with the Peer provided and wraps it within
@@ -78,6 +87,7 @@ impl PeerConnection {
             mpsc::channel(DOWNLOAD_REQUEST_CHANNEL_SIZE);
 
         let bitfield = Arc::new(RwLock::new(Vec::new()));
+        let block_semaphore = Arc::new(tokio::sync::Semaphore::new(BLOCK_PIPELINE_SIZE));
 
         let peer_conn = Self {
             peer,
@@ -94,7 +104,11 @@ impl PeerConnection {
             is_choking: false,
             is_interested: false,
             bitfield: bitfield.clone(),
-            current_download: None,
+            active_downloads: HashMap::new(),
+            download_queue: VecDeque::new(),
+            max_concurrent_pieces: MAX_PIECES_PER_PEER,
+            block_semaphore,
+            piece_channels: HashMap::new(),
         };
 
         (peer_conn, download_request_tx, bitfield)
@@ -244,10 +258,17 @@ impl PeerConnection {
         let peer_addr = peer.get_addr();
 
         tokio::task::spawn(async move {
+            let mut cleanup_interval = tokio::time::interval(Duration::from_millis(500));
+            cleanup_interval.tick().await;
+
             loop {
                 tokio::select! {
                     // Use biased to ensure fair scheduling between branches
                     biased;
+
+                    _ = cleanup_interval.tick() => {
+                        self.cleanup_completed_tasks().await;
+                    }
 
                     result = inbound_rx.recv() => {
                         match result {
@@ -277,6 +298,7 @@ impl PeerConnection {
                                     debug!("Peer Connector failed to start piece {} download from Peer {}, with error: {}", piece_index, peer_addr.clone(), e);
                                     let _ = self.piece_failure_tx.send(FailedPiece {
                                         piece_index,
+                                        peer_addr: peer_addr.clone(),
                                         reason: e.to_string(),
                                     });
                                 }
@@ -294,6 +316,8 @@ impl PeerConnection {
                     }
                 }
             }
+
+            self.shutdown_piece_tasks().await;
         });
     }
 
@@ -330,10 +354,6 @@ impl PeerConnection {
             PeerMessage::Unchoke(_) => {
                 debug!("Peer Connector received Unchoke from Peer {}", peer_addr);
                 self.is_choking = false;
-
-                if self.current_download.is_some() {
-                    self.handle_piece_download().await?;
-                }
             }
 
             PeerMessage::Interested(_) => {
@@ -369,11 +389,22 @@ impl PeerConnection {
             }
 
             PeerMessage::Piece(piece) => {
+                let piece_index = piece.piece_index;
                 debug!(
                     "Peer Connector received Piece for index {}, begin {} from Peer {}",
-                    piece.piece_index, piece.begin, peer_addr
+                    piece_index, piece.begin, peer_addr
                 );
-                self.handle_piece_block(piece).await?;
+
+                if let Some(tx) = self.piece_channels.get(&piece_index) {
+                    if let Err(e) = tx.send(piece).await {
+                        debug!("Failed to route piece {} block to task: {}", piece_index, e);
+                    }
+                } else {
+                    debug!(
+                        "Received block for unknown piece {} from peer {}",
+                        piece_index, peer_addr
+                    );
+                }
             }
 
             PeerMessage::Cancel(cancel) => {
@@ -388,43 +419,44 @@ impl PeerConnection {
         Ok(())
     }
 
-    async fn handle_piece_block(&mut self, piece_msg: PieceMessage) -> Result<()> {
-        let download_state = match self.current_download.as_mut() {
-            Some(state) => state,
-            None => {
-                debug!(
-                    "Peer {} received piece block for index {} but no active download",
-                    self.peer.get_addr(),
-                    piece_msg.piece_index
-                );
-                return Ok(());
-            }
+    fn activate_piece_download(&mut self, request: PieceDownloadRequest) {
+        let piece_index = request.piece_index;
+        let download_state = DownloadState::new(
+            request.piece_index,
+            request.piece_length,
+            DEFAULT_BLOCK_SIZE,
+            request.expected_hash,
+        );
+
+        let (piece_tx, piece_rx) = mpsc::channel(BLOCK_PIPELINE_SIZE);
+        self.piece_channels.insert(piece_index, piece_tx);
+
+        let task = PieceDownloadTask {
+            piece_index,
+            download_state,
+            block_semaphore: self.block_semaphore.clone(),
+            outbound_tx: self.outbound_tx.clone(),
+            inbound_rx: piece_rx,
+            completion_tx: self.piece_completion_tx.clone(),
+            failure_tx: self.piece_failure_tx.clone(),
+            peer_addr: self.peer.get_addr(),
         };
 
-        if piece_msg.piece_index != download_state.piece_index {
-            debug!(
-                "Peer {} received piece block for index {} but expected {}",
-                self.peer.get_addr(),
-                piece_msg.piece_index,
-                download_state.piece_index
-            );
-            return Ok(());
-        }
+        let handle = tokio::spawn(async move {
+            if let Err(e) = task.run().await {
+                log::error!("Piece {} download task failed: {}", piece_index, e);
+            }
+        });
 
-        download_state.add_block(piece_msg.begin, piece_msg.block)?;
+        self.active_downloads.insert(piece_index, handle);
 
-        if download_state.is_complete() {
-            debug!(
-                "Peer Connector all blocks received for piece {}, finishing download from Peer {}",
-                download_state.piece_index,
-                self.peer.get_addr(),
-            );
-            self.finish_piece_download().await?;
-        } else {
-            self.handle_piece_download().await?;
-        }
-
-        Ok(())
+        debug!(
+            "Peer {}: Activated piece {} from queue (active: {}, queued: {})",
+            self.peer.get_addr(),
+            piece_index,
+            self.active_downloads.len(),
+            self.download_queue.len()
+        );
     }
 
     // Starts the download of a piece from the Peer Manager.
@@ -433,91 +465,143 @@ impl PeerConnection {
         _peer_addr: String,
         request: PieceDownloadRequest,
     ) -> Result<()> {
-        if !self.has_piece(request.piece_index as usize).await {
-            return Err(anyhow!("Peer does not have piece {}", request.piece_index));
+        let piece_index = request.piece_index;
+
+        if self.active_downloads.contains_key(&piece_index)
+            || self
+                .download_queue
+                .iter()
+                .any(|r| r.piece_index == piece_index)
+        {
+            self.piece_failure_tx.send(FailedPiece {
+                piece_index,
+                peer_addr: self.peer.get_addr(),
+                reason: "Piece already downloading".to_string(),
+            })?;
+            return Ok(());
+        }
+
+        let total = self.active_downloads.len() + self.download_queue.len();
+        if total >= self.max_concurrent_pieces {
+            debug!(
+                "Peer {}: Queue full, rejecting piece {} (active: {}, queued: {}, max: {})",
+                self.peer.get_addr(),
+                piece_index,
+                self.active_downloads.len(),
+                self.download_queue.len(),
+                self.max_concurrent_pieces
+            );
+
+            self.piece_failure_tx.send(FailedPiece {
+                piece_index,
+                peer_addr: self.peer.get_addr(),
+                reason: "Peer queue full".to_string(),
+            })?;
+            return Ok(());
+        }
+
+        if !self.has_piece(piece_index as usize).await {
+            self.piece_failure_tx.send(FailedPiece {
+                piece_index,
+                peer_addr: self.peer.get_addr(),
+                reason: "Peer does not have piece".to_string(),
+            })?;
+            return Ok(());
         }
 
         if !self.can_download_pieces().await {
-            let bf = self.bitfield.read().await;
-            return Err(anyhow!(
-                "Peer not ready for download (choking={}, bitfield={})",
-                self.is_choking,
-                bf.is_empty()
-            ));
+            self.piece_failure_tx.send(FailedPiece {
+                piece_index,
+                peer_addr: self.peer.get_addr(),
+                reason: format!(
+                    "Peer not ready (choking={}, bitfield empty={})",
+                    self.is_choking,
+                    self.bitfield.read().await.is_empty()
+                ),
+            })?;
+            return Ok(());
         }
 
-        if self.current_download.is_some() {
-            return Err(anyhow!(
-                "Already downloading a piece, cannot start new download"
-            ));
+        if self.active_downloads.len() < self.max_concurrent_pieces {
+            debug!(
+                "Peer {}: Added piece {} to active downloads (active: {}, queued: {}, total: {})",
+                self.peer.get_addr(),
+                piece_index,
+                self.active_downloads.len() + 1,
+                self.download_queue.len(),
+                self.active_downloads.len() + self.download_queue.len() + 1
+            );
+            self.activate_piece_download(request);
+        } else {
+            debug!(
+                "Peer {}: Added piece {} to queue (active: {}, queued: {}, total: {})",
+                self.peer.get_addr(),
+                piece_index,
+                self.active_downloads.len(),
+                self.download_queue.len() + 1,
+                self.active_downloads.len() + self.download_queue.len() + 1
+            );
+            self.download_queue.push_back(request);
         }
-
-        self.current_download = Some(DownloadState::new(
-            request.piece_index,
-            request.piece_length,
-            DEFAULT_BLOCK_SIZE,
-            request.expected_hash,
-        ));
-
-        self.handle_piece_download().await?;
 
         Ok(())
     }
 
-    // After all the blocks have been downloaded, verify the hash and
-    // send the completed piece to the Peer Manager.
-    async fn finish_piece_download(&mut self) -> Result<()> {
-        let download_state = self
-            .current_download
-            .take()
-            .ok_or_else(|| anyhow!("No active download to finish"))?;
+    async fn cleanup_completed_tasks(&mut self) {
+        let mut completed_pieces = Vec::new();
 
-        let piece_data = download_state.assemble_piece()?;
-
-        match download_state.verify_hash(&piece_data)? {
-            true => {
-                debug!(
-                    "Peer {} finished downloading the piece {}",
-                    self.peer.get_addr(),
-                    download_state.piece_index
-                );
-
-                let completed = CompletedPiece {
-                    piece_index: download_state.piece_index,
-                    data: piece_data,
-                };
-
-                self.piece_completion_tx
-                    .send(completed)
-                    .map_err(|_| anyhow!("Failed to send completed piece to manager"))?;
+        self.active_downloads.retain(|&piece_index, handle| {
+            if handle.is_finished() {
+                completed_pieces.push(piece_index);
+                false
+            } else {
+                true
             }
-            false => {
-                use sha1::{Digest, Sha1};
-                let computed_hash = Sha1::new().chain_update(&piece_data).finalize();
-                let computed_hash_bytes: [u8; 20] = computed_hash.into();
+        });
 
-                debug!(
-                    "Peer {} - Hash mismatch for piece {}: expected {:02x?}, got {:02x?}, piece_length={}, data_length={}",
-                    self.peer.get_addr(),
-                    download_state.piece_index,
-                    download_state.expected_hash(),
-                    computed_hash_bytes,
-                    download_state.piece_length(),
-                    piece_data.len()
-                );
+        for piece_index in completed_pieces {
+            self.piece_channels.remove(&piece_index);
+            debug!(
+                "Peer {}: Cleaned up completed task for piece {}",
+                self.peer.get_addr(),
+                piece_index
+            );
 
-                let failed = FailedPiece {
-                    piece_index: download_state.piece_index,
-                    reason: "hash_mismatch".to_string(),
-                };
+            if let Some(next_request) = self.download_queue.pop_front() {
+                self.activate_piece_download(next_request);
+            }
+        }
+    }
 
-                self.piece_failure_tx
-                    .send(failed)
-                    .map_err(|_| anyhow!("Failed to send failed piece to manager"))?;
+    async fn shutdown_piece_tasks(&mut self) {
+        debug!(
+            "Peer {}: Shutting down {} active piece tasks",
+            self.peer.get_addr(),
+            self.active_downloads.len()
+        );
+
+        for (piece_index, channel) in self.piece_channels.drain() {
+            drop(channel);
+            debug!(
+                "Peer {}: Closed channel for piece {}",
+                self.peer.get_addr(),
+                piece_index
+            );
+        }
+
+        for (piece_index, handle) in self.active_downloads.drain() {
+            match tokio::time::timeout(Duration::from_secs(2), handle).await {
+                Ok(Ok(())) => debug!("Piece {} task exited cleanly", piece_index),
+                Ok(Err(e)) => log::error!("Piece {} task panicked: {:?}", piece_index, e),
+                Err(_) => log::error!("Piece {} task did not exit within timeout", piece_index),
             }
         }
 
-        Ok(())
+        self.download_queue.clear();
+        debug!(
+            "Peer {}: All piece tasks shutdown complete",
+            self.peer.get_addr()
+        );
     }
 
     pub async fn has_piece(&self, piece_index: usize) -> bool {
@@ -528,43 +612,5 @@ impl PeerConnection {
     pub async fn can_download_pieces(&self) -> bool {
         let bf = self.bitfield.read().await;
         !self.is_choking && !bf.is_empty()
-    }
-
-    // Controls the blocks in the requests messages to download pieces from the peer.
-    async fn handle_piece_download(&mut self) -> Result<()> {
-        let download_state = match self.current_download.as_mut() {
-            Some(state) => state,
-            None => {
-                return Ok(());
-            }
-        };
-
-        let mut requests_sent = 0;
-        while requests_sent < BLOCK_PIPELINE_SIZE {
-            match download_state.get_next_block_to_request() {
-                Some((begin, length)) => {
-                    debug!(
-                        "Peer Connector sending request for piece {} block {} from Peer {}",
-                        download_state.piece_index,
-                        begin,
-                        self.peer.get_addr(),
-                    );
-
-                    let request = RequestMessage {
-                        piece_index: download_state.piece_index,
-                        begin,
-                        length,
-                    };
-
-                    self.outbound_tx.send(PeerMessage::Request(request)).await?;
-                    requests_sent += 1;
-                }
-                None => {
-                    break;
-                }
-            }
-        }
-
-        Ok(())
     }
 }

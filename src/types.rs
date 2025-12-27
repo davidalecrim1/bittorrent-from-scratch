@@ -3,12 +3,16 @@
 pub use crate::peer_connection::PeerConnection;
 
 use anyhow::{Result, anyhow};
+use log::debug;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
+
+use crate::download_state::DownloadState;
+use crate::messages::{PeerMessage, PieceMessage, RequestMessage};
 
 #[derive(Debug, Clone)]
 pub struct PieceDownloadRequest {
@@ -108,6 +112,7 @@ impl ConnectedPeer {
 #[derive(Debug, Clone)]
 pub struct CompletedPiece {
     pub piece_index: u32,
+    pub peer_addr: String,
     pub data: Vec<u8>,
 }
 
@@ -115,6 +120,7 @@ pub struct CompletedPiece {
 #[allow(dead_code)]
 pub struct FailedPiece {
     pub piece_index: u32,
+    pub peer_addr: String,
     pub reason: String, // "hash_mismatch" or "peer_disconnected"
 }
 
@@ -141,6 +147,119 @@ impl PeerManagerHandle {
     pub fn shutdown(self) {
         // Send shutdown signal to all subscribers
         let _ = self.shutdown_tx.send(());
+    }
+}
+
+pub struct PieceDownloadTask {
+    pub piece_index: u32,
+    pub download_state: DownloadState,
+    pub block_semaphore: Arc<tokio::sync::Semaphore>,
+    pub outbound_tx: mpsc::Sender<PeerMessage>,
+    pub inbound_rx: mpsc::Receiver<PieceMessage>,
+    pub completion_tx: mpsc::UnboundedSender<CompletedPiece>,
+    pub failure_tx: mpsc::UnboundedSender<FailedPiece>,
+    pub peer_addr: String,
+}
+
+impl PieceDownloadTask {
+    pub async fn run(mut self) -> Result<()> {
+        debug!(
+            "Piece {}: Starting download task for peer {}",
+            self.piece_index, self.peer_addr
+        );
+
+        loop {
+            if let Some((begin, length)) = self.download_state.get_next_block_to_request() {
+                let _permit = self.block_semaphore.acquire().await?;
+
+                debug!(
+                    "Piece {}: Requesting block at offset {} (length {}) from peer {} (available permits: {})",
+                    self.piece_index,
+                    begin,
+                    length,
+                    self.peer_addr,
+                    self.block_semaphore.available_permits()
+                );
+
+                let request = RequestMessage {
+                    piece_index: self.piece_index,
+                    begin,
+                    length,
+                };
+
+                self.outbound_tx.send(PeerMessage::Request(request)).await?;
+
+                let piece_msg = match self.inbound_rx.recv().await {
+                    Some(msg) => msg,
+                    None => {
+                        debug!(
+                            "Piece {}: Channel closed, peer disconnected",
+                            self.piece_index
+                        );
+                        self.send_failure("Peer disconnected".to_string()).await?;
+                        return Ok(());
+                    }
+                };
+
+                self.download_state
+                    .add_block(piece_msg.begin, piece_msg.block)?;
+
+                if self.download_state.is_complete() {
+                    self.finalize_piece().await?;
+                    return Ok(());
+                }
+            } else {
+                if self.download_state.is_complete() {
+                    self.finalize_piece().await?;
+                    return Ok(());
+                }
+
+                let piece_msg = match self.inbound_rx.recv().await {
+                    Some(msg) => msg,
+                    None => {
+                        debug!(
+                            "Piece {}: Channel closed, peer disconnected",
+                            self.piece_index
+                        );
+                        self.send_failure("Peer disconnected".to_string()).await?;
+                        return Ok(());
+                    }
+                };
+
+                self.download_state
+                    .add_block(piece_msg.begin, piece_msg.block)?;
+            }
+        }
+    }
+
+    async fn finalize_piece(&self) -> Result<()> {
+        let piece_data = self.download_state.assemble_piece()?;
+
+        if self.download_state.verify_hash(&piece_data)? {
+            debug!(
+                "Piece {}: Hash verified, sending completion",
+                self.piece_index
+            );
+            self.completion_tx.send(CompletedPiece {
+                piece_index: self.piece_index,
+                data: piece_data,
+                peer_addr: self.peer_addr.clone(),
+            })?;
+        } else {
+            debug!("Piece {}: Hash mismatch, sending failure", self.piece_index);
+            self.send_failure("Hash mismatch".to_string()).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn send_failure(&self, reason: String) -> Result<()> {
+        self.failure_tx.send(FailedPiece {
+            piece_index: self.piece_index,
+            peer_addr: self.peer_addr.clone(),
+            reason,
+        })?;
+        Ok(())
     }
 }
 

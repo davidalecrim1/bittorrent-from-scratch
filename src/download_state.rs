@@ -1,6 +1,9 @@
 use crate::error::{AppError, Result};
 use sha1::{Digest, Sha1};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+const BLOCK_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 pub struct DownloadState {
@@ -10,7 +13,7 @@ pub struct DownloadState {
     pub total_blocks: usize,
     expected_hash: [u8; 20],
     pub received_blocks: HashMap<u32, Vec<u8>>,
-    pending_blocks: HashSet<u32>,
+    pending_blocks: HashMap<u32, Instant>,
 }
 
 impl DownloadState {
@@ -29,7 +32,7 @@ impl DownloadState {
             total_blocks,
             expected_hash,
             received_blocks: HashMap::new(),
-            pending_blocks: HashSet::new(),
+            pending_blocks: HashMap::new(),
         }
     }
 
@@ -125,16 +128,34 @@ impl DownloadState {
 
     pub fn get_next_block_to_request(&mut self) -> Option<(u32, u32)> {
         let mut offset = 0u32;
+        let now = Instant::now();
 
         for _ in 0..self.total_blocks {
-            if !self.received_blocks.contains_key(&offset) && !self.pending_blocks.contains(&offset)
-            {
+            if self.received_blocks.contains_key(&offset) {
+                offset += self.block_size as u32;
+                continue;
+            }
+
+            let should_request = match self.pending_blocks.get(&offset) {
+                None => true,
+                Some(request_time) => now.duration_since(*request_time) >= BLOCK_REQUEST_TIMEOUT,
+            };
+
+            if should_request {
                 let remaining = self.piece_length.saturating_sub(offset as usize);
                 let length = std::cmp::min(self.block_size, remaining) as u32;
 
-                self.pending_blocks.insert(offset);
+                if self.pending_blocks.insert(offset, now).is_some() {
+                    log::debug!(
+                        "Piece {}: Retrying block at offset {} after timeout",
+                        self.piece_index,
+                        offset
+                    );
+                }
+
                 return Some((offset, length));
             }
+
             offset += self.block_size as u32;
         }
 
@@ -147,5 +168,69 @@ impl DownloadState {
 
     pub fn piece_length(&self) -> usize {
         self.piece_length
+    }
+
+    #[cfg(test)]
+    fn set_pending_block_timestamp(&mut self, offset: u32, timestamp: Instant) {
+        self.pending_blocks.insert(offset, timestamp);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_block_retry_after_timeout() {
+        let mut state = DownloadState::new(0, 32 * 1024, 16 * 1024, [0u8; 20]);
+
+        let (begin, length) = state.get_next_block_to_request().unwrap();
+        assert_eq!(begin, 0);
+        assert_eq!(length, 16 * 1024);
+
+        let old_time = Instant::now() - Duration::from_secs(31);
+        state.set_pending_block_timestamp(0, old_time);
+
+        let (begin, length) = state.get_next_block_to_request().unwrap();
+        assert_eq!(begin, 0);
+        assert_eq!(length, 16 * 1024);
+    }
+
+    #[test]
+    fn test_block_not_retried_before_timeout() {
+        let mut state = DownloadState::new(0, 32 * 1024, 16 * 1024, [0u8; 20]);
+
+        state.get_next_block_to_request().unwrap();
+
+        let (begin, _) = state.get_next_block_to_request().unwrap();
+        assert_eq!(begin, 16 * 1024);
+    }
+
+    #[test]
+    fn test_received_blocks_not_retried() {
+        let mut state = DownloadState::new(0, 32 * 1024, 16 * 1024, [0u8; 20]);
+
+        state.get_next_block_to_request().unwrap();
+        state.add_block(0, vec![0u8; 16 * 1024]).unwrap();
+
+        let old_time = Instant::now() - Duration::from_secs(31);
+        state.set_pending_block_timestamp(0, old_time);
+
+        let (begin, _) = state.get_next_block_to_request().unwrap();
+        assert_eq!(begin, 16 * 1024);
+    }
+
+    #[test]
+    fn test_multiple_blocks_with_timeout() {
+        let mut state = DownloadState::new(0, 48 * 1024, 16 * 1024, [0u8; 20]);
+
+        state.get_next_block_to_request().unwrap();
+        state.get_next_block_to_request().unwrap();
+
+        let old_time = Instant::now() - Duration::from_secs(31);
+        state.set_pending_block_timestamp(0, old_time);
+
+        let (begin, _) = state.get_next_block_to_request().unwrap();
+        assert_eq!(begin, 0);
     }
 }

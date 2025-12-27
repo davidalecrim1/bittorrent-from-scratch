@@ -287,6 +287,7 @@ mod tests {
         let (download_complete_tx, _) = mpsc::channel(1);
 
         let completed = CompletedPiece {
+            peer_addr: "127.0.0.1:6881".to_string(),
             piece_index: 5,
             data: vec![1, 2, 3, 4],
         };
@@ -334,6 +335,7 @@ mod tests {
         let (download_complete_tx, mut download_complete_rx) = mpsc::channel(1);
 
         let completed = CompletedPiece {
+            peer_addr: "127.0.0.1:6881".to_string(),
             piece_index: 9,
             data: vec![1, 2, 3, 4],
         };
@@ -377,6 +379,7 @@ mod tests {
         }
 
         let failed = FailedPiece {
+            peer_addr: "127.0.0.1:6881".to_string(),
             piece_index: 5,
             reason: "hash_mismatch".to_string(),
         };
@@ -428,6 +431,7 @@ mod tests {
         }
 
         let failed = FailedPiece {
+            peer_addr: "127.0.0.1:6881".to_string(),
             piece_index: 5,
             reason: "hash_mismatch".to_string(),
         };
@@ -884,6 +888,7 @@ mod tests {
         let (download_complete_tx, _) = mpsc::channel(1);
 
         let completed = CompletedPiece {
+            peer_addr: "127.0.0.1:6881".to_string(),
             piece_index: 5,
             data: vec![1, 2, 3, 4],
         };
@@ -933,6 +938,7 @@ mod tests {
             .unwrap();
 
         let failed = FailedPiece {
+            peer_addr: "127.0.0.1:6881".to_string(),
             piece_index: 99,
             reason: "Test failure".to_string(),
         };
@@ -1225,6 +1231,7 @@ mod tests {
         peer_manager
             .process_completion(
                 CompletedPiece {
+                    peer_addr: "127.0.0.1:6881".to_string(),
                     piece_index: 5,
                     data: vec![0u8; 1024],
                 },
@@ -1261,6 +1268,7 @@ mod tests {
         // Now simulate a late failure for piece 5 (race condition)
         peer_manager
             .process_failure(FailedPiece {
+                peer_addr: "127.0.0.1:6881".to_string(),
                 piece_index: 5,
                 reason: "late_failure".to_string(),
             })
