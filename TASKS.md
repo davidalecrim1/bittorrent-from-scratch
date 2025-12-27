@@ -26,9 +26,6 @@ This file tracks pending tasks and improvements identified in the codebase.
   - Monitor block request latency
   - Track piece task spawn/completion rates
   - Add Prometheus/OpenTelemetry integration
-- [ ] **Implement endgame mode** for final pieces
-  - Request same piece from multiple peers to finish faster
-  - Cancel slower downloads when first one completes
 - [ ] **Add bandwidth throttling**
   - Limit total download/upload bandwidth
   - Implement per-peer rate limiting

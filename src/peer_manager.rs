@@ -712,6 +712,11 @@ impl PeerManager {
                         "Populated available_peers with {} peers from initial tracker request",
                         peers.len()
                     );
+                    drop(hash_map);
+
+                    peer_manager
+                        .drop_useless_peers_if_at_capacity(MAX_PEERS_TO_CONNECT)
+                        .await;
                 }
                 Err(e) => {
                     debug!("Initial tracker request failed: {}", e);
@@ -738,6 +743,11 @@ impl PeerManager {
                             hash_map.len(),
                             hash_map.len().saturating_sub(previous_count)
                         );
+                        drop(hash_map);
+
+                        peer_manager
+                            .drop_useless_peers_if_at_capacity(MAX_PEERS_TO_CONNECT)
+                            .await;
                     }
                     Err(e) => {
                         debug!("Tracker request failed: {}", e);
@@ -851,6 +861,52 @@ impl PeerManager {
 
         let response = self.tracker_client.announce(request).await?;
         Ok(response.peers)
+    }
+
+    /// Drop peers with empty bitfields when at max capacity.
+    ///
+    /// This is called after tracker announces to make room for potentially
+    /// better peers when we're at maximum connections. Peers with no pieces
+    /// (empty bitfield) are useless and should be dropped first.
+    pub async fn drop_useless_peers_if_at_capacity(&self, max_peers: usize) {
+        let peers_to_drop = {
+            let connected = self.connected_peers.read().await;
+
+            if connected.len() < max_peers {
+                return;
+            }
+
+            let mut useless_peers = Vec::new();
+            for (addr, peer) in connected.iter() {
+                let piece_count = peer.piece_count().await;
+                if piece_count == 0 {
+                    useless_peers.push(addr.clone());
+                }
+            }
+
+            useless_peers
+        };
+
+        if peers_to_drop.is_empty() {
+            return;
+        }
+
+        debug!(
+            "At max capacity ({} peers), dropping {} peers with empty bitfields",
+            max_peers,
+            peers_to_drop.len()
+        );
+
+        let mut connected = self.connected_peers.write().await;
+        for addr in peers_to_drop {
+            if let Some(peer) = connected.remove(&addr) {
+                info!(
+                    "Dropped peer {} (empty bitfield, no pieces available)",
+                    addr
+                );
+                drop(peer);
+            }
+        }
     }
 
     /// Connect to available peers up to the specified limit.

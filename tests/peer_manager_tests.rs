@@ -1291,4 +1291,126 @@ mod tests {
             assert_eq!(completed, 1, "Completed count should remain 1");
         }
     }
+
+    #[tokio::test]
+    async fn test_drop_useless_peers_at_max_capacity() {
+        use bittorrent_from_scratch::types::ConnectedPeer;
+        use tokio::sync::mpsc;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
+
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        let config = PeerManagerConfig {
+            info_hash: [1u8; 20],
+            client_peer_id: [2u8; 20],
+            file_size: 1024 * 1024,
+            num_pieces: 10,
+        };
+
+        peer_manager.initialize(config).await.unwrap();
+
+        // Create 3 peers: 2 with pieces, 1 with empty bitfield
+        let peer1 = bittorrent_from_scratch::types::Peer::new("192.168.1.1".to_string(), 6881);
+        let peer2 = bittorrent_from_scratch::types::Peer::new("192.168.1.2".to_string(), 6881);
+        let peer3 = bittorrent_from_scratch::types::Peer::new("192.168.1.3".to_string(), 6881);
+
+        let (tx1, _rx1) = mpsc::channel(10);
+        let (tx2, _rx2) = mpsc::channel(10);
+        let (tx3, _rx3) = mpsc::channel(10);
+
+        // Peer 1: has pieces
+        let bitfield1 = Arc::new(tokio::sync::RwLock::new(vec![true, false, true]));
+        let connected_peer1 = ConnectedPeer::new(peer1.clone(), tx1, bitfield1);
+
+        // Peer 2: has pieces
+        let bitfield2 = Arc::new(tokio::sync::RwLock::new(vec![false, true, true]));
+        let connected_peer2 = ConnectedPeer::new(peer2.clone(), tx2, bitfield2);
+
+        // Peer 3: empty bitfield (no pieces)
+        let bitfield3 = Arc::new(tokio::sync::RwLock::new(vec![]));
+        let connected_peer3 = ConnectedPeer::new(peer3.clone(), tx3, bitfield3);
+
+        {
+            let mut connected = peer_manager.connected_peers.write().await;
+            connected.insert(peer1.get_addr(), connected_peer1);
+            connected.insert(peer2.get_addr(), connected_peer2);
+            connected.insert(peer3.get_addr(), connected_peer3);
+        }
+
+        // Call drop_useless_peers_if_at_capacity with max_peers = 3 (at capacity)
+        peer_manager.drop_useless_peers_if_at_capacity(3).await;
+
+        // Verify peer3 (empty bitfield) was dropped
+        {
+            let connected = peer_manager.connected_peers.read().await;
+            assert_eq!(
+                connected.len(),
+                2,
+                "Should have 2 peers after dropping useless ones"
+            );
+            assert!(
+                connected.contains_key(&peer1.get_addr()),
+                "Peer1 should remain"
+            );
+            assert!(
+                connected.contains_key(&peer2.get_addr()),
+                "Peer2 should remain"
+            );
+            assert!(
+                !connected.contains_key(&peer3.get_addr()),
+                "Peer3 (empty bitfield) should be dropped"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_drop_useless_peers_below_max_capacity() {
+        use bittorrent_from_scratch::types::ConnectedPeer;
+        use tokio::sync::mpsc;
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::MockPeerConnectionFactory::new());
+
+        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+
+        let config = PeerManagerConfig {
+            info_hash: [1u8; 20],
+            client_peer_id: [2u8; 20],
+            file_size: 1024 * 1024,
+            num_pieces: 10,
+        };
+
+        peer_manager.initialize(config).await.unwrap();
+
+        let peer1 = bittorrent_from_scratch::types::Peer::new("192.168.1.1".to_string(), 6881);
+        let (tx1, _rx1) = mpsc::channel(10);
+
+        // Peer with empty bitfield
+        let bitfield1 = Arc::new(tokio::sync::RwLock::new(vec![]));
+        let connected_peer1 = ConnectedPeer::new(peer1.clone(), tx1, bitfield1);
+
+        {
+            let mut connected = peer_manager.connected_peers.write().await;
+            connected.insert(peer1.get_addr(), connected_peer1);
+        }
+
+        // Call with max_peers = 3, but only 1 connected (below capacity)
+        peer_manager.drop_useless_peers_if_at_capacity(3).await;
+
+        // Verify peer was NOT dropped (below capacity)
+        {
+            let connected = peer_manager.connected_peers.read().await;
+            assert_eq!(
+                connected.len(),
+                1,
+                "Peer should not be dropped when below capacity"
+            );
+            assert!(
+                connected.contains_key(&peer1.get_addr()),
+                "Peer1 should remain"
+            );
+        }
+    }
 }

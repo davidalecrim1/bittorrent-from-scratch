@@ -55,16 +55,7 @@ cargo run -- -i <path-to-torrent-file> -o <output-directory>
 - **Backpressure**: Channel-based communication provides natural backpressure
 - **Stability**: Single piece per peer prevents overwhelming individual connections
 
-## Testing
-
-The project maintains 70%+ test coverage on core modules with 97 total tests:
-- **25 unit tests** in `src/` modules
-- **72 integration tests** in `tests/` directory
-  - 15 encoding tests
-  - 28 message tests
-  - 16 peer connection tests
-  - 28 peer manager tests (including disconnect/requeue tests)
-
+### Tests
 Run tests:
 ```bash
 cargo test              # Run all tests
@@ -108,7 +99,3 @@ make lint    # Check for issues with clippy
 ## Logging
 
 The application uses `env_logger` with debug level enabled by default. Logs are helpful for debugging protocol interactions and tracking download progress.
-
----
-
-**Note**: This project prioritizes educational value and code clarity over performance. It's designed to understand how BitTorrent works at a low level by implementing the protocol from scratch.
