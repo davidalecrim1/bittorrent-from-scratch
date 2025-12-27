@@ -327,6 +327,18 @@ impl PeerManager {
     pub async fn process_failure(&self, failed: FailedPiece) -> Result<bool> {
         let piece_index = failed.piece_index;
 
+        // Check if piece is already completed (race condition - must check first)
+        {
+            let completed_indices = self.completed_piece_indices.read().await;
+            if completed_indices.contains(&piece_index) {
+                debug!(
+                    "Ignoring failure for piece {} - already completed (race condition)",
+                    piece_index
+                );
+                return Ok(false); // Don't requeue
+            }
+        }
+
         if failed.reason.contains("Peer queue full") || failed.reason.contains("queue full") {
             debug!(
                 "Piece {} queue full on peer {}, retrying immediately with different peer",
@@ -350,18 +362,6 @@ impl PeerManager {
                     piece_index
                 );
                 return Ok(false);
-            }
-        }
-
-        // Check if piece is already completed (race condition)
-        {
-            let completed_indices = self.completed_piece_indices.read().await;
-            if completed_indices.contains(&piece_index) {
-                debug!(
-                    "Ignoring failure for piece {} - already completed",
-                    piece_index
-                );
-                return Ok(false); // Don't requeue
             }
         }
 
