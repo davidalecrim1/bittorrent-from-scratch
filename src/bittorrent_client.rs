@@ -196,9 +196,16 @@ impl BitTorrent {
         let piece_requests: Vec<PieceDownloadRequest> = (0..num_pieces)
             .map(|idx| {
                 let piece_hash = pieces_hashes[idx];
+
+                // Calculate the correct piece length for this piece
+                // Last piece may be smaller than the standard piece length
+                let offset = idx * piece_length;
+                let remaining = file_size.saturating_sub(offset);
+                let current_piece_length = std::cmp::min(piece_length, remaining);
+
                 PieceDownloadRequest {
                     piece_index: idx as u32,
-                    piece_length,
+                    piece_length: current_piece_length,
                     expected_hash: piece_hash,
                 }
             })

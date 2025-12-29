@@ -180,6 +180,7 @@ dependencies = [
  "percent-encoding",
  "reqwest",
  "sha1",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-test",

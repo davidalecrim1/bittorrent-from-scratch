@@ -322,8 +322,6 @@ impl PeerManager {
     }
 
     /// Process a single failed piece event.
-    ///
-    /// Returns Ok(true) if piece was requeued, Ok(false) if max retries exceeded.
     pub async fn process_failure(&self, failed: FailedPiece) -> Result<bool> {
         let piece_index = failed.piece_index;
 
@@ -357,7 +355,7 @@ impl PeerManager {
                 pending.push_front(request);
                 return Ok(true);
             } else {
-                error!(
+                info!(
                     "Cannot retry piece {}: original request not found",
                     piece_index
                 );
@@ -402,7 +400,7 @@ impl PeerManager {
             pending.push_back(request);
             Ok(true) // Requeued successfully
         } else {
-            error!(
+            info!(
                 "Cannot retry piece {}: original request not found",
                 piece_index
             );
@@ -413,7 +411,7 @@ impl PeerManager {
         }
     }
 
-    /// Handle failed piece events - extracted for testing
+    /// Handle failed piece events
     async fn handle_failure_events(
         self: Arc<Self>,
         mut failure_rx: mpsc::UnboundedReceiver<FailedPiece>,
@@ -493,6 +491,16 @@ impl PeerManager {
         disconnect_tx: mpsc::UnboundedSender<PeerDisconnected>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) {
+        // Connect immediately on startup (don't wait for first interval tick)
+        let _ = self
+            .connect_with_peers(
+                max_peers,
+                completion_tx.clone(),
+                failure_tx.clone(),
+                disconnect_tx.clone(),
+            )
+            .await;
+
         let mut interval = tokio::time::interval(Duration::from_secs(10));
         loop {
             tokio::select! {

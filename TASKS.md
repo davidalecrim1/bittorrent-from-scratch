@@ -2,6 +2,11 @@
 
 This file tracks pending tasks and improvements identified in the codebase.
 
+## Bugs
+- [ ] The in flight doesn't match the pending, meaning there is some kind of race condition.
+  - e.g. [Progress] 7574/24208 pieces (31%) | 19 peers | 23670 pending | 4354 in-flight
+  - [ ] About this. I need to share some locks between data structures to make them more atomic and have less overhead like the race condition above.
+
 ## Overall Improvements
   - [ ] **PENDING: Improve test coverage for peer_connection.rs back to 70%** (currently 62.6%, need 24 more lines)
     - [ ] Note: Remaining uncovered lines are mostly handshake code (requires real TCP), debug logs, and some error paths
