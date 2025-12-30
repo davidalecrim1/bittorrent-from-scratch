@@ -3,6 +3,7 @@
 This file tracks pending tasks and improvements identified in the codebase.
 
 ## Bugs
+
 ## Overall Improvements
   - [ ] **PENDING: Improve test coverage for peer_connection.rs back to 70%** (currently 62.6%, need 24 more lines)
     - [ ] Note: Remaining uncovered lines are mostly handshake code (requires real TCP), debug logs, and some error paths

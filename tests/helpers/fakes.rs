@@ -4,9 +4,7 @@ use bittorrent_from_scratch::io::MessageIO;
 use bittorrent_from_scratch::messages::PeerMessage;
 use bittorrent_from_scratch::peer_manager::PeerConnectionFactory;
 use bittorrent_from_scratch::tracker_client::TrackerClient;
-use bittorrent_from_scratch::types::{
-    AnnounceRequest, AnnounceResponse, ConnectedPeer, FailedPiece, Peer,
-};
+use bittorrent_from_scratch::types::{AnnounceRequest, AnnounceResponse, ConnectedPeer, Peer};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
@@ -112,9 +110,7 @@ impl PeerConnectionFactory for MockPeerConnectionFactory {
     async fn connect(
         &self,
         peer: Peer,
-        _completion_tx: mpsc::UnboundedSender<bittorrent_from_scratch::types::CompletedPiece>,
-        _failure_tx: mpsc::UnboundedSender<FailedPiece>,
-        _disconnect_tx: mpsc::UnboundedSender<bittorrent_from_scratch::types::PeerDisconnected>,
+        _event_tx: mpsc::UnboundedSender<bittorrent_from_scratch::types::PeerEvent>,
         _client_peer_id: [u8; 20],
         _info_hash: [u8; 20],
         _num_pieces: usize,

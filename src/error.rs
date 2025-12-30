@@ -65,6 +65,24 @@ pub enum AppError {
     #[error("Failed to download piece {piece_index} after {attempts} attempts")]
     PieceDownloadFailed { piece_index: u32, attempts: usize },
 
+    #[error("Piece already downloading")]
+    PieceAlreadyDownloading,
+
+    #[error("Peer queue full")]
+    PeerQueueFull,
+
+    #[error("Peer does not have piece")]
+    PeerDoesNotHavePiece,
+
+    #[error("Peer not ready: choking={choking}, bitfield_empty={bitfield_empty}")]
+    PeerNotReady { choking: bool, bitfield_empty: bool },
+
+    #[error("Hash mismatch")]
+    HashMismatch,
+
+    #[error("Download timeout exceeded")]
+    DownloadTimeout,
+
     // Channel/async errors
     #[error("Channel send error: {0}")]
     ChannelSend(String),

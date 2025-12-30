@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 
 use crate::download_state::DownloadState;
+use crate::error::AppError;
 use crate::messages::{PeerMessage, PieceMessage, RequestMessage};
 
 #[derive(Debug, Clone)]
@@ -116,12 +117,12 @@ pub struct CompletedPiece {
     pub data: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[derive(Debug)]
 pub struct FailedPiece {
     pub piece_index: u32,
     pub peer_addr: String,
-    pub reason: String, // "hash_mismatch" or "peer_disconnected"
+    pub error: AppError,
+    pub push_front: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +133,14 @@ pub struct PeerDisconnected {
 
 #[derive(Debug, Clone)]
 pub struct DownloadComplete;
+
+/// Unified event type for peer manager events
+#[derive(Debug)]
+pub enum PeerEvent {
+    Completion(CompletedPiece),
+    Failure(FailedPiece),
+    Disconnect(PeerDisconnected),
+}
 
 /// Handle for managing PeerManager lifecycle
 pub struct PeerManagerHandle {
@@ -156,8 +165,7 @@ pub struct PieceDownloadTask {
     pub block_semaphore: Arc<tokio::sync::Semaphore>,
     pub outbound_tx: mpsc::Sender<PeerMessage>,
     pub inbound_rx: mpsc::Receiver<PieceMessage>,
-    pub completion_tx: mpsc::UnboundedSender<CompletedPiece>,
-    pub failure_tx: mpsc::UnboundedSender<FailedPiece>,
+    pub event_tx: mpsc::UnboundedSender<PeerEvent>,
     pub peer_addr: String,
 }
 
@@ -196,7 +204,7 @@ impl PieceDownloadTask {
                             "Piece {}: Channel closed, peer disconnected",
                             self.piece_index
                         );
-                        self.send_failure("Peer disconnected".to_string()).await?;
+                        self.send_failure(AppError::PeerDisconnected).await?;
                         return Ok(());
                     }
                 };
@@ -221,7 +229,7 @@ impl PieceDownloadTask {
                             "Piece {}: Channel closed, peer disconnected",
                             self.piece_index
                         );
-                        self.send_failure("Peer disconnected".to_string()).await?;
+                        self.send_failure(AppError::PeerDisconnected).await?;
                         return Ok(());
                     }
                 };
@@ -240,25 +248,26 @@ impl PieceDownloadTask {
                 "Piece {}: Hash verified, sending completion",
                 self.piece_index
             );
-            self.completion_tx.send(CompletedPiece {
+            self.event_tx.send(PeerEvent::Completion(CompletedPiece {
                 piece_index: self.piece_index,
                 data: piece_data,
                 peer_addr: self.peer_addr.clone(),
-            })?;
+            }))?;
         } else {
             debug!("Piece {}: Hash mismatch, sending failure", self.piece_index);
-            self.send_failure("Hash mismatch".to_string()).await?;
+            self.send_failure(AppError::HashMismatch).await?;
         }
 
         Ok(())
     }
 
-    async fn send_failure(&self, reason: String) -> Result<()> {
-        self.failure_tx.send(FailedPiece {
+    async fn send_failure(&self, error: AppError) -> Result<()> {
+        self.event_tx.send(PeerEvent::Failure(FailedPiece {
             piece_index: self.piece_index,
             peer_addr: self.peer_addr.clone(),
-            reason,
-        })?;
+            error,
+            push_front: false,
+        }))?;
         Ok(())
     }
 }

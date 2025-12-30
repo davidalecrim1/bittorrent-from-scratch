@@ -9,10 +9,11 @@ use tokio::sync::{RwLock, mpsc};
 use tokio::time::sleep;
 
 use crate::download_state::DownloadState;
+use crate::error::AppError;
 use crate::messages::{self, PeerHandshakeMessage};
 use crate::messages::{InterestedMessage, PeerMessage};
 use crate::types::{
-    CompletedPiece, FailedPiece, Peer, PeerDisconnected, PieceDownloadRequest, PieceDownloadTask,
+    FailedPiece, Peer, PeerDisconnected, PeerEvent, PieceDownloadRequest, PieceDownloadTask,
 };
 
 const DEFAULT_BLOCK_SIZE: usize = 16 * 1024; // 16 KiB per BitTorrent spec
@@ -45,11 +46,9 @@ pub struct PeerConnection {
 
     // Piece download channels
     download_request_rx: Option<mpsc::Receiver<PieceDownloadRequest>>,
-    piece_completion_tx: mpsc::UnboundedSender<CompletedPiece>,
-    piece_failure_tx: mpsc::UnboundedSender<FailedPiece>,
 
-    // Peer disconnection notification
-    peer_disconnect_tx: mpsc::UnboundedSender<PeerDisconnected>,
+    // Unified event channel
+    event_tx: mpsc::UnboundedSender<crate::types::PeerEvent>,
 
     // Peer Status
     is_choking: bool,
@@ -62,6 +61,7 @@ pub struct PeerConnection {
     active_downloads: HashMap<u32, tokio::task::JoinHandle<()>>,
     download_queue: VecDeque<PieceDownloadRequest>,
     max_concurrent_pieces: usize,
+
     // Block semaphore to limit the concurrent downloads of blocks (chunks of pieces) at the same time.
     block_semaphore: Arc<tokio::sync::Semaphore>,
     piece_channels: HashMap<u32, mpsc::Sender<messages::PieceMessage>>,
@@ -72,9 +72,7 @@ pub struct PeerConnection {
 impl PeerConnection {
     pub fn new(
         peer: Peer,
-        piece_completion_tx: mpsc::UnboundedSender<CompletedPiece>,
-        piece_failure_tx: mpsc::UnboundedSender<FailedPiece>,
-        peer_disconnect_tx: mpsc::UnboundedSender<PeerDisconnected>,
+        event_tx: mpsc::UnboundedSender<crate::types::PeerEvent>,
         tcp_connector: Arc<dyn crate::tcp_connector::TcpStreamFactory>,
     ) -> (
         Self,
@@ -98,9 +96,7 @@ impl PeerConnection {
             inbound_tx,
             inbound_rx: Some(inbound_rx),
             download_request_rx: Some(download_request_rx),
-            piece_completion_tx,
-            piece_failure_tx,
-            peer_disconnect_tx,
+            event_tx,
             is_choking: false,
             is_interested: false,
             bitfield: bitfield.clone(),
@@ -188,7 +184,7 @@ impl PeerConnection {
         // Take the receivers out of self
         let mut outbound_rx = self.outbound_rx.take().unwrap();
         let inbound_tx = self.inbound_tx.clone();
-        let disconnect_tx = self.peer_disconnect_tx.clone();
+        let event_tx = self.event_tx.clone();
         let peer = self.peer.clone();
 
         // Spawn single I/O task that handles both reading and writing
@@ -198,10 +194,10 @@ impl PeerConnection {
                     // Handle outbound messages (write to network)
                     Some(msg) = outbound_rx.recv() => {
                         if let Err(e) = message_io.write_message(&msg).await {
-                            let _ = disconnect_tx.send(PeerDisconnected {
+                            let _ = event_tx.send(PeerEvent::Disconnect(PeerDisconnected {
                                 peer: peer.clone(),
                                 reason: format!("write_error: {}", e),
-                            });
+                            }));
                             break;
                         }
                     }
@@ -217,17 +213,17 @@ impl PeerConnection {
                             }
                             Ok(None) => {
                                 // Stream ended gracefully
-                                let _ = disconnect_tx.send(PeerDisconnected {
+                                let _ = event_tx.send(PeerEvent::Disconnect(PeerDisconnected {
                                     peer: peer.clone(),
                                     reason: "stream_closed".to_string(),
-                                });
+                                }));
                                 break;
                             }
                             Err(e) => {
-                                let _ = disconnect_tx.send(PeerDisconnected {
+                                let _ = event_tx.send(PeerEvent::Disconnect(PeerDisconnected {
                                     peer: peer.clone(),
                                     reason: format!("read_error: {}", e),
-                                });
+                                }));
                                 break;
                             }
                         }
@@ -253,7 +249,7 @@ impl PeerConnection {
     fn handle_incoming_messages(mut self) {
         let mut inbound_rx = self.inbound_rx.take().unwrap();
         let mut download_request_rx = self.download_request_rx.take().unwrap();
-        let disconnect_tx = self.peer_disconnect_tx.clone();
+        let event_tx = self.event_tx.clone();
         let peer = self.peer.clone();
         let peer_addr = peer.get_addr();
 
@@ -279,10 +275,10 @@ impl PeerConnection {
                             }
                             None => {
                                 // Reader channel closed (peer disconnected)
-                                let _ = disconnect_tx.send(PeerDisconnected {
+                                let _ = event_tx.send(PeerEvent::Disconnect(PeerDisconnected {
                                     peer: peer.clone(),
                                     reason: "inbound_channel_closed".to_string(),
-                                });
+                                }));
                                 break;
                             }
                         }
@@ -296,20 +292,21 @@ impl PeerConnection {
                                 if let Err(e) = self.start_piece_download(peer_addr.clone(), request).await {
                                     // TODO: Check how to better handle this in the future. Either by queueing or assigning better.
                                     debug!("Peer Connector failed to start piece {} download from Peer {}, with error: {}", piece_index, peer_addr.clone(), e);
-                                    let _ = self.piece_failure_tx.send(FailedPiece {
+                                    let _ = event_tx.send(PeerEvent::Failure(FailedPiece {
                                         piece_index,
                                         peer_addr: peer_addr.clone(),
-                                        reason: e.to_string(),
-                                    });
+                                        error: AppError::Other(e),
+                                        push_front: false,
+                                    }));
                                 }
                             }
                             None => {
                                 // Download request channel closed (shouldn't happen during normal operation)
                                 debug!("Peer Connector download_request channel closed unexpectedly from Peer {}", peer_addr);
-                                let _ = disconnect_tx.send(PeerDisconnected {
+                                let _ = event_tx.send(PeerEvent::Disconnect(PeerDisconnected {
                                     peer: peer.clone(),
                                     reason: "download_request_channel_closed".to_string(),
-                                });
+                                }));
                                 break;
                             }
                         }
@@ -437,8 +434,7 @@ impl PeerConnection {
             block_semaphore: self.block_semaphore.clone(),
             outbound_tx: self.outbound_tx.clone(),
             inbound_rx: piece_rx,
-            completion_tx: self.piece_completion_tx.clone(),
-            failure_tx: self.piece_failure_tx.clone(),
+            event_tx: self.event_tx.clone(),
             peer_addr: self.peer.get_addr(),
         };
 
@@ -473,11 +469,12 @@ impl PeerConnection {
                 .iter()
                 .any(|r| r.piece_index == piece_index)
         {
-            self.piece_failure_tx.send(FailedPiece {
+            self.event_tx.send(PeerEvent::Failure(FailedPiece {
                 piece_index,
                 peer_addr: self.peer.get_addr(),
-                reason: "Piece already downloading".to_string(),
-            })?;
+                error: AppError::PieceAlreadyDownloading,
+                push_front: false,
+            }))?;
             return Ok(());
         }
 
@@ -492,33 +489,35 @@ impl PeerConnection {
                 self.max_concurrent_pieces
             );
 
-            self.piece_failure_tx.send(FailedPiece {
+            self.event_tx.send(PeerEvent::Failure(FailedPiece {
                 piece_index,
                 peer_addr: self.peer.get_addr(),
-                reason: "Peer queue full".to_string(),
-            })?;
+                error: AppError::PeerQueueFull,
+                push_front: true,
+            }))?;
             return Ok(());
         }
 
         if !self.has_piece(piece_index as usize).await {
-            self.piece_failure_tx.send(FailedPiece {
+            self.event_tx.send(PeerEvent::Failure(FailedPiece {
                 piece_index,
                 peer_addr: self.peer.get_addr(),
-                reason: "Peer does not have piece".to_string(),
-            })?;
+                error: AppError::PeerDoesNotHavePiece,
+                push_front: false,
+            }))?;
             return Ok(());
         }
 
         if !self.can_download_pieces().await {
-            self.piece_failure_tx.send(FailedPiece {
+            self.event_tx.send(PeerEvent::Failure(FailedPiece {
                 piece_index,
                 peer_addr: self.peer.get_addr(),
-                reason: format!(
-                    "Peer not ready (choking={}, bitfield empty={})",
-                    self.is_choking,
-                    self.bitfield.read().await.is_empty()
-                ),
-            })?;
+                error: AppError::PeerNotReady {
+                    choking: self.is_choking,
+                    bitfield_empty: self.bitfield.read().await.is_empty(),
+                },
+                push_front: false,
+            }))?;
             return Ok(());
         }
 

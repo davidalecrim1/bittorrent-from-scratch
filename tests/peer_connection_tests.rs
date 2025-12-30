@@ -5,29 +5,20 @@ mod tests {
     use super::helpers::fakes::FakeMessageIO;
     use bittorrent_from_scratch::io::MessageIO;
     use bittorrent_from_scratch::messages::{PeerMessage, PieceMessage};
-    use bittorrent_from_scratch::types::{
-        CompletedPiece, FailedPiece, Peer, PeerConnection, PeerDisconnected, PieceDownloadRequest,
-    };
+    use bittorrent_from_scratch::types::{Peer, PeerConnection, PieceDownloadRequest};
     use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn test_peer_connection_sends_interested_on_start() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, _download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -57,21 +48,14 @@ mod tests {
     #[tokio::test]
     async fn test_bitfield_message_updates_peer_bitfield() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _download_request_tx, bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, _download_request_tx, bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -104,21 +88,14 @@ mod tests {
     #[tokio::test]
     async fn test_unchoke_message_starts_piece_download() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -185,21 +162,14 @@ mod tests {
     #[tokio::test]
     async fn test_piece_download_complete_flow() {
         // Create channels for PeerConnection
-        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -266,9 +236,8 @@ mod tests {
         client_io.write_message(&piece_msg).await.unwrap();
 
         // Wait for completion notification
-        match tokio::time::timeout(tokio::time::Duration::from_secs(2), completion_rx.recv()).await
-        {
-            Ok(Some(completed)) => {
+        match tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await {
+            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Completion(completed))) => {
                 assert_eq!(
                     completed.piece_index, 0,
                     "Completed piece should be index 0"
@@ -286,21 +255,14 @@ mod tests {
     #[tokio::test]
     async fn test_piece_download_with_hash_mismatch() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -360,13 +322,16 @@ mod tests {
         client_io.write_message(&piece_msg).await.unwrap();
 
         // Wait for failure notification (hash mismatch)
-        match tokio::time::timeout(tokio::time::Duration::from_secs(2), failure_rx.recv()).await {
-            Ok(Some(failed)) => {
+        match tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await {
+            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Failure(failed))) => {
                 assert_eq!(failed.piece_index, 0, "Failed piece should be index 0");
                 assert!(
-                    failed.reason.to_lowercase().contains("hash"),
-                    "Failure should mention hash mismatch, got: {}",
-                    failed.reason
+                    matches!(
+                        failed.error,
+                        bittorrent_from_scratch::error::AppError::HashMismatch
+                    ),
+                    "Failure should be hash mismatch, got: {:?}",
+                    failed.error
                 );
             }
             other => panic!(
@@ -379,21 +344,14 @@ mod tests {
     #[tokio::test]
     async fn test_have_message_updates_bitfield() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _download_request_tx, bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, _download_request_tx, bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -441,21 +399,14 @@ mod tests {
     #[tokio::test]
     async fn test_choke_message_stops_new_requests() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -519,21 +470,14 @@ mod tests {
     #[tokio::test]
     async fn test_wrong_piece_index_ignored() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -604,21 +548,14 @@ mod tests {
     #[tokio::test]
     async fn test_download_request_for_unavailable_piece() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -654,11 +591,14 @@ mod tests {
         download_request_tx.send(piece_request).await.unwrap();
 
         // Should receive a failure notification
-        match tokio::time::timeout(tokio::time::Duration::from_secs(1), failure_rx.recv()).await {
-            Ok(Some(failed)) => {
+        match tokio::time::timeout(tokio::time::Duration::from_secs(1), event_rx.recv()).await {
+            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Failure(failed))) => {
                 assert_eq!(failed.piece_index, 1, "Failed piece should be index 1");
                 assert!(
-                    failed.reason.contains("does not have"),
+                    matches!(
+                        failed.error,
+                        bittorrent_from_scratch::error::AppError::PeerDoesNotHavePiece
+                    ),
                     "Should indicate peer doesn't have piece"
                 );
             }
@@ -672,21 +612,14 @@ mod tests {
     #[tokio::test]
     async fn test_keep_alive_and_other_messages() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, _download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -741,21 +674,14 @@ mod tests {
     #[tokio::test]
     async fn test_piece_message_without_active_download() {
         // Create channels for PeerConnection
-        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, _download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -783,21 +709,14 @@ mod tests {
     #[tokio::test]
     async fn test_large_piece_with_multiple_blocks() {
         // Create channels for PeerConnection
-        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -875,9 +794,8 @@ mod tests {
         }
 
         // Wait for completion
-        match tokio::time::timeout(tokio::time::Duration::from_secs(2), completion_rx.recv()).await
-        {
-            Ok(Some(completed)) => {
+        match tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await {
+            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Completion(completed))) => {
                 assert_eq!(completed.piece_index, 0);
                 assert_eq!(completed.data.len(), piece_length);
                 assert_eq!(completed.data, piece_data);
@@ -913,21 +831,13 @@ mod tests {
             }
         }
 
-        let (completion_tx, _) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, _) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _, _) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, _, _) = PeerConnection::new(peer, event_tx, tcp_connector);
 
         let write_count = Arc::new(Mutex::new(0));
         let failing_io = FailingMessageIO {
@@ -943,13 +853,8 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // Should receive a disconnect notification
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(200),
-            disconnect_rx.recv(),
-        )
-        .await
-        {
-            Ok(Some(disconnect)) => {
+        match tokio::time::timeout(tokio::time::Duration::from_millis(200), event_rx.recv()).await {
+            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Disconnect(disconnect))) => {
                 assert!(
                     disconnect.reason.contains("write_error"),
                     "Disconnect reason should mention write error"
@@ -983,21 +888,13 @@ mod tests {
             }
         }
 
-        let (completion_tx, _) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, _) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _, _) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, _, _) = PeerConnection::new(peer, event_tx, tcp_connector);
 
         let closed_io = ClosedStreamMessageIO {};
 
@@ -1007,13 +904,8 @@ mod tests {
         });
 
         // Should receive a disconnect notification when stream is detected as closed
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(200),
-            disconnect_rx.recv(),
-        )
-        .await
-        {
-            Ok(Some(disconnect)) => {
+        match tokio::time::timeout(tokio::time::Duration::from_millis(200), event_rx.recv()).await {
+            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Disconnect(disconnect))) => {
                 assert_eq!(
                     disconnect.reason, "stream_closed",
                     "Disconnect reason should be stream_closed"
@@ -1042,21 +934,13 @@ mod tests {
             }
         }
 
-        let (completion_tx, _) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, _) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _, _) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, _, _) = PeerConnection::new(peer, event_tx, tcp_connector);
 
         let failing_io = FailingReadMessageIO {};
 
@@ -1066,13 +950,8 @@ mod tests {
         });
 
         // Should receive a disconnect notification
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(200),
-            disconnect_rx.recv(),
-        )
-        .await
-        {
-            Ok(Some(disconnect)) => {
+        match tokio::time::timeout(tokio::time::Duration::from_millis(200), event_rx.recv()).await {
+            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Disconnect(disconnect))) => {
                 assert!(
                     disconnect.reason.contains("read_error"),
                     "Disconnect reason should mention read error"
@@ -1088,21 +967,14 @@ mod tests {
         // Previously, sending interested before spawning the message handler
         // caused bitfield messages to be lost if peers responded quickly.
 
-        let (completion_tx, _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _download_request_tx, bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, _download_request_tx, bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         // Create fake I/O with aggressive timing - peer sends bitfield IMMEDIATELY
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -1148,21 +1020,14 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_concurrent_pieces_download() {
         // Test that multiple pieces can be downloaded concurrently
-        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
 
@@ -1230,10 +1095,8 @@ mod tests {
         // Verify all 3 pieces complete
         let mut completed_pieces = std::collections::HashSet::new();
         for _ in 0..3 {
-            match tokio::time::timeout(tokio::time::Duration::from_secs(2), completion_rx.recv())
-                .await
-            {
-                Ok(Some(completed)) => {
+            match tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await {
+                Ok(Some(bittorrent_from_scratch::types::PeerEvent::Completion(completed))) => {
                     assert!(completed.piece_index < 3);
                     completed_pieces.insert(completed.piece_index);
                 }
@@ -1250,21 +1113,14 @@ mod tests {
     #[tokio::test]
     async fn test_queue_full_error() {
         // Test that exceeding queue capacity returns "Queue full" error
-        let (completion_tx, mut _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, mut _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
 
@@ -1307,12 +1163,15 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // The 6th piece should fail with "Queue full"
-        match tokio::time::timeout(tokio::time::Duration::from_secs(1), failure_rx.recv()).await {
-            Ok(Some(failed)) => {
+        match tokio::time::timeout(tokio::time::Duration::from_secs(1), event_rx.recv()).await {
+            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Failure(failed))) => {
                 assert!(
-                    failed.reason.to_lowercase().contains("queue full"),
-                    "Should report queue full, got: {}",
-                    failed.reason
+                    matches!(
+                        failed.error,
+                        bittorrent_from_scratch::error::AppError::PeerQueueFull
+                    ),
+                    "Should report queue full, got: {:?}",
+                    failed.error
                 );
             }
             other => panic!("Expected queue full failure, got: {:?}", other),
@@ -1321,21 +1180,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown_piece_tasks_cleans_up_active_downloads() {
-        let (completion_tx, _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, mut failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
 
@@ -1375,34 +1227,29 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         let result =
-            tokio::time::timeout(tokio::time::Duration::from_millis(500), failure_rx.recv()).await;
-        if let Ok(Some(failed)) = result {
+            tokio::time::timeout(tokio::time::Duration::from_millis(500), event_rx.recv()).await;
+        if let Ok(Some(bittorrent_from_scratch::types::PeerEvent::Failure(failed))) = result {
             assert!(
-                failed.reason.to_lowercase().contains("peer disconnected")
-                    || failed.reason.to_lowercase().contains("channel closed"),
-                "Failure reason should indicate disconnection, got: {}",
-                failed.reason
+                matches!(
+                    failed.error,
+                    bittorrent_from_scratch::error::AppError::PeerDisconnected
+                ),
+                "Failure reason should indicate disconnection, got: {:?}",
+                failed.error
             );
         }
     }
 
     #[tokio::test]
     async fn test_semaphore_limits_concurrent_block_requests() {
-        let (completion_tx, _completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (failure_tx, _failure_rx) = mpsc::unbounded_channel::<FailedPiece>();
-        let (disconnect_tx, _disconnect_rx) = mpsc::unbounded_channel::<PeerDisconnected>();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
 
         let peer = Peer::new("127.0.0.1".to_string(), 6881);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) = PeerConnection::new(
-            peer,
-            completion_tx,
-            failure_tx,
-            disconnect_tx,
-            tcp_connector,
-        );
+        let (peer_conn, download_request_tx, _bitfield) =
+            PeerConnection::new(peer, event_tx, tcp_connector);
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
 

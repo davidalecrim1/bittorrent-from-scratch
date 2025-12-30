@@ -7,6 +7,7 @@ pub mod io;
 pub mod messages;
 pub mod peer_connection;
 pub mod peer_manager;
+pub mod piece_state;
 pub mod tcp_connector;
 pub mod tracker_client;
 pub mod types;
