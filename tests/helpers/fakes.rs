@@ -96,17 +96,65 @@ impl TrackerClient for MockTrackerClient {
     }
 }
 
-/// Mock peer connection factory for testing
-pub struct MockPeerConnectionFactory {}
+/// Fake peer connection factory for testing with configurable bitfields.
+/// Follows FakeMessageIO pattern: configuration-based, not expectation-based.
+pub struct FakePeerConnectionFactory {
+    peer_bitfields: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Vec<bool>>>>,
+    /// Receivers are stored but never read - they exist solely to keep channels alive.
+    /// Without this, the channel would close immediately when connect() returns.
+    _receivers: Arc<
+        tokio::sync::Mutex<
+            Vec<mpsc::Receiver<bittorrent_from_scratch::types::PieceDownloadRequest>>,
+        >,
+    >,
+}
 
-impl MockPeerConnectionFactory {
+impl FakePeerConnectionFactory {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            peer_bitfields: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            _receivers: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Configure a specific bitfield for a peer address.
+    /// Must be called before connect() is invoked for that peer.
+    pub async fn with_bitfield(&self, peer_addr: String, bitfield: Vec<bool>) {
+        self.peer_bitfields.lock().await.insert(peer_addr, bitfield);
+    }
+
+    /// Convenience: Configure peer to have all pieces.
+    pub async fn with_all_pieces(&self, peer_addr: String, num_pieces: usize) {
+        let bitfield = vec![true; num_pieces];
+        self.with_bitfield(peer_addr, bitfield).await;
+    }
+
+    /// Convenience: Configure peer to have no pieces (same as default).
+    pub async fn with_no_pieces(&self, peer_addr: String) {
+        self.with_bitfield(peer_addr, Vec::new()).await;
+    }
+
+    /// Convenience: Configure peer to have specific pieces.
+    /// Example: with_specific_pieces("127.0.0.1:6881", vec![0, 2, 5], 10)
+    /// Creates bitfield [true, false, true, false, false, true, false, false, false, false]
+    pub async fn with_specific_pieces(
+        &self,
+        peer_addr: String,
+        piece_indices: Vec<usize>,
+        total_pieces: usize,
+    ) {
+        let mut bitfield = vec![false; total_pieces];
+        for &idx in &piece_indices {
+            if idx < total_pieces {
+                bitfield[idx] = true;
+            }
+        }
+        self.with_bitfield(peer_addr, bitfield).await;
     }
 }
 
 #[async_trait]
-impl PeerConnectionFactory for MockPeerConnectionFactory {
+impl PeerConnectionFactory for FakePeerConnectionFactory {
     async fn connect(
         &self,
         peer: Peer,
@@ -115,9 +163,19 @@ impl PeerConnectionFactory for MockPeerConnectionFactory {
         _info_hash: [u8; 20],
         _num_pieces: usize,
     ) -> Result<ConnectedPeer> {
-        let (download_request_tx, _rx) =
+        let (download_request_tx, rx) =
             mpsc::channel::<bittorrent_from_scratch::types::PieceDownloadRequest>(10);
-        let bitfield = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+
+        // Store receiver to keep channel alive
+        self._receivers.lock().await.push(rx);
+
+        // Look up configured bitfield for this peer address
+        let peer_addr = peer.get_addr();
+        let configured_bitfield = self.peer_bitfields.lock().await.get(&peer_addr).cloned();
+
+        // Use configured bitfield or default to empty (backward compatible)
+        let bitfield_data = configured_bitfield.unwrap_or_else(Vec::new);
+        let bitfield = Arc::new(tokio::sync::RwLock::new(bitfield_data));
 
         Ok(ConnectedPeer::new(peer, download_request_tx, bitfield))
     }
