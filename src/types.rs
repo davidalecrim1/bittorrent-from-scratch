@@ -111,7 +111,7 @@ impl ConnectedPeer {
 }
 
 #[derive(Debug, Clone)]
-pub struct CompletedPiece {
+pub struct WritePieceRequest {
     pub piece_index: u32,
     pub peer_addr: String,
     pub data: Vec<u8>,
@@ -132,12 +132,12 @@ pub struct PeerDisconnected {
 }
 
 #[derive(Debug, Clone)]
-pub struct DownloadComplete;
+pub struct FileWriteComplete;
 
 /// Unified event type for peer manager events
 #[derive(Debug)]
 pub enum PeerEvent {
-    Completion(CompletedPiece),
+    WritePiece(WritePieceRequest),
     Failure(FailedPiece),
     Disconnect(PeerDisconnected),
 }
@@ -248,11 +248,12 @@ impl PieceDownloadTask {
                 "Piece {}: Hash verified, sending completion",
                 self.piece_index
             );
-            self.event_tx.send(PeerEvent::Completion(CompletedPiece {
-                piece_index: self.piece_index,
-                data: piece_data,
-                peer_addr: self.peer_addr.clone(),
-            }))?;
+            self.event_tx
+                .send(PeerEvent::WritePiece(WritePieceRequest {
+                    piece_index: self.piece_index,
+                    data: piece_data,
+                    peer_addr: self.peer_addr.clone(),
+                }))?;
         } else {
             debug!("Piece {}: Hash mismatch, sending failure", self.piece_index);
             self.send_failure(AppError::HashMismatch).await?;
@@ -289,6 +290,7 @@ pub struct Peer {
 }
 
 pub type PeerId = [u8; 20];
+pub type PeerAddr = String;
 
 impl Peer {
     pub fn new(ip: String, port: u16) -> Self {
@@ -298,7 +300,7 @@ impl Peer {
         }
     }
 
-    pub fn get_addr(&self) -> String {
+    pub fn get_addr(&self) -> PeerAddr {
         if self.ip.is_ipv6() {
             // IPv6 requires bracket notation for socket addresses
             format!("[{}]:{}", &self.ip, &self.port)

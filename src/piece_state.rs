@@ -188,12 +188,7 @@ impl PieceStateManager {
 
     /// Atomic transition: InFlight → Pending (for retry)
     /// Returns retry count if successful, None if piece is not in InFlight state
-    pub async fn retry_piece(
-        &self,
-        piece_index: u32,
-        reason: &str,
-        push_front: bool,
-    ) -> Option<u32> {
+    pub async fn retry_piece(&self, piece_index: u32, push_front: bool) -> Option<u32> {
         let mut inner = self.inner.write().await;
 
         let state = inner.states.get_mut(&piece_index)?;
@@ -223,8 +218,8 @@ impl PieceStateManager {
                 inner.stats.total_retry_attempts += 1;
 
                 debug!(
-                    "Piece {} failed ({}), retry {}",
-                    piece_index, reason, new_retry_count
+                    "Piece {} marked for retry (attempt {})",
+                    piece_index, new_retry_count
                 );
                 Some(new_retry_count)
             }
@@ -480,7 +475,7 @@ mod tests {
         mgr.pop_pending().await;
         mgr.start_download(5, "peer1".to_string()).await.unwrap();
 
-        let retry_count = mgr.retry_piece(5, "timeout", false).await;
+        let retry_count = mgr.retry_piece(5, false).await;
 
         assert_eq!(retry_count, Some(1));
         let snapshot = mgr.get_snapshot().await;
@@ -498,7 +493,7 @@ mod tests {
         mgr.start_download(5, "peer1".to_string()).await.unwrap();
         mgr.complete_piece(5).await.unwrap();
 
-        let result = mgr.retry_piece(5, "timeout", false).await;
+        let result = mgr.retry_piece(5, false).await;
 
         assert!(result.is_none());
     }
@@ -550,7 +545,7 @@ mod tests {
 
         mgr.pop_pending().await;
         mgr.start_download(1, "peer1".to_string()).await.unwrap();
-        mgr.retry_piece(1, "queue full", true).await;
+        mgr.retry_piece(1, true).await;
 
         let next = mgr.pop_pending().await;
         assert_eq!(next, Some(1));

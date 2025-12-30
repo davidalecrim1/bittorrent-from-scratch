@@ -237,7 +237,7 @@ mod tests {
 
         // Wait for completion notification
         match tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await {
-            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Completion(completed))) => {
+            Ok(Some(bittorrent_from_scratch::types::PeerEvent::WritePiece(completed))) => {
                 assert_eq!(
                     completed.piece_index, 0,
                     "Completed piece should be index 0"
@@ -795,7 +795,7 @@ mod tests {
 
         // Wait for completion
         match tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await {
-            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Completion(completed))) => {
+            Ok(Some(bittorrent_from_scratch::types::PeerEvent::WritePiece(completed))) => {
                 assert_eq!(completed.piece_index, 0);
                 assert_eq!(completed.data.len(), piece_length);
                 assert_eq!(completed.data, piece_data);
@@ -1096,7 +1096,7 @@ mod tests {
         let mut completed_pieces = std::collections::HashSet::new();
         for _ in 0..3 {
             match tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await {
-                Ok(Some(bittorrent_from_scratch::types::PeerEvent::Completion(completed))) => {
+                Ok(Some(bittorrent_from_scratch::types::PeerEvent::WritePiece(completed))) => {
                     assert!(completed.piece_index < 3);
                     completed_pieces.insert(completed.piece_index);
                 }

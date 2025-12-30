@@ -9,7 +9,7 @@ use crate::encoding::Decoder;
 use crate::encoding::Encoder;
 use crate::peer_manager::PeerManager;
 use crate::types::{
-    BencodeTypes, CompletedPiece, DownloadComplete, PeerManagerConfig, PieceDownloadRequest,
+    BencodeTypes, FileWriteComplete, PeerManagerConfig, PieceDownloadRequest, WritePieceRequest,
 };
 use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, SeekFrom};
@@ -175,13 +175,13 @@ impl BitTorrent {
             .await?;
 
         // Peer Manager will let the File Manager know when the pieces are completed.
-        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel::<CompletedPiece>();
-        let (download_complete_tx, mut download_complete_rx) = mpsc::channel::<DownloadComplete>(1);
+        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel::<WritePieceRequest>();
+        let (file_complete_tx, mut file_complete_rx) = mpsc::channel::<FileWriteComplete>(1);
 
         let _peer_manager_handle = self
             .peer_manager
             .clone()
-            .start(announce_url.clone(), completion_tx, download_complete_tx)
+            .start(announce_url.clone(), completion_tx, file_complete_tx)
             .await?;
 
         let filename = self.get_filename()?;
@@ -216,7 +216,7 @@ impl BitTorrent {
         self.watch_for_completed_pieces(
             &mut file,
             &mut completion_rx,
-            &mut download_complete_rx,
+            &mut file_complete_rx,
             num_pieces,
             piece_length,
         )
@@ -249,8 +249,8 @@ impl BitTorrent {
     async fn watch_for_completed_pieces(
         &self,
         file: &mut File,
-        completion_rx: &mut UnboundedReceiver<CompletedPiece>,
-        download_complete_rx: &mut Receiver<DownloadComplete>,
+        completion_rx: &mut UnboundedReceiver<WritePieceRequest>,
+        file_complete_rx: &mut Receiver<FileWriteComplete>,
         num_pieces: usize,
         piece_length: usize,
     ) -> Result<()> {
@@ -281,7 +281,7 @@ impl BitTorrent {
                         downloaded_pieces, num_pieces, percentage
                     );
                 }
-                Some(_) = download_complete_rx.recv() => {
+                Some(_) = file_complete_rx.recv() => {
                     debug!("All pieces downloaded, exiting write loop");
                     break;
                 }
