@@ -2,11 +2,22 @@ mod helpers;
 
 #[cfg(test)]
 mod tests {
-    use super::helpers::fakes::FakeMessageIO;
+    use super::helpers::{self, fakes::FakeMessageIO};
     use bittorrent_from_scratch::io::MessageIO;
     use bittorrent_from_scratch::messages::{PeerMessage, PieceMessage};
     use bittorrent_from_scratch::types::{Peer, PeerConnection, PieceDownloadRequest};
     use tokio::sync::mpsc;
+
+    /// Helper to consume the initial Interested message that PeerConnection sends on start
+    async fn consume_initial_interested(io: &mut impl MessageIO) {
+        match tokio::time::timeout(tokio::time::Duration::from_millis(100), io.read_message()).await
+        {
+            Ok(Ok(Some(PeerMessage::Interested(_)))) => {
+                // Expected: Interested is sent on start
+            }
+            other => panic!("Expected initial Interested message, got: {:?}", other),
+        }
+    }
 
     #[tokio::test]
     async fn test_peer_connection_sends_interested_on_start() {
@@ -17,8 +28,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, _download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -54,8 +71,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _download_request_tx, bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, _download_request_tx, bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -94,8 +117,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -168,8 +197,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -261,8 +296,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -350,8 +391,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _download_request_tx, bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, _download_request_tx, bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -405,8 +452,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -416,8 +469,8 @@ mod tests {
             let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
         });
 
-        // Wait for Interested message
-        let _ = client_io.read_message().await;
+        // Consume initial Unchoke and Interested messages
+        consume_initial_interested(&mut client_io).await;
 
         // Send Bitfield
         let bitfield_msg =
@@ -476,8 +529,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -554,8 +613,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -618,8 +683,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, _download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -680,8 +751,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, _download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -715,8 +792,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Create a pair of fake MessageIO instances
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -837,7 +920,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _, _) = PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, _, _, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let write_count = Arc::new(Mutex::new(0));
         let failing_io = FailingMessageIO {
@@ -894,7 +984,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _, _) = PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, _, _, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let closed_io = ClosedStreamMessageIO {};
 
@@ -940,7 +1037,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _, _) = PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, _, _, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let failing_io = FailingReadMessageIO {};
 
@@ -973,8 +1077,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, _download_request_tx, bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, _download_request_tx, bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Create fake I/O with aggressive timing - peer sends bitfield IMMEDIATELY
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -984,7 +1094,7 @@ mod tests {
             peer_conn.start_with_io(Box::new(peer_io)).await.unwrap();
         });
 
-        // Peer should receive interested message first
+        // Wait for peer to receive Interested message
         match tokio::time::timeout(
             tokio::time::Duration::from_millis(100),
             client_io.read_message(),
@@ -1026,8 +1136,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
 
@@ -1119,8 +1235,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
 
@@ -1186,8 +1308,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
 
@@ -1248,8 +1376,14 @@ mod tests {
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
-        let (peer_conn, download_request_tx, _bitfield) =
-            PeerConnection::new(peer, event_tx, tcp_connector);
+        let (peer_conn, download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
 
@@ -1257,7 +1391,8 @@ mod tests {
             let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
         });
 
-        let _ = client_io.read_message().await;
+        // Consume initial Unchoke and Interested messages
+        consume_initial_interested(&mut client_io).await;
 
         let bitfield_msg =
             PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
@@ -1319,5 +1454,200 @@ mod tests {
             "Should request blocks from multiple pieces, got {} pieces",
             unique_pieces.len()
         );
+    }
+
+    #[tokio::test]
+    async fn test_upload_request_sends_piece_message() {
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
+
+        let piece_manager = helpers::create_test_piece_manager();
+
+        use sha1::{Digest, Sha1};
+        let piece_data = vec![42u8; 16384];
+        let hash = Sha1::new().chain_update(&piece_data).finalize();
+        let hash_array: [u8; 20] = hash.into();
+
+        piece_manager
+            .queue_piece(PieceDownloadRequest {
+                piece_index: 0,
+                piece_length: 16384,
+                expected_hash: hash_array,
+            })
+            .await
+            .unwrap();
+        piece_manager.pop_pending().await;
+        piece_manager.start_download(0, "peer1".to_string()).await;
+        piece_manager
+            .complete_piece(0, piece_data.clone())
+            .await
+            .unwrap();
+
+        let (peer_conn, _download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            piece_manager,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
+
+        let (mut client_io, peer_io) = FakeMessageIO::pair();
+
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
+        });
+
+        consume_initial_interested(&mut client_io).await;
+
+        let request_msg = PeerMessage::Request(bittorrent_from_scratch::messages::RequestMessage {
+            piece_index: 0,
+            begin: 0,
+            length: 1024,
+        });
+        client_io.write_message(&request_msg).await.unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(200),
+            client_io.read_message(),
+        )
+        .await
+        {
+            Ok(Ok(Some(PeerMessage::Piece(piece_msg)))) => {
+                assert_eq!(piece_msg.piece_index, 0);
+                assert_eq!(piece_msg.begin, 0);
+                assert_eq!(piece_msg.block.len(), 1024);
+                assert_eq!(piece_msg.block, vec![42u8; 1024]);
+            }
+            other => panic!(
+                "Expected Piece message in response to Request, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_upload_request_for_unavailable_piece_ignored() {
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
+
+        let (peer_conn, _download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
+
+        let (mut client_io, peer_io) = FakeMessageIO::pair();
+
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
+        });
+
+        consume_initial_interested(&mut client_io).await;
+
+        let request_msg = PeerMessage::Request(bittorrent_from_scratch::messages::RequestMessage {
+            piece_index: 99,
+            begin: 0,
+            length: 1024,
+        });
+        client_io.write_message(&request_msg).await.unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(200),
+            client_io.read_message(),
+        )
+        .await
+        {
+            Err(_) => {}
+            other => panic!("Expected timeout (no response), got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_upload_request_with_offset() {
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
+
+        let piece_manager = helpers::create_test_piece_manager();
+
+        use sha1::{Digest, Sha1};
+        let mut piece_data = vec![0u8; 16384];
+        for i in 0..16384 {
+            piece_data[i] = (i % 256) as u8;
+        }
+        let hash = Sha1::new().chain_update(&piece_data).finalize();
+        let hash_array: [u8; 20] = hash.into();
+
+        piece_manager
+            .queue_piece(PieceDownloadRequest {
+                piece_index: 0,
+                piece_length: 16384,
+                expected_hash: hash_array,
+            })
+            .await
+            .unwrap();
+        piece_manager.pop_pending().await;
+        piece_manager.start_download(0, "peer1".to_string()).await;
+        piece_manager
+            .complete_piece(0, piece_data.clone())
+            .await
+            .unwrap();
+
+        let (peer_conn, _download_request_tx, _bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            piece_manager,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
+
+        let (mut client_io, peer_io) = FakeMessageIO::pair();
+
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
+        });
+
+        consume_initial_interested(&mut client_io).await;
+
+        let request_msg = PeerMessage::Request(bittorrent_from_scratch::messages::RequestMessage {
+            piece_index: 0,
+            begin: 1000,
+            length: 500,
+        });
+        client_io.write_message(&request_msg).await.unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(200),
+            client_io.read_message(),
+        )
+        .await
+        {
+            Ok(Ok(Some(PeerMessage::Piece(piece_msg)))) => {
+                assert_eq!(piece_msg.piece_index, 0);
+                assert_eq!(piece_msg.begin, 1000);
+                assert_eq!(piece_msg.block.len(), 500);
+                assert_eq!(piece_msg.block, &piece_data[1000..1500]);
+            }
+            other => panic!("Expected Piece message, got: {:?}", other),
+        }
     }
 }

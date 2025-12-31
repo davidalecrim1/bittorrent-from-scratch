@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use log::{debug, error, info};
+use log::{debug, info};
 use sha1::{Digest, Sha1};
 use std::sync::Arc;
 use std::time::Instant;
@@ -8,12 +8,7 @@ use std::{collections::BTreeMap, fs};
 use crate::encoding::Decoder;
 use crate::encoding::Encoder;
 use crate::peer_manager::PeerManager;
-use crate::types::{
-    BencodeTypes, FileWriteComplete, PeerManagerConfig, PieceDownloadRequest, WritePieceRequest,
-};
-use tokio::fs::File;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt, SeekFrom};
-use tokio::sync::mpsc::{self, Receiver, UnboundedReceiver};
+use crate::types::{BencodeTypes, PeerManagerConfig, PieceDownloadRequest};
 
 pub struct BitTorrent {
     // Encoder and Decoder are used to encode and decode
@@ -167,38 +162,30 @@ impl BitTorrent {
             client_peer_id,
             file_size,
             num_pieces,
+            piece_length,
         };
 
+        let filename = self.get_filename()?;
+        let output_path = format!("{}/{}", output_directory_path, filename);
+        let file_path = std::path::PathBuf::from(&output_path);
+
+        // Initialize PeerManager with file metadata - it will create and manage the file
         Arc::get_mut(&mut self.peer_manager)
             .ok_or_else(|| anyhow!("Failed to get mutable reference to PeerManager"))?
-            .initialize(config)
+            .initialize(config, file_path, file_size as u64, piece_length)
             .await?;
-
-        // Peer Manager will let the File Manager know when the pieces are completed.
-        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel::<WritePieceRequest>();
-        let (file_complete_tx, mut file_complete_rx) = mpsc::channel::<FileWriteComplete>(1);
 
         let _peer_manager_handle = self
             .peer_manager
             .clone()
-            .start(announce_url.clone(), completion_tx, file_complete_tx)
+            .start(announce_url.clone())
             .await?;
 
-        let filename = self.get_filename()?;
-        let output_path = format!("{}/{}", output_directory_path, filename);
-
-        let mut file = File::create(&output_path).await?;
-        file.set_len(file_size as u64).await?;
-
-        // TODO: This should be refactored to be moved completely to the Peer Manager.
-        // The File Manager should only care about completed pieces. So the start function should be responsible
-        // for this in the Peer Manager.
         let piece_requests: Vec<PieceDownloadRequest> = (0..num_pieces)
             .map(|idx| {
                 let piece_hash = pieces_hashes[idx];
 
                 // Calculate the correct piece length for this piece
-                // Last piece may be smaller than the standard piece length
                 let offset = idx * piece_length;
                 let remaining = file_size.saturating_sub(offset);
                 let current_piece_length = std::cmp::min(piece_length, remaining);
@@ -213,23 +200,43 @@ impl BitTorrent {
 
         self.peer_manager.request_pieces(piece_requests).await?;
 
-        self.watch_for_completed_pieces(
-            &mut file,
-            &mut completion_rx,
-            &mut file_complete_rx,
-            num_pieces,
-            piece_length,
-        )
-        .await?;
+        // Wait for all pieces to complete by checking download status
+        self.wait_for_download_completion(num_pieces).await?;
 
         info!("✅ All pieces downloaded and written to disk");
 
-        // Verify file integrity by checking all piece hashes
-        info!("🔍 Verifying file integrity...");
-        self.verify_file_integrity(&output_path, &pieces_hashes, piece_length, file_size)
+        // Verify all pieces by reading from disk and checking hashes
+        info!("🔍 Verifying piece integrity...");
+        let failed_pieces = self
+            .peer_manager
+            .verify_completed_pieces(&pieces_hashes)
             .await?;
 
-        info!("✅ File integrity verified - all piece hashes match");
+        if !failed_pieces.is_empty() {
+            info!(
+                "⚠️ Found {} pieces with hash mismatches, re-downloading...",
+                failed_pieces.len()
+            );
+            // Pieces are already re-queued, wait for completion again
+            self.wait_for_download_completion(num_pieces).await?;
+
+            // Verify again after re-download
+            let failed_pieces_retry = self
+                .peer_manager
+                .verify_completed_pieces(&pieces_hashes)
+                .await?;
+
+            if !failed_pieces_retry.is_empty() {
+                return Err(anyhow!(
+                    "Verification failed after retry. {} pieces still corrupted",
+                    failed_pieces_retry.len()
+                ));
+            }
+
+            info!("✅ All pieces verified successfully after retry");
+        } else {
+            info!("✅ All pieces verified successfully");
+        }
 
         // Display download metrics
         if let Some(start_time) = self.start_time {
@@ -246,104 +253,19 @@ impl BitTorrent {
         Ok(())
     }
 
-    async fn watch_for_completed_pieces(
-        &self,
-        file: &mut File,
-        completion_rx: &mut UnboundedReceiver<WritePieceRequest>,
-        file_complete_rx: &mut Receiver<FileWriteComplete>,
-        num_pieces: usize,
-        piece_length: usize,
-    ) -> Result<()> {
-        let mut downloaded_pieces = 0;
-
+    /// Wait for all pieces to be downloaded and written to disk.
+    /// Polls the piece manager's completion status periodically.
+    async fn wait_for_download_completion(&self, num_pieces: usize) -> Result<()> {
         loop {
-            tokio::select! {
-                Some(completed) = completion_rx.recv() => {
-                    let offset = completed.piece_index as u64 * piece_length as u64;
-                    if let Err(e) = file.seek(SeekFrom::Start(offset)).await {
-                        error!("Failed to seek to offset {} for piece {}: {}", offset, completed.piece_index, e);
-                        return Err(e.into());
-                    }
-                    if let Err(e) = file.write_all(&completed.data).await {
-                        error!("Failed to write piece {} ({} bytes): {}", completed.piece_index, completed.data.len(), e);
-                        return Err(e.into());
-                    }
-                    if let Err(e) = file.flush().await {
-                        error!("Failed to flush file after writing piece {}: {}", completed.piece_index, e);
-                        return Err(e.into());
-                    }
+            let snapshot = self.peer_manager.get_piece_snapshot().await;
 
-                    downloaded_pieces += 1;
-                    let percentage = (downloaded_pieces * 100) / num_pieces;
-
-                    info!(
-                        "Downloaded {}/{} pieces ({}%)",
-                        downloaded_pieces, num_pieces, percentage
-                    );
-                }
-                Some(_) = file_complete_rx.recv() => {
-                    debug!("All pieces downloaded, exiting write loop");
-                    break;
-                }
-                else => {
-                    debug!("Both channels closed, exiting write loop");
-                    break;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn verify_file_integrity(
-        &self,
-        file_path: &str,
-        expected_hashes: &[[u8; 20]],
-        piece_length: usize,
-        file_size: usize,
-    ) -> Result<()> {
-        use tokio::io::AsyncReadExt;
-
-        let mut file = File::open(file_path).await?;
-        let mut mismatches = Vec::new();
-
-        for (piece_index, expected_hash) in expected_hashes.iter().enumerate() {
-            let offset = piece_index * piece_length;
-            let remaining = file_size.saturating_sub(offset);
-            let current_piece_length = std::cmp::min(piece_length, remaining);
-
-            if current_piece_length == 0 {
+            if snapshot.completed_count >= num_pieces {
+                debug!("All {} pieces completed", num_pieces);
                 break;
             }
 
-            file.seek(SeekFrom::Start(offset as u64)).await?;
-
-            let mut piece_data = vec![0u8; current_piece_length];
-            file.read_exact(&mut piece_data).await?;
-
-            let actual_hash = Sha1::new().chain_update(&piece_data).finalize();
-            let actual_hash_bytes: [u8; 20] = actual_hash.into();
-
-            if &actual_hash_bytes != expected_hash {
-                mismatches.push((piece_index, expected_hash, actual_hash_bytes));
-            }
-        }
-
-        if !mismatches.is_empty() {
-            error!(
-                "⚠️ File integrity verification found {} issue(s):",
-                mismatches.len()
-            );
-            for (piece_index, expected, actual) in &mismatches {
-                error!(
-                    "  Piece {}: expected {:02x?}, got {:02x?}",
-                    piece_index, expected, actual
-                );
-            }
-            error!(
-                "Note: This may indicate disk corruption or a rare race condition. \
-                The download will be marked complete, but the file may be corrupted."
-            );
+            // Sleep briefly to avoid busy-waiting
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
 
         Ok(())

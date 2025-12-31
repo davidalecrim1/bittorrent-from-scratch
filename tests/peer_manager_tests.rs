@@ -2,10 +2,13 @@ mod helpers;
 
 #[cfg(test)]
 mod tests {
+    use super::helpers;
     use bittorrent_from_scratch::error::AppError;
     use bittorrent_from_scratch::peer_manager::PeerManager;
     use bittorrent_from_scratch::types::PeerManagerConfig;
     use std::sync::Arc;
+    use tempfile::NamedTempFile;
+    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn test_peer_manager_initialization() {
@@ -13,16 +16,26 @@ mod tests {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let config = PeerManagerConfig {
             info_hash: [1u8; 20],
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 64,
+            piece_length: 16384,
         };
 
-        let result = peer_manager.initialize(config).await;
+        let temp_file = NamedTempFile::new().unwrap();
+        let file_path = temp_file.path().to_path_buf();
+        let result = peer_manager
+            .initialize(config, file_path, 1024 * 1024, 16384)
+            .await;
         assert!(result.is_ok(), "Initialization should succeed");
     }
 
@@ -33,16 +46,27 @@ mod tests {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let config = PeerManagerConfig {
             info_hash: [1u8; 20],
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 64,
+            piece_length: 16384,
         };
 
-        peer_manager.initialize(config).await.unwrap();
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
+        peer_manager
+            .initialize(config, file_path, 1024 * 1024, 16384)
+            .await
+            .unwrap();
 
         // Request some pieces
         let requests = vec![
@@ -69,16 +93,27 @@ mod tests {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let config = PeerManagerConfig {
             info_hash: [1u8; 20],
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 64,
+            piece_length: 16384,
         };
 
-        peer_manager.initialize(config).await.unwrap();
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
+        peer_manager
+            .initialize(config, file_path, 1024 * 1024, 16384)
+            .await
+            .unwrap();
 
         let request = PieceDownloadRequest {
             piece_index: 0,
@@ -92,32 +127,35 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_returns_handle() {
-        use tokio::sync::mpsc;
-
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let config = PeerManagerConfig {
             info_hash: [1u8; 20],
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 10,
+            piece_length: 16384,
         };
 
-        peer_manager.initialize(config).await.unwrap();
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
+        peer_manager
+            .initialize(config, file_path, 1024 * 1024, 16384)
+            .await
+            .unwrap();
 
         let peer_manager = Arc::new(peer_manager);
-        let (completion_tx, _completion_rx) = mpsc::unbounded_channel();
-        let (file_complete_tx, _file_complete_rx) = mpsc::channel(1);
 
         let result = peer_manager
-            .start(
-                "http://tracker.example.com/announce".to_string(),
-                completion_tx,
-                file_complete_tx,
-            )
+            .start("http://tracker.example.com/announce".to_string())
             .await;
 
         assert!(result.is_ok(), "start should return a handle");
@@ -132,16 +170,27 @@ mod tests {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let config = PeerManagerConfig {
             info_hash: [1u8; 20],
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 100,
+            piece_length: 16384,
         };
 
-        peer_manager.initialize(config).await.unwrap();
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
+        peer_manager
+            .initialize(config, file_path, 1024 * 1024, 16384)
+            .await
+            .unwrap();
 
         // Request many pieces at once
         let requests: Vec<PieceDownloadRequest> = (0..50)
@@ -172,16 +221,27 @@ mod tests {
             .expect_announce(expected_peers.clone(), Some(1800))
             .await;
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let config = PeerManagerConfig {
             info_hash: [1u8; 20],
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 64,
+            piece_length: 16384,
         };
 
-        peer_manager.initialize(config).await.unwrap();
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
+        peer_manager
+            .initialize(config, file_path, 1024 * 1024, 16384)
+            .await
+            .unwrap();
 
         let result = peer_manager
             .get_peers(
@@ -199,7 +259,6 @@ mod tests {
     #[tokio::test]
     async fn test_connect_with_peers() {
         use bittorrent_from_scratch::types::Peer;
-        use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -209,16 +268,27 @@ mod tests {
             .expect_announce(vec![Peer::new("192.168.1.1".to_string(), 6881)], Some(1800))
             .await;
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let config = PeerManagerConfig {
             info_hash: [1u8; 20],
             client_peer_id: [2u8; 20],
             file_size: 1024 * 1024,
             num_pieces: 64,
+            piece_length: 16384,
         };
 
-        peer_manager.initialize(config).await.unwrap();
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
+        peer_manager
+            .initialize(config, file_path, 1024 * 1024, 16384)
+            .await
+            .unwrap();
         let peer_manager = Arc::new(peer_manager);
 
         // Use watch_tracker to populate available_peers in background
@@ -257,40 +327,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_completion_forwards_to_writer() {
-        use bittorrent_from_scratch::types::WritePieceRequest;
-        use tokio::sync::mpsc;
-
+    async fn test_process_completion_writes_piece() {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let config = PeerManagerConfig {
             info_hash: [1u8; 20],
             client_peer_id: [2u8; 20],
             file_size: 1024,
             num_pieces: 10,
+            piece_length: 16384,
         };
-        peer_manager.initialize(config).await.unwrap();
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
+        peer_manager
+            .initialize(config, file_path, 1024 * 1024, 16384)
+            .await
+            .unwrap();
 
-        let (file_writer_tx, mut file_writer_rx) = mpsc::unbounded_channel();
-        let (file_complete_tx, _) = mpsc::channel(1);
+        // Request the piece first
+        peer_manager
+            .request_pieces(vec![bittorrent_from_scratch::types::PieceDownloadRequest {
+                piece_index: 5,
+                expected_hash: [0u8; 20],
+                piece_length: 16384,
+            }])
+            .await
+            .unwrap();
 
-        let completed = WritePieceRequest {
-            peer_addr: "127.0.0.1:6881".to_string(),
-            piece_index: 5,
-            data: vec![1, 2, 3, 4],
-        };
+        // Start download to mark it in-flight
+        peer_manager
+            .start_download(5, "127.0.0.1:6881".to_string())
+            .await;
 
         let result = peer_manager
-            .process_completion(completed.clone(), &file_writer_tx, &file_complete_tx, 10)
+            .process_completion(5, vec![1, 2, 3, 4], "127.0.0.1:6881".to_string())
             .await;
 
         assert!(result.is_ok());
 
-        let forwarded = file_writer_rx.recv().await.unwrap();
-        assert_eq!(forwarded.piece_index, 5);
+        // Verify the piece is marked as completed
+        assert!(peer_manager.has_piece(5).await);
     }
 
     #[tokio::test]
@@ -300,15 +384,26 @@ mod tests {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let config = PeerManagerConfig {
             info_hash: [1u8; 20],
             client_peer_id: [2u8; 20],
             file_size: 1024,
             num_pieces: 10,
+            piece_length: 16384,
         };
-        peer_manager.initialize(config).await.unwrap();
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
+        peer_manager
+            .initialize(config, file_path, 1024 * 1024, 16384)
+            .await
+            .unwrap();
 
         // Request the piece first through the public API
         peer_manager
@@ -342,15 +437,26 @@ mod tests {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let config = PeerManagerConfig {
             info_hash: [1u8; 20],
             client_peer_id: [2u8; 20],
             file_size: 1024,
             num_pieces: 10,
+            piece_length: 16384,
         };
-        peer_manager.initialize(config).await.unwrap();
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
+        peer_manager
+            .initialize(config, file_path, 1024 * 1024, 16384)
+            .await
+            .unwrap();
 
         // Request the piece first through the public API
         peer_manager
@@ -395,15 +501,26 @@ mod tests {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         let config = PeerManagerConfig {
             info_hash: [1u8; 20],
             client_peer_id: [2u8; 20],
             file_size: 1024,
             num_pieces: 10,
+            piece_length: 16384,
         };
-        peer_manager.initialize(config).await.unwrap();
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
+        peer_manager
+            .initialize(config, file_path, 1024 * 1024, 16384)
+            .await
+            .unwrap();
 
         let result = peer_manager.try_assign_piece().await;
 
@@ -415,15 +532,28 @@ mod tests {
     async fn test_cleanup_piece_tracking_not_found() {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -437,15 +567,28 @@ mod tests {
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -474,15 +617,28 @@ mod tests {
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -499,19 +655,31 @@ mod tests {
     #[tokio::test]
     async fn test_assign_piece_to_peer_already_downloading() {
         use bittorrent_from_scratch::types::{Peer, PieceDownloadRequest};
-        use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -552,7 +720,6 @@ mod tests {
     #[tokio::test]
     async fn test_assign_piece_to_peer_with_piece_available() {
         use bittorrent_from_scratch::types::{Peer, PieceDownloadRequest};
-        use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -567,14 +734,27 @@ mod tests {
             .expect_announce(vec![Peer::new("192.168.1.1".to_string(), 6881)], Some(1800))
             .await;
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -608,7 +788,7 @@ mod tests {
         assert!(peer_manager.is_peer_connected("192.168.1.1:6881").await);
 
         // Check if peer has pieces (for debugging)
-        let piece_count = peer_manager.get_peer_piece_count("192.168.1.1:6881").await;
+        let _piece_count = peer_manager.get_peer_piece_count("192.168.1.1:6881").await;
 
         // Assign piece 1 (peer has it)
         let request = PieceDownloadRequest {
@@ -625,15 +805,28 @@ mod tests {
     async fn test_try_assign_piece_empty_queue() {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -648,19 +841,30 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect_peer_success() {
-        use tokio::sync::mpsc;
-
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -677,34 +881,38 @@ mod tests {
 
     #[tokio::test]
     async fn test_background_tasks_shutdown_gracefully() {
-        use tokio::sync::mpsc;
-
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
-
-        let (file_writer_tx, _) = mpsc::unbounded_channel();
-        let (file_complete_tx, _) = mpsc::channel(1);
 
         let peer_manager = Arc::new(peer_manager);
 
         let handle = peer_manager
             .clone()
-            .start(
-                "http://tracker.example.com".to_string(),
-                file_writer_tx,
-                file_complete_tx,
-            )
+            .start("http://tracker.example.com".to_string())
             .await
             .unwrap();
 
@@ -720,15 +928,28 @@ mod tests {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -744,15 +965,28 @@ mod tests {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -782,15 +1016,28 @@ mod tests {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -826,15 +1073,28 @@ mod tests {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -851,7 +1111,6 @@ mod tests {
     #[tokio::test]
     async fn test_get_connected_peer_addrs() {
         use bittorrent_from_scratch::types::Peer;
-        use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -860,15 +1119,28 @@ mod tests {
             .expect_announce(vec![Peer::new("192.168.1.1".to_string(), 6881)], Some(1800))
             .await;
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -916,15 +1188,28 @@ mod tests {
             .expect_announce(vec![Peer::new("192.168.1.1".to_string(), 6881)], Some(1800))
             .await;
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -943,20 +1228,31 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect_with_peers_no_available_peers() {
-        use tokio::sync::mpsc;
-
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -972,7 +1268,6 @@ mod tests {
     #[tokio::test]
     async fn test_connect_with_peers_at_capacity() {
         use bittorrent_from_scratch::types::Peer;
-        use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -987,15 +1282,28 @@ mod tests {
             )
             .await;
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -1039,7 +1347,6 @@ mod tests {
     #[tokio::test]
     async fn test_is_peer_connected() {
         use bittorrent_from_scratch::types::Peer;
-        use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1048,15 +1355,28 @@ mod tests {
             .expect_announce(vec![Peer::new("192.168.1.1".to_string(), 6881)], Some(1800))
             .await;
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -1105,15 +1425,28 @@ mod tests {
             )
             .await;
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -1144,7 +1477,6 @@ mod tests {
     #[tokio::test]
     async fn test_connected_peer_count() {
         use bittorrent_from_scratch::types::Peer;
-        use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1159,15 +1491,28 @@ mod tests {
             )
             .await;
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -1202,20 +1547,32 @@ mod tests {
     #[tokio::test]
     async fn test_process_disconnect_with_in_flight_pieces() {
         use bittorrent_from_scratch::types::{Peer, PeerDisconnected, PieceDownloadRequest};
-        use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -1254,11 +1611,15 @@ mod tests {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        let peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
 
         // Try to use connect_peer before initializing - should fail
         use bittorrent_from_scratch::types::Peer;
-        use tokio::sync::mpsc;
 
         let peer = Peer::new("192.168.1.1".to_string(), 6881);
         let (event_tx, _) = mpsc::unbounded_channel();
@@ -1271,7 +1632,6 @@ mod tests {
     async fn test_assign_piece_selects_least_busy_peer() {
         use bittorrent_from_scratch::types::{Peer, PeerManagerConfig, PieceDownloadRequest};
         use std::time::Duration;
-        use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1299,14 +1659,27 @@ mod tests {
             )
             .await;
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -1365,7 +1738,6 @@ mod tests {
     async fn test_assign_piece_fails_when_no_peer_has_piece() {
         use bittorrent_from_scratch::types::{Peer, PeerManagerConfig, PieceDownloadRequest};
         use std::time::Duration;
-        use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1380,14 +1752,27 @@ mod tests {
             .expect_announce(vec![Peer::new("192.168.1.1".to_string(), 6881)], Some(1800))
             .await;
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -1432,7 +1817,6 @@ mod tests {
     async fn test_drop_useless_peers_when_at_capacity() {
         use bittorrent_from_scratch::types::{Peer, PeerManagerConfig};
         use std::time::Duration;
-        use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1460,14 +1844,27 @@ mod tests {
             )
             .await;
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 
@@ -1511,7 +1908,6 @@ mod tests {
     async fn test_keep_useless_peers_when_below_capacity() {
         use bittorrent_from_scratch::types::{Peer, PeerManagerConfig};
         use std::time::Duration;
-        use tokio::sync::mpsc;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1534,14 +1930,27 @@ mod tests {
             )
             .await;
 
-        let mut peer_manager = PeerManager::new_with_connector(tracker_client, connector);
+        let mut peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+        );
+        let _temp_file = NamedTempFile::new().unwrap();
+        let file_path = _temp_file.path().to_path_buf();
         peer_manager
-            .initialize(PeerManagerConfig {
-                info_hash: [1u8; 20],
-                client_peer_id: [2u8; 20],
-                file_size: 1024,
-                num_pieces: 10,
-            })
+            .initialize(
+                PeerManagerConfig {
+                    info_hash: [1u8; 20],
+                    client_peer_id: [2u8; 20],
+                    file_size: 1024,
+                    num_pieces: 10,
+                    piece_length: 16384,
+                },
+                file_path,
+                1024,
+                16384,
+            )
             .await
             .unwrap();
 

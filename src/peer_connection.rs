@@ -8,10 +8,15 @@ use tokio::net::TcpStream;
 use tokio::sync::{RwLock, mpsc};
 use tokio::time::sleep;
 
+use crate::bandwidth_limiter::BandwidthLimiter;
 use crate::download_state::DownloadState;
 use crate::error::AppError;
+use crate::io::ThrottledMessageIO;
 use crate::messages::{self, PeerHandshakeMessage};
-use crate::messages::{InterestedMessage, PeerMessage};
+use crate::messages::{
+    BitfieldMessage, InterestedMessage, PeerMessage, PieceMessage, UnchokeMessage,
+};
+use crate::piece_manager::PieceManager;
 use crate::types::{
     FailedPiece, Peer, PeerDisconnected, PeerEvent, PieceDownloadRequest, PieceDownloadTask,
 };
@@ -26,7 +31,6 @@ const DOWNLOAD_REQUEST_CHANNEL_SIZE: usize = 256;
 
 const MAX_RETRIES_HANDSHAKE: usize = 3;
 
-#[derive(Debug)]
 pub struct PeerConnection {
     peer: Peer,
 
@@ -65,19 +69,29 @@ pub struct PeerConnection {
     // Block semaphore to limit the concurrent downloads of blocks (chunks of pieces) at the same time.
     block_semaphore: Arc<tokio::sync::Semaphore>,
     piece_channels: HashMap<u32, mpsc::Sender<messages::PieceMessage>>,
+
+    // Upload support
+    piece_manager: Arc<dyn PieceManager>,
+    bandwidth_limiter: Option<BandwidthLimiter>,
+    bandwidth_stats: Arc<crate::BandwidthStats>,
 }
 
 // Creates a connection with the Peer provided and wraps it within
 // It will rely on the inbound_tx and outbound_rx channels to communicate with the peer connection.
 impl PeerConnection {
+    #[allow(clippy::type_complexity)]
     pub fn new(
         peer: Peer,
         event_tx: mpsc::UnboundedSender<crate::types::PeerEvent>,
         tcp_connector: Arc<dyn crate::tcp_connector::TcpStreamFactory>,
+        piece_manager: Arc<dyn PieceManager>,
+        bandwidth_limiter: Option<BandwidthLimiter>,
+        bandwidth_stats: Arc<crate::BandwidthStats>,
     ) -> (
         Self,
         mpsc::Sender<PieceDownloadRequest>,
         Arc<RwLock<Vec<bool>>>,
+        mpsc::Sender<PeerMessage>,
     ) {
         let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CHANNEL_SIZE);
         let (inbound_tx, inbound_rx) = mpsc::channel(INBOUND_CHANNEL_SIZE);
@@ -86,6 +100,7 @@ impl PeerConnection {
 
         let bitfield = Arc::new(RwLock::new(Vec::new()));
         let block_semaphore = Arc::new(tokio::sync::Semaphore::new(BLOCK_PIPELINE_SIZE));
+        let outbound_tx_clone = outbound_tx.clone();
 
         let peer_conn = Self {
             peer,
@@ -105,9 +120,12 @@ impl PeerConnection {
             max_concurrent_pieces: MAX_PIECES_PER_PEER,
             block_semaphore,
             piece_channels: HashMap::new(),
+            piece_manager,
+            bandwidth_limiter,
+            bandwidth_stats,
         };
 
-        (peer_conn, download_request_tx, bitfield)
+        (peer_conn, download_request_tx, bitfield, outbound_tx_clone)
     }
 
     // Handshake with the peer to initialize the connection.
@@ -171,8 +189,27 @@ impl PeerConnection {
             self.peer.get_addr(),
             num_pieces
         );
-        let message_io = crate::io::TcpMessageIO::from_stream(stream, num_pieces);
-        self.start_with_io(Box::new(message_io)).await
+
+        let tcp_message_io = crate::io::TcpMessageIO::from_stream(stream, num_pieces);
+
+        let message_io: Box<dyn crate::io::MessageIO> =
+            if let Some(ref limiter) = self.bandwidth_limiter {
+                Box::new(ThrottledMessageIO::new(
+                    Box::new(tcp_message_io),
+                    limiter.download.clone(),
+                    limiter.upload.clone(),
+                    Some(self.bandwidth_stats.clone()),
+                ))
+            } else {
+                Box::new(ThrottledMessageIO::new(
+                    Box::new(tcp_message_io),
+                    None,
+                    None,
+                    Some(self.bandwidth_stats.clone()),
+                ))
+            };
+
+        self.start_with_io(message_io).await
     }
 
     // Starts with a custom MessageIO implementation.
@@ -235,10 +272,18 @@ impl PeerConnection {
         // Clone outbound_tx before handle_incoming_messages consumes self
         let outbound_tx = self.outbound_tx.clone();
 
-        // Spawn message handler first (ensures it's ready before we trigger responses)
+        // Get our bitfield before handle_incoming_messages consumes self
+        let our_bitfield = self.get_our_bitfield().await;
+
+        // Spawn message handler (ensures it's ready before we trigger responses)
         self.handle_incoming_messages();
 
-        // Now send interested message (peer will respond with bitfield)
+        // Send bitfield if we have any pieces (bandwidth saving: don't send empty bitfield)
+        if let Some(bitfield) = our_bitfield {
+            let _ = outbound_tx.send(PeerMessage::Bitfield(bitfield)).await;
+        }
+
+        // Send interested message (peer will respond with bitfield)
         let _ = outbound_tx
             .send(PeerMessage::Interested(InterestedMessage {}))
             .await;
@@ -356,6 +401,10 @@ impl PeerConnection {
             PeerMessage::Interested(_) => {
                 debug!("Peer Connector received Interested from Peer {}", peer_addr);
                 self.is_interested = true;
+                let _ = self
+                    .outbound_tx
+                    .send(PeerMessage::Unchoke(UnchokeMessage {}))
+                    .await;
             }
 
             PeerMessage::NotInterested(_) => {
@@ -380,9 +429,52 @@ impl PeerConnection {
 
             PeerMessage::Request(request) => {
                 debug!(
-                    "Peer Connector received Request for piece {} from Peer {} (ignored - upload not supported)",
-                    request.piece_index, peer_addr
+                    "Peer Connector received Request for piece {} (begin={}, length={}) from Peer {}",
+                    request.piece_index, request.begin, request.length, peer_addr
                 );
+
+                let piece_manager = self.piece_manager.clone();
+                let outbound_tx = self.outbound_tx.clone();
+                let peer_addr_clone = peer_addr.clone();
+
+                tokio::spawn(async move {
+                    match piece_manager
+                        .read_block(request.piece_index, request.begin, request.length)
+                        .await
+                    {
+                        Ok(Some(block)) => {
+                            let piece_msg = PieceMessage {
+                                piece_index: request.piece_index,
+                                begin: request.begin,
+                                block,
+                            };
+
+                            if let Err(e) = outbound_tx.send(PeerMessage::Piece(piece_msg)).await {
+                                debug!("Failed to send piece to peer {}: {}", peer_addr_clone, e);
+                            } else {
+                                debug!(
+                                    "Uploaded block for piece {} (begin={}, length={}) to peer {}",
+                                    request.piece_index,
+                                    request.begin,
+                                    request.length,
+                                    peer_addr_clone
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            debug!(
+                                "Peer {} requested piece {} but we don't have it",
+                                peer_addr_clone, request.piece_index
+                            );
+                        }
+                        Err(e) => {
+                            debug!(
+                                "Failed to read piece {} for upload to peer {}: {}",
+                                request.piece_index, peer_addr_clone, e
+                            );
+                        }
+                    }
+                });
             }
 
             PeerMessage::Piece(piece) => {
@@ -611,5 +703,12 @@ impl PeerConnection {
     pub async fn can_download_pieces(&self) -> bool {
         let bf = self.bitfield.read().await;
         !self.is_choking && !bf.is_empty()
+    }
+
+    async fn get_our_bitfield(&self) -> Option<BitfieldMessage> {
+        self.piece_manager
+            .get_bitfield()
+            .await
+            .map(|bitfield| BitfieldMessage { bitfield })
     }
 }

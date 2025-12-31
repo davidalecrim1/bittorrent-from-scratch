@@ -1,6 +1,8 @@
 use std::fs::{self, OpenOptions};
 
 use bittorrent_from_scratch::{
+    BandwidthStats,
+    bandwidth_limiter::{BandwidthLimiter, parse_bandwidth_arg},
     bittorrent_client::BitTorrent,
     cli::Args,
     encoding::{Decoder, Encoder},
@@ -10,8 +12,9 @@ use bittorrent_from_scratch::{
 use chrono::Utc;
 use clap::Parser;
 use env_logger::{Builder, Target};
-use log::{LevelFilter, debug};
+use log::{LevelFilter, debug, info};
 use reqwest::Client;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -41,11 +44,47 @@ async fn main() {
         .filter_level(log_level)
         .init();
 
-    let http_client = Client::new();
-    let peer_manager = PeerManager::new(Decoder {}, http_client);
-
     // CLI Arguments
     let args = Args::parse();
+
+    // Parse bandwidth limiters
+    let bandwidth_limiter = if args.max_download_rate.is_some() || args.max_upload_rate.is_some() {
+        let download_bps = args
+            .max_download_rate
+            .as_ref()
+            .map(|r| parse_bandwidth_arg(r))
+            .transpose()
+            .expect("Invalid download rate format");
+
+        let upload_bps = args
+            .max_upload_rate
+            .as_ref()
+            .map(|r| parse_bandwidth_arg(r))
+            .transpose()
+            .expect("Invalid upload rate format");
+
+        if let Some(rate) = &args.max_download_rate {
+            info!("Download rate limit: {}", rate);
+        }
+        if let Some(rate) = &args.max_upload_rate {
+            info!("Upload rate limit: {}", rate);
+        }
+
+        Some(
+            BandwidthLimiter::new(download_bps, upload_bps)
+                .expect("Failed to create bandwidth limiter"),
+        )
+    } else {
+        None
+    };
+
+    let http_client = Client::new();
+    let peer_manager = PeerManager::new(
+        Decoder {},
+        http_client,
+        bandwidth_limiter,
+        Arc::new(BandwidthStats::default()),
+    );
 
     let mut torrent_client =
         BitTorrent::new(Decoder {}, Encoder {}, peer_manager, args.input_file_path).unwrap();

@@ -1,8 +1,11 @@
+use crate::bandwidth_limiter::GovernorRateLimiter;
 use crate::encoding::{PeerMessageDecoder, PeerMessageEncoder};
 use crate::messages::PeerMessage;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
+use std::num::NonZeroU32;
+use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio_util::codec::{FramedRead, FramedWrite};
@@ -63,5 +66,83 @@ impl MessageIO for TcpMessageIO {
             Some(Err(e)) => Err(e),
             None => Ok(None),
         }
+    }
+}
+
+/// Wraps any MessageIO with optional bandwidth throttling
+pub struct ThrottledMessageIO {
+    inner: Box<dyn MessageIO>,
+    download_limiter: Option<Arc<GovernorRateLimiter>>,
+    upload_limiter: Option<Arc<GovernorRateLimiter>>,
+    bandwidth_stats: Option<Arc<crate::bandwidth_stats::BandwidthStats>>,
+}
+
+impl ThrottledMessageIO {
+    pub fn new(
+        inner: Box<dyn MessageIO>,
+        download_limiter: Option<Arc<GovernorRateLimiter>>,
+        upload_limiter: Option<Arc<GovernorRateLimiter>>,
+        bandwidth_stats: Option<Arc<crate::bandwidth_stats::BandwidthStats>>,
+    ) -> Self {
+        Self {
+            inner,
+            download_limiter,
+            upload_limiter,
+            bandwidth_stats,
+        }
+    }
+
+    fn calculate_message_size(msg: &PeerMessage) -> usize {
+        match msg.to_bytes() {
+            Ok(bytes) => bytes.len(),
+            Err(_) => 5, // Fallback to minimal message size
+        }
+    }
+}
+
+impl std::fmt::Debug for ThrottledMessageIO {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThrottledMessageIO").finish()
+    }
+}
+
+#[async_trait]
+impl MessageIO for ThrottledMessageIO {
+    async fn write_message(&mut self, msg: &PeerMessage) -> Result<()> {
+        let size = Self::calculate_message_size(msg);
+
+        // Record upload bytes
+        if let Some(ref stats) = self.bandwidth_stats {
+            stats.record_upload(size as u64);
+        }
+
+        if let Some(limiter) = &self.upload_limiter
+            && let Some(non_zero_size) = NonZeroU32::new(size as u32)
+        {
+            limiter.until_n_ready(non_zero_size).await.ok();
+        }
+
+        self.inner.write_message(msg).await
+    }
+
+    async fn read_message(&mut self) -> Result<Option<PeerMessage>> {
+        let msg = self.inner.read_message().await?;
+
+        if let Some(message) = &msg {
+            let size = Self::calculate_message_size(message);
+
+            // Record download bytes
+            if let Some(ref stats) = self.bandwidth_stats {
+                stats.record_download(size as u64);
+            }
+
+            if let Some(limiter) = &self.download_limiter
+                && let Some(non_zero_size) = NonZeroU32::new(size as u32)
+            {
+                limiter.until_n_ready(non_zero_size).await.ok();
+            }
+        }
+
+        Ok(msg)
     }
 }

@@ -233,4 +233,102 @@ mod tests {
         let (begin, _) = state.get_next_block_to_request().unwrap();
         assert_eq!(begin, 0);
     }
+
+    #[test]
+    fn test_add_duplicate_block_is_noop() {
+        let mut state = DownloadState::new(0, 32 * 1024, 16 * 1024, [0u8; 20]);
+
+        let block_data = vec![1u8; 16 * 1024];
+        state.add_block(0, block_data.clone()).unwrap();
+
+        assert_eq!(state.received_blocks.len(), 1);
+
+        let duplicate_data = vec![2u8; 16 * 1024];
+        state.add_block(0, duplicate_data).unwrap();
+
+        assert_eq!(state.received_blocks.len(), 1);
+        assert_eq!(state.received_blocks.get(&0).unwrap(), &block_data);
+    }
+
+    #[test]
+    fn test_assemble_incomplete_piece_fails() {
+        let mut state = DownloadState::new(0, 32 * 1024, 16 * 1024, [0u8; 20]);
+
+        state.add_block(0, vec![0u8; 16 * 1024]).unwrap();
+
+        assert!(!state.is_complete());
+        let result = state.assemble_piece();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_assemble_piece_truncates_to_piece_length() {
+        let piece_length = 20000;
+        let block_size = 16384;
+        let mut state = DownloadState::new(0, piece_length, block_size, [0u8; 20]);
+
+        state.add_block(0, vec![1u8; block_size]).unwrap();
+        state
+            .add_block(block_size as u32, vec![2u8; block_size])
+            .unwrap();
+
+        assert!(state.is_complete());
+        let assembled = state.assemble_piece().unwrap();
+
+        assert_eq!(assembled.len(), piece_length);
+        assert_eq!(&assembled[0..block_size], &vec![1u8; block_size]);
+        assert_eq!(
+            &assembled[block_size..piece_length],
+            &vec![2u8; piece_length - block_size]
+        );
+    }
+
+    #[test]
+    fn test_verify_hash_correct() {
+        use sha1::{Digest, Sha1};
+
+        let piece_data = vec![42u8; 16384];
+        let mut hasher = Sha1::new();
+        hasher.update(&piece_data);
+        let expected_hash: [u8; 20] = hasher.finalize().into();
+
+        let state = DownloadState::new(0, 16384, 16384, expected_hash);
+        assert!(state.verify_hash(&piece_data).unwrap());
+    }
+
+    #[test]
+    fn test_verify_hash_incorrect() {
+        let piece_data = vec![42u8; 16384];
+        let wrong_hash = [0u8; 20];
+
+        let state = DownloadState::new(0, 16384, 16384, wrong_hash);
+        assert!(!state.verify_hash(&piece_data).unwrap());
+    }
+
+    #[test]
+    fn test_expected_hash_getter() {
+        let expected_hash = [42u8; 20];
+        let state = DownloadState::new(0, 16384, 16384, expected_hash);
+        assert_eq!(state.expected_hash(), &expected_hash);
+    }
+
+    #[test]
+    fn test_piece_length_getter() {
+        let piece_length = 32768;
+        let state = DownloadState::new(0, piece_length, 16384, [0u8; 20]);
+        assert_eq!(state.piece_length(), piece_length);
+    }
+
+    #[test]
+    fn test_get_next_block_calculates_correct_length_for_last_block() {
+        let piece_length = 20000;
+        let block_size = 16384;
+        let mut state = DownloadState::new(0, piece_length, block_size, [0u8; 20]);
+
+        state.add_block(0, vec![0u8; block_size]).unwrap();
+
+        let (begin, length) = state.get_next_block_to_request().unwrap();
+        assert_eq!(begin, block_size as u32);
+        assert_eq!(length, (piece_length - block_size) as u32);
+    }
 }

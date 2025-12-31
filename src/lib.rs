@@ -1,3 +1,5 @@
+pub mod bandwidth_limiter;
+pub mod bandwidth_stats;
 pub mod bittorrent_client;
 pub mod cli;
 pub mod download_state;
@@ -7,7 +9,10 @@ pub mod io;
 pub mod messages;
 pub mod peer_connection;
 pub mod peer_manager;
-pub mod piece_state;
+pub mod piece_manager;
 pub mod tcp_connector;
 pub mod tracker_client;
 pub mod types;
+
+pub use bandwidth_stats::BandwidthStats;
+pub use piece_manager::{FilePieceManager, InMemoryPieceManager, PieceManager};

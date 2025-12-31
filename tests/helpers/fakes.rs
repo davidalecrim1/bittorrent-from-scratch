@@ -1,8 +1,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use bittorrent_from_scratch::bandwidth_limiter::BandwidthLimiter;
 use bittorrent_from_scratch::io::MessageIO;
 use bittorrent_from_scratch::messages::PeerMessage;
 use bittorrent_from_scratch::peer_manager::PeerConnectionFactory;
+use bittorrent_from_scratch::piece_manager::{InMemoryPieceManager, PieceManager};
 use bittorrent_from_scratch::tracker_client::TrackerClient;
 use bittorrent_from_scratch::types::{AnnounceRequest, AnnounceResponse, ConnectedPeer, Peer};
 use std::collections::VecDeque;
@@ -162,9 +164,13 @@ impl PeerConnectionFactory for FakePeerConnectionFactory {
         _client_peer_id: [u8; 20],
         _info_hash: [u8; 20],
         _num_pieces: usize,
+        _piece_manager: Arc<dyn PieceManager>,
+        _bandwidth_limiter: Option<BandwidthLimiter>,
+        _bandwidth_stats: Arc<bittorrent_from_scratch::BandwidthStats>,
     ) -> Result<ConnectedPeer> {
         let (download_request_tx, rx) =
             mpsc::channel::<bittorrent_from_scratch::types::PieceDownloadRequest>(10);
+        let (message_tx, _message_rx) = mpsc::channel::<PeerMessage>(10);
 
         // Store receiver to keep channel alive
         self._receivers.lock().await.push(rx);
@@ -177,6 +183,23 @@ impl PeerConnectionFactory for FakePeerConnectionFactory {
         let bitfield_data = configured_bitfield.unwrap_or_else(Vec::new);
         let bitfield = Arc::new(tokio::sync::RwLock::new(bitfield_data));
 
-        Ok(ConnectedPeer::new(peer, download_request_tx, bitfield))
+        Ok(ConnectedPeer::new(
+            peer,
+            download_request_tx,
+            message_tx,
+            bitfield,
+        ))
     }
+}
+
+/// Helper function to create a test piece manager for tests
+pub fn create_test_piece_manager() -> Arc<dyn PieceManager> {
+    Arc::new(InMemoryPieceManager::new())
+}
+
+/// Helper function to create test bandwidth stats
+pub fn create_test_bandwidth_stats() -> Arc<bittorrent_from_scratch::BandwidthStats> {
+    Arc::new(bittorrent_from_scratch::BandwidthStats::new(
+        std::time::Duration::from_secs(3),
+    ))
 }

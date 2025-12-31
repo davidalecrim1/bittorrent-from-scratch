@@ -1,14 +1,15 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use crate::bandwidth_limiter::BandwidthLimiter;
 use crate::encoding::Decoder;
 use crate::error::{AppError, Result};
-use crate::piece_state::PieceStateManager;
+use crate::messages::{HaveMessage, PeerMessage};
+use crate::piece_manager::{FilePieceManager, PieceManager};
 use crate::tcp_connector::DefaultTcpStreamFactory;
 use crate::tracker_client::{HttpTrackerClient, TrackerClient};
 use crate::types::{
-    AnnounceRequest, ConnectedPeer, FailedPiece, FileWriteComplete, Peer, PeerAddr, PeerConnection,
-    PeerDisconnected, PeerEvent, PeerManagerConfig, PeerManagerHandle, PieceDownloadRequest,
-    WritePieceRequest,
+    AnnounceRequest, ConnectedPeer, FailedPiece, Peer, PeerAddr, PeerConnection, PeerDisconnected,
+    PeerEvent, PeerManagerConfig, PeerManagerHandle, PieceDownloadRequest,
 };
 use async_trait::async_trait;
 use log::{debug, info};
@@ -32,6 +33,9 @@ pub trait PeerConnectionFactory: Send + Sync {
         client_peer_id: [u8; 20],
         info_hash: [u8; 20],
         num_pieces: usize,
+        piece_manager: Arc<dyn PieceManager>,
+        bandwidth_limiter: Option<BandwidthLimiter>,
+        bandwidth_stats: Arc<crate::BandwidthStats>,
     ) -> Result<ConnectedPeer>;
 }
 
@@ -46,10 +50,19 @@ impl PeerConnectionFactory for DefaultPeerConnectionFactory {
         client_peer_id: [u8; 20],
         info_hash: [u8; 20],
         num_pieces: usize,
+        piece_manager: Arc<dyn PieceManager>,
+        bandwidth_limiter: Option<BandwidthLimiter>,
+        bandwidth_stats: Arc<crate::BandwidthStats>,
     ) -> Result<ConnectedPeer> {
         let tcp_connector = Arc::new(DefaultTcpStreamFactory);
-        let (mut peer_conn, download_request_tx, bitfield) =
-            PeerConnection::new(peer.clone(), event_tx, tcp_connector);
+        let (mut peer_conn, download_request_tx, bitfield, message_tx) = PeerConnection::new(
+            peer.clone(),
+            event_tx,
+            tcp_connector,
+            piece_manager,
+            bandwidth_limiter,
+            bandwidth_stats,
+        );
 
         peer_conn.handshake(client_peer_id, info_hash).await?;
         peer_conn.start(num_pieces).await?;
@@ -57,6 +70,7 @@ impl PeerConnectionFactory for DefaultPeerConnectionFactory {
         Ok(ConnectedPeer::new(
             peer.clone(),
             download_request_tx,
+            message_tx,
             bitfield,
         ))
     }
@@ -69,36 +83,61 @@ pub struct PeerManager {
     available_peers: Arc<RwLock<HashMap<PeerAddr, Peer>>>,
     connected_peers: Arc<RwLock<HashMap<PeerAddr, ConnectedPeer>>>,
 
-    // Controls the state of the Pieces being downloaded
-    piece_state: Arc<PieceStateManager>,
+    // Controls the state of the Pieces being downloaded AND file I/O
+    piece_manager: Arc<dyn PieceManager>,
 
     config: Option<PeerManagerConfig>,
     connector: Arc<dyn PeerConnectionFactory>,
+
+    bandwidth_limiter: Option<BandwidthLimiter>,
+    bandwidth_stats: Arc<crate::BandwidthStats>,
 }
 
 impl PeerManager {
-    pub fn new(decoder: Decoder, http_client: Client) -> Self {
+    pub fn new(
+        decoder: Decoder,
+        http_client: Client,
+        bandwidth_limiter: Option<BandwidthLimiter>,
+        bandwidth_stats: Arc<crate::BandwidthStats>,
+    ) -> Self {
         let tracker_client = Arc::new(HttpTrackerClient::new(http_client, decoder));
-        Self::new_with_connector(tracker_client, Arc::new(DefaultPeerConnectionFactory))
+        Self::new_with_connector(
+            tracker_client,
+            Arc::new(DefaultPeerConnectionFactory),
+            bandwidth_limiter,
+            bandwidth_stats,
+        )
     }
 
     pub fn new_with_connector(
         tracker_client: Arc<dyn TrackerClient>,
         connector: Arc<dyn PeerConnectionFactory>,
+        bandwidth_limiter: Option<BandwidthLimiter>,
+        bandwidth_stats: Arc<crate::BandwidthStats>,
     ) -> Self {
         Self {
             tracker_client,
             available_peers: Arc::new(RwLock::new(HashMap::new())),
             connected_peers: Arc::new(RwLock::new(HashMap::new())),
             config: None,
-            piece_state: Arc::new(PieceStateManager::new()),
+            piece_manager: Arc::new(FilePieceManager::new()),
             connector,
+            bandwidth_limiter,
+            bandwidth_stats,
         }
     }
 
-    pub async fn initialize(&mut self, config: PeerManagerConfig) -> Result<()> {
+    pub async fn initialize(
+        &mut self,
+        config: PeerManagerConfig,
+        file_path: std::path::PathBuf,
+        file_size: u64,
+        piece_length: usize,
+    ) -> Result<()> {
         let num_pieces = config.num_pieces;
-        self.piece_state.initialize(num_pieces).await;
+        self.piece_manager
+            .initialize(num_pieces, file_path, file_size, piece_length)
+            .await?;
         self.config = Some(config);
         Ok(())
     }
@@ -161,7 +200,7 @@ impl PeerManager {
 
     /// Cleanup piece tracking after completion/failure.
     pub async fn cleanup_piece_tracking(&self, piece_index: u32) -> Option<String> {
-        let peer_addr = self.piece_state.get_peer_for_piece(piece_index).await?;
+        let peer_addr = self.piece_manager.get_peer_for_piece(piece_index).await?;
 
         let mut connected_peers = self.connected_peers.write().await;
         if let Some(peer) = connected_peers.get_mut(&peer_addr) {
@@ -171,28 +210,23 @@ impl PeerManager {
         Some(peer_addr)
     }
 
-    pub async fn get_piece_snapshot(&self) -> crate::piece_state::PieceStats {
-        self.piece_state.get_snapshot().await
+    pub async fn get_piece_snapshot(&self) -> crate::piece_manager::PieceStats {
+        self.piece_manager.get_snapshot().await
     }
 
     pub async fn is_piece_completed(&self, piece_index: u32) -> bool {
-        self.piece_state.is_completed(piece_index).await
+        self.piece_manager.is_completed(piece_index).await
     }
 
     pub async fn is_piece_pending(&self, piece_index: u32) -> bool {
-        self.piece_state.is_pending(piece_index).await
+        self.piece_manager.is_pending(piece_index).await
     }
 
     pub async fn is_piece_in_flight(&self, piece_index: u32) -> bool {
-        self.piece_state.is_in_flight(piece_index).await
+        self.piece_manager.is_in_flight(piece_index).await
     }
 
-    pub async fn start(
-        self: Arc<Self>,
-        announce_url: String,
-        file_writer_tx: mpsc::UnboundedSender<WritePieceRequest>,
-        file_complete_tx: mpsc::Sender<FileWriteComplete>,
-    ) -> Result<PeerManagerHandle> {
+    pub async fn start(self: Arc<Self>, announce_url: String) -> Result<PeerManagerHandle> {
         let config = self.config()?;
 
         let info_hash = config.info_hash;
@@ -206,12 +240,7 @@ impl PeerManager {
         let (event_tx, event_rx) = mpsc::unbounded_channel::<PeerEvent>();
 
         // Spawn unified event handler task
-        tokio::task::spawn(self.clone().handle_peer_events(
-            event_rx,
-            file_writer_tx.clone(),
-            file_complete_tx.clone(),
-            num_pieces,
-        ));
+        tokio::task::spawn(self.clone().handle_peer_events(event_rx, num_pieces));
 
         // Spawn task to connect with peers
         tokio::task::spawn(self.clone().handle_peer_connector(
@@ -234,13 +263,14 @@ impl PeerManager {
 
         // Spawn task to show the current status of the pieces
         let peer_manager_progress = self.clone();
+        let bandwidth_stats = self.bandwidth_stats.clone();
         tokio::task::spawn(async move {
             let mut interval =
                 tokio::time::interval(Duration::from_secs(PROGRESS_REPORT_INTERVAL_SECS));
             loop {
                 interval.tick().await;
 
-                // Get atomic snapshot from PieceStateManager
+                // Get atomic snapshot from PieceManager
                 let snapshot = peer_manager_progress.get_piece_snapshot().await;
                 let (completed, pending, in_flight) = (
                     snapshot.completed_count,
@@ -251,14 +281,29 @@ impl PeerManager {
                 let connected_peers = peer_manager_progress.connected_peers.read().await.len();
                 let percentage = (completed * 100) / num_pieces;
 
+                // Get bandwidth rates
+                let download_rate = bandwidth_stats.get_download_rate();
+                let upload_rate = bandwidth_stats.get_upload_rate();
+
+                // Format rates
+                let download_str = Self::format_rate(download_rate);
+                let upload_str = Self::format_rate(upload_rate);
+
                 // Print to terminal on same line (overwrites previous)
                 // Note: We use print! (not info!) to avoid newlines from the logger
                 use std::io::Write;
 
                 // Use ANSI escape codes to clear the line properly
                 print!(
-                    "\x1B[2K\r[Progress] {}/{} pieces ({}%) | {} peers | {} pending | {} in-flight",
-                    completed, num_pieces, percentage, connected_peers, pending, in_flight
+                    "\x1B[2K\r[Progress] {}/{} pieces ({}%) | {} peers | {} pending | {} in-flight | ↓ {} | ↑ {}",
+                    completed,
+                    num_pieces,
+                    percentage,
+                    connected_peers,
+                    pending,
+                    in_flight,
+                    download_str,
+                    upload_str
                 );
                 std::io::stdout().flush().unwrap();
             }
@@ -277,41 +322,31 @@ impl PeerManager {
     }
 
     /// Process a single completed piece event.
-    ///
-    /// Returns true to continue processing, or false when download is complete.
+    /// Writes piece data to disk and updates state atomically.
     pub async fn process_completion(
         &self,
-        completed: WritePieceRequest,
-        file_writer_tx: &mpsc::UnboundedSender<WritePieceRequest>,
-        file_complete_tx: &mpsc::Sender<FileWriteComplete>,
-        num_pieces: usize,
+        piece_index: u32,
+        piece_data: Vec<u8>,
+        peer_addr: String,
     ) -> Result<()> {
-        let piece_index = completed.piece_index;
+        // Write to disk AND update state atomically
+        self.piece_manager
+            .complete_piece(piece_index, piece_data)
+            .await?;
 
-        let _ = self.piece_state.complete_piece(piece_index).await;
+        // Broadcast Have to all connected peers
+        self.broadcast_have(piece_index).await;
 
-        if let Some(peer_addr) = self.cleanup_piece_tracking(piece_index).await {
+        if let Some(peer) = self.cleanup_piece_tracking(piece_index).await {
             let connected_peers = self.connected_peers.read().await;
             let active_count = connected_peers
-                .get(&peer_addr)
+                .get(&peer)
                 .map(|p| p.active_download_count())
                 .unwrap_or(0);
 
             debug!(
                 "Peer {} completed piece {}, active_downloads now: {}",
                 peer_addr, piece_index, active_count
-            );
-        }
-
-        let progress = self.piece_state.get_snapshot().await.completed_count;
-
-        file_writer_tx.send(completed)?;
-
-        if progress >= num_pieces {
-            file_complete_tx.send(FileWriteComplete).await?;
-            debug!(
-                "All {} pieces completed, sent FileWriteComplete signal",
-                num_pieces
             );
         }
 
@@ -322,7 +357,7 @@ impl PeerManager {
     pub async fn process_failure(&self, failed: FailedPiece) -> Result<()> {
         let piece_index = failed.piece_index;
 
-        if self.piece_state.is_completed(piece_index).await {
+        if self.piece_manager.is_completed(piece_index).await {
             debug!(
                 "Ignoring failure for piece {} - already completed (race condition)",
                 piece_index
@@ -338,7 +373,7 @@ impl PeerManager {
 
             self.cleanup_piece_tracking(piece_index).await;
 
-            self.piece_state.retry_piece(piece_index, true).await;
+            self.piece_manager.retry_piece(piece_index, true).await;
             return Ok(());
         }
 
@@ -356,7 +391,7 @@ impl PeerManager {
         }
 
         let retry_count = self
-            .piece_state
+            .piece_manager
             .retry_piece(piece_index, false)
             .await
             .unwrap_or(0);
@@ -374,7 +409,7 @@ impl PeerManager {
         let peer_addr = disconnect.peer.get_addr();
         debug!("Peer {} disconnected: {}", peer_addr, disconnect.reason);
 
-        let pieces_in_flight = self.piece_state.get_peer_pieces(&peer_addr).await;
+        let pieces_in_flight = self.piece_manager.get_peer_pieces(&peer_addr).await;
 
         {
             let mut connected_peers = self.connected_peers.write().await;
@@ -402,23 +437,35 @@ impl PeerManager {
         Ok(())
     }
 
+    /// Broadcast Have message to all connected peers
+    async fn broadcast_have(&self, piece_index: u32) {
+        let connected_peers = self.connected_peers.read().await;
+
+        for (_, connected_peer) in connected_peers.iter() {
+            let have_msg = PeerMessage::Have(HaveMessage { piece_index });
+            if let Err(e) = connected_peer.send_message(have_msg).await {
+                debug!(
+                    "Failed to send Have message for piece {} to peer: {}",
+                    piece_index, e
+                );
+            }
+        }
+    }
+
     /// Unified event handler for all peer events - merges completion, failure, and disconnect handlers
     async fn handle_peer_events(
         self: Arc<Self>,
         mut event_rx: mpsc::UnboundedReceiver<PeerEvent>,
-        file_writer_tx: mpsc::UnboundedSender<WritePieceRequest>,
-        file_complete_tx: mpsc::Sender<FileWriteComplete>,
-        num_pieces: usize,
+        _num_pieces: usize,
     ) {
         while let Some(event) = event_rx.recv().await {
             match event {
                 PeerEvent::WritePiece(completed) => {
                     let _ = self
                         .process_completion(
-                            completed,
-                            &file_writer_tx,
-                            &file_complete_tx,
-                            num_pieces,
+                            completed.piece_index,
+                            completed.data,
+                            completed.peer_addr,
                         )
                         .await;
                 }
@@ -462,14 +509,14 @@ impl PeerManager {
     ///
     /// Returns Ok(true) if a piece was assigned, Ok(false) if queue is empty.
     pub async fn try_assign_piece(&self) -> Result<bool> {
-        let piece_index = self.piece_state.pop_pending().await;
+        let piece_index = self.piece_manager.pop_pending().await;
 
         if let Some(index) = piece_index {
-            let request = self.piece_state.get_request(index).await;
+            let request = self.piece_manager.get_request(index).await;
 
             if let Some(req) = request {
                 if let Err(e) = self.assign_piece_to_peer(req.clone()).await {
-                    self.piece_state.requeue_piece(index).await;
+                    self.piece_manager.requeue_piece(index).await;
                     return Err(e);
                 }
                 Ok(true)
@@ -521,7 +568,7 @@ impl PeerManager {
                     break;
                 }
                 _ = interval.tick() => {
-                    let stale_downloads = self.piece_state.get_stale_downloads().await;
+                    let stale_downloads = self.piece_manager.get_stale_downloads().await;
 
                     if !stale_downloads.is_empty() {
                         debug!("Found {} stale downloads exceeding timeout", stale_downloads.len());
@@ -560,6 +607,9 @@ impl PeerManager {
                 config.client_peer_id,
                 config.info_hash,
                 config.num_pieces,
+                self.piece_manager.clone(),
+                self.bandwidth_limiter.clone(),
+                self.bandwidth_stats.clone(),
             )
             .await
     }
@@ -651,7 +701,7 @@ impl PeerManager {
         } // Write lock released here
 
         let _ = self
-            .piece_state
+            .piece_manager
             .start_download(piece_index, best_peer_addr)
             .await;
 
@@ -941,6 +991,9 @@ impl PeerManager {
             let connector = self.connector.clone();
             let config = self.config()?.clone();
             let event_tx = event_tx.clone();
+            let piece_manager = self.piece_manager.clone();
+            let bandwidth_limiter = self.bandwidth_limiter.clone();
+            let bandwidth_stats = self.bandwidth_stats.clone();
 
             tokio::spawn(async move {
                 let peer_addr = peer.get_addr();
@@ -951,6 +1004,9 @@ impl PeerManager {
                         config.client_peer_id,
                         config.info_hash,
                         config.num_pieces,
+                        piece_manager,
+                        bandwidth_limiter,
+                        bandwidth_stats,
                     )
                     .await
                 {
@@ -972,10 +1028,41 @@ impl PeerManager {
 
     /// Fetches a piece from the pending list and try to assign it to a connected peer.
     pub async fn download_piece(&self, request: PieceDownloadRequest) -> Result<()> {
-        let _ = self.piece_state.queue_piece(request.clone()).await;
+        let _ = self.piece_manager.queue_piece(request.clone()).await;
 
         let _ = self.assign_piece_to_peer(request).await;
 
         Ok(())
+    }
+
+    pub async fn verify_completed_pieces(&self, expected_hashes: &[[u8; 20]]) -> Result<Vec<u32>> {
+        self.piece_manager
+            .verify_completed_pieces(expected_hashes)
+            .await
+    }
+
+    /// For testing: mark a piece as being downloaded by a peer
+    #[doc(hidden)]
+    pub async fn start_download(&self, piece_index: u32, peer_addr: String) {
+        self.piece_manager
+            .start_download(piece_index, peer_addr)
+            .await;
+    }
+
+    /// For testing: check if a piece is completed
+    #[doc(hidden)]
+    pub async fn has_piece(&self, piece_index: u32) -> bool {
+        self.piece_manager.has_piece(piece_index).await
+    }
+
+    /// Formats a bandwidth rate in bytes/sec to a human-readable string
+    fn format_rate(bytes_per_sec: f64) -> String {
+        if bytes_per_sec >= 1_048_576.0 {
+            format!("{:.2} MB/s", bytes_per_sec / 1_048_576.0)
+        } else if bytes_per_sec >= 1_024.0 {
+            format!("{:.1} KB/s", bytes_per_sec / 1_024.0)
+        } else {
+            format!("{:.0} B/s", bytes_per_sec)
+        }
     }
 }

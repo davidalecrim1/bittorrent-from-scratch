@@ -28,12 +28,14 @@ pub struct PeerManagerConfig {
     pub client_peer_id: [u8; 20],
     pub file_size: usize,
     pub num_pieces: usize,
+    pub piece_length: usize,
 }
 
 #[derive(Debug)]
 pub struct ConnectedPeer {
     peer: Peer,
     download_request_tx: mpsc::Sender<PieceDownloadRequest>,
+    message_tx: mpsc::Sender<crate::messages::PeerMessage>,
     bitfield: Arc<RwLock<Vec<bool>>>,
     active_downloads: HashSet<u32>,
 }
@@ -42,11 +44,13 @@ impl ConnectedPeer {
     pub fn new(
         peer: Peer,
         download_request_tx: mpsc::Sender<PieceDownloadRequest>,
+        message_tx: mpsc::Sender<crate::messages::PeerMessage>,
         bitfield: Arc<RwLock<Vec<bool>>>, // Shared with PeerConnection
     ) -> Self {
         Self {
             peer,
             download_request_tx,
+            message_tx,
             bitfield,
             active_downloads: HashSet::new(),
         }
@@ -71,6 +75,13 @@ impl ConnectedPeer {
             .send(request)
             .await
             .map_err(|e| anyhow!("Failed to send download request: {}", e))
+    }
+
+    pub async fn send_message(&self, msg: crate::messages::PeerMessage) -> Result<()> {
+        self.message_tx
+            .send(msg)
+            .await
+            .map_err(|e| anyhow!("Failed to send message: {}", e))
     }
 
     pub fn get_sender(&self) -> mpsc::Sender<PieceDownloadRequest> {
@@ -130,9 +141,6 @@ pub struct PeerDisconnected {
     pub peer: Peer,
     pub reason: String,
 }
-
-#[derive(Debug, Clone)]
-pub struct FileWriteComplete;
 
 /// Unified event type for peer manager events
 #[derive(Debug)]
@@ -332,8 +340,10 @@ pub struct AnnounceResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::Peer;
+    use super::{ConnectedPeer, Peer, PieceDownloadRequest};
     use crate::messages::BitfieldMessage;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     #[test]
     fn test_bitfield_message_from_bytes_single_byte() {
@@ -533,5 +543,190 @@ mod tests {
         // Full IPv6 address (not compressed)
         let peer = Peer::new("2001:0db8:0000:0000:0000:0000:0000:0001".to_string(), 6881);
         assert_eq!(peer.get_addr(), "[2001:db8::1]:6881");
+    }
+
+    #[tokio::test]
+    async fn test_connected_peer_has_piece() {
+        use tokio::sync::mpsc;
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let (tx, _rx) = mpsc::channel(1);
+        let (message_tx, _message_rx) = mpsc::channel(1);
+        let bitfield = Arc::new(RwLock::new(vec![true, false, true]));
+
+        let connected_peer = ConnectedPeer::new(peer, tx, message_tx, bitfield);
+
+        assert!(connected_peer.has_piece(0).await);
+        assert!(!connected_peer.has_piece(1).await);
+        assert!(connected_peer.has_piece(2).await);
+        assert!(!connected_peer.has_piece(3).await);
+    }
+
+    #[tokio::test]
+    async fn test_connected_peer_piece_count() {
+        use tokio::sync::mpsc;
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let (tx, _rx) = mpsc::channel(1);
+        let (message_tx, _message_rx) = mpsc::channel(1);
+        let bitfield = Arc::new(RwLock::new(vec![true, false, true, true, false]));
+
+        let connected_peer = ConnectedPeer::new(peer, tx, message_tx, bitfield);
+
+        assert_eq!(connected_peer.piece_count().await, 3);
+    }
+
+    #[tokio::test]
+    async fn test_connected_peer_bitfield_len() {
+        use tokio::sync::mpsc;
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let (tx, _rx) = mpsc::channel(1);
+        let (message_tx, _message_rx) = mpsc::channel(1);
+        let bitfield = Arc::new(RwLock::new(vec![true; 100]));
+
+        let connected_peer = ConnectedPeer::new(peer, tx, message_tx, bitfield);
+
+        assert_eq!(connected_peer.bitfield_len().await, 100);
+    }
+
+    #[tokio::test]
+    async fn test_connected_peer_request_piece() {
+        use tokio::sync::mpsc;
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let (tx, mut rx) = mpsc::channel(1);
+        let (message_tx, _message_rx) = mpsc::channel(1);
+        let bitfield = Arc::new(RwLock::new(vec![true]));
+
+        let connected_peer = ConnectedPeer::new(peer, tx, message_tx, bitfield);
+
+        let request = PieceDownloadRequest {
+            piece_index: 0,
+            piece_length: 16384,
+            expected_hash: [0u8; 20],
+        };
+
+        connected_peer.request_piece(request.clone()).await.unwrap();
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.piece_index, 0);
+    }
+
+    #[tokio::test]
+    async fn test_connected_peer_get_sender() {
+        use tokio::sync::mpsc;
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let (tx, _rx) = mpsc::channel(1);
+        let (message_tx, _message_rx) = mpsc::channel(1);
+        let bitfield = Arc::new(RwLock::new(vec![]));
+
+        let connected_peer = ConnectedPeer::new(peer, tx.clone(), message_tx, bitfield);
+
+        let sender = connected_peer.get_sender();
+        assert_eq!(sender.capacity(), tx.capacity());
+    }
+
+    #[test]
+    fn test_connected_peer_peer_addr() {
+        use tokio::sync::mpsc;
+
+        let peer = Peer::new("192.168.1.100".to_string(), 6881);
+        let (tx, _rx) = mpsc::channel(1);
+        let (message_tx, _message_rx) = mpsc::channel(1);
+        let bitfield = Arc::new(RwLock::new(vec![]));
+
+        let connected_peer = ConnectedPeer::new(peer, tx, message_tx, bitfield);
+
+        assert_eq!(connected_peer.peer_addr(), "192.168.1.100:6881");
+    }
+
+    #[test]
+    fn test_connected_peer_peer() {
+        use tokio::sync::mpsc;
+
+        let peer = Peer::new("192.168.1.100".to_string(), 6881);
+        let (tx, _rx) = mpsc::channel(1);
+        let (message_tx, _message_rx) = mpsc::channel(1);
+        let bitfield = Arc::new(RwLock::new(vec![]));
+
+        let connected_peer = ConnectedPeer::new(peer.clone(), tx, message_tx, bitfield);
+
+        assert_eq!(connected_peer.peer(), &peer);
+    }
+
+    #[test]
+    fn test_connected_peer_mark_downloading() {
+        use tokio::sync::mpsc;
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let (tx, _rx) = mpsc::channel(1);
+        let (message_tx, _message_rx) = mpsc::channel(1);
+        let bitfield = Arc::new(RwLock::new(vec![]));
+
+        let mut connected_peer = ConnectedPeer::new(peer, tx, message_tx, bitfield);
+
+        connected_peer.mark_downloading(5);
+        assert!(connected_peer.is_downloading(5));
+        assert_eq!(connected_peer.active_download_count(), 1);
+    }
+
+    #[test]
+    fn test_connected_peer_mark_complete() {
+        use tokio::sync::mpsc;
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let (tx, _rx) = mpsc::channel(1);
+        let (message_tx, _message_rx) = mpsc::channel(1);
+        let bitfield = Arc::new(RwLock::new(vec![]));
+
+        let mut connected_peer = ConnectedPeer::new(peer, tx, message_tx, bitfield);
+
+        connected_peer.mark_downloading(5);
+        assert!(connected_peer.mark_complete(5));
+        assert!(!connected_peer.is_downloading(5));
+        assert_eq!(connected_peer.active_download_count(), 0);
+    }
+
+    #[test]
+    fn test_connected_peer_active_downloads() {
+        use tokio::sync::mpsc;
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let (tx, _rx) = mpsc::channel(1);
+        let (message_tx, _message_rx) = mpsc::channel(1);
+        let bitfield = Arc::new(RwLock::new(vec![]));
+
+        let mut connected_peer = ConnectedPeer::new(peer, tx, message_tx, bitfield);
+
+        connected_peer.mark_downloading(1);
+        connected_peer.mark_downloading(3);
+        connected_peer.mark_downloading(5);
+
+        let downloads: Vec<u32> = connected_peer.active_downloads().copied().collect();
+        assert_eq!(downloads.len(), 3);
+        assert!(downloads.contains(&1));
+        assert!(downloads.contains(&3));
+        assert!(downloads.contains(&5));
+    }
+
+    #[test]
+    fn test_connected_peer_take_active_downloads() {
+        use tokio::sync::mpsc;
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let (tx, _rx) = mpsc::channel(1);
+        let (message_tx, _message_rx) = mpsc::channel(1);
+        let bitfield = Arc::new(RwLock::new(vec![]));
+
+        let mut connected_peer = ConnectedPeer::new(peer, tx, message_tx, bitfield);
+
+        connected_peer.mark_downloading(1);
+        connected_peer.mark_downloading(3);
+
+        let downloads = connected_peer.take_active_downloads();
+        assert_eq!(downloads.len(), 2);
+        assert_eq!(connected_peer.active_download_count(), 0);
     }
 }
