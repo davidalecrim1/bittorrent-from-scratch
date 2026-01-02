@@ -18,4 +18,8 @@ pub struct Args {
     /// Maximum upload rate (e.g., "1M", "500K"). No limit if omitted.
     #[arg(long = "max-upload-rate")]
     pub max_upload_rate: Option<String>,
+
+    /// Maximum number of concurrent peer connections (default: 50)
+    #[arg(long = "max-peers")]
+    pub max_peers: Option<usize>,
 }

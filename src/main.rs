@@ -79,11 +79,14 @@ async fn main() {
     };
 
     let http_client = Client::new();
+    let max_peers = args.max_peers.unwrap_or(50);
+    info!("Max concurrent peers: {}", max_peers);
     let peer_manager = PeerManager::new(
         Decoder {},
         http_client,
         bandwidth_limiter,
         Arc::new(BandwidthStats::default()),
+        max_peers,
     );
 
     let mut torrent_client =

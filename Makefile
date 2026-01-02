@@ -1,15 +1,15 @@
 sample-run-1: clean
-	LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- -i ./tests/testdata/ubuntu-24.04.3-desktop-amd64.iso.torrent -o ./output/ --max-download-rate 100M --max-upload-rate 50M
+	LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- -i ./tests/testdata/ubuntu-24.04.3-desktop-amd64.iso.torrent -o ./output/ --max-download-rate 2M --max-upload-rate 100K --max-peers 100
 
 sample-run-2: clean
-	LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- -i ./tests/testdata/alpine-standard-3.23.2-aarch64.iso.torrent -o ./output/ --max-download-rate 100M --max-upload-rate 50M
+	LOG_LEVEL=INFO RUST_BACKTRACE=1 cargo run -- -i ./tests/testdata/ubuntu-24.04.3-desktop-amd64.iso.torrent -o ./output/ --max-download-rate 2M --max-upload-rate 100K --max-peers 100
 
 build:
 	cargo build --release
 
 clean:
-	rm -rf output/*
-	rm -rf target/*
+	@rm -rf output/*
+	@rm -rf target/*
 
 format:
 	cargo fmt --all

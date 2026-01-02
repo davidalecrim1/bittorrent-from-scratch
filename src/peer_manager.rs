@@ -18,7 +18,6 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::time;
 
 const WATCH_TRACKER_DELAY: u64 = 30;
-const MAX_PEERS_TO_CONNECT: usize = 20;
 const PROGRESS_REPORT_INTERVAL_SECS: u64 = 10;
 const PEER_CONNECTOR_INTERVAL_SECS: u64 = 10;
 const STALE_DOWNLOAD_CHECK_INTERVAL_SECS: u64 = 30;
@@ -91,6 +90,7 @@ pub struct PeerManager {
 
     bandwidth_limiter: Option<BandwidthLimiter>,
     bandwidth_stats: Arc<crate::BandwidthStats>,
+    max_peers: usize,
 }
 
 impl PeerManager {
@@ -99,6 +99,7 @@ impl PeerManager {
         http_client: Client,
         bandwidth_limiter: Option<BandwidthLimiter>,
         bandwidth_stats: Arc<crate::BandwidthStats>,
+        max_peers: usize,
     ) -> Self {
         let tracker_client = Arc::new(HttpTrackerClient::new(http_client, decoder));
         Self::new_with_connector(
@@ -106,6 +107,7 @@ impl PeerManager {
             Arc::new(DefaultPeerConnectionFactory),
             bandwidth_limiter,
             bandwidth_stats,
+            max_peers,
         )
     }
 
@@ -114,6 +116,7 @@ impl PeerManager {
         connector: Arc<dyn PeerConnectionFactory>,
         bandwidth_limiter: Option<BandwidthLimiter>,
         bandwidth_stats: Arc<crate::BandwidthStats>,
+        max_peers: usize,
     ) -> Self {
         Self {
             tracker_client,
@@ -124,6 +127,7 @@ impl PeerManager {
             connector,
             bandwidth_limiter,
             bandwidth_stats,
+            max_peers,
         }
     }
 
@@ -243,8 +247,9 @@ impl PeerManager {
         tokio::task::spawn(self.clone().handle_peer_events(event_rx, num_pieces));
 
         // Spawn task to connect with peers
+        let max_peers = self.max_peers;
         tokio::task::spawn(self.clone().handle_peer_connector(
-            MAX_PEERS_TO_CONNECT,
+            max_peers,
             event_tx.clone(),
             shutdown_rx.resubscribe(),
         ));
@@ -740,7 +745,7 @@ impl PeerManager {
                     drop(hash_map);
 
                     peer_manager
-                        .drop_useless_peers_if_at_capacity(MAX_PEERS_TO_CONNECT)
+                        .drop_useless_peers_if_at_capacity(peer_manager.max_peers)
                         .await;
                 }
                 Err(e) => {
@@ -771,7 +776,7 @@ impl PeerManager {
                         drop(hash_map);
 
                         peer_manager
-                            .drop_useless_peers_if_at_capacity(MAX_PEERS_TO_CONNECT)
+                            .drop_useless_peers_if_at_capacity(peer_manager.max_peers)
                             .await;
                     }
                     Err(e) => {

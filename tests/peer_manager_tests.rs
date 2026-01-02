@@ -21,6 +21,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let config = PeerManagerConfig {
@@ -51,6 +52,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let config = PeerManagerConfig {
@@ -98,6 +100,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let config = PeerManagerConfig {
@@ -135,6 +138,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let config = PeerManagerConfig {
@@ -175,6 +179,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let config = PeerManagerConfig {
@@ -226,6 +231,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let config = PeerManagerConfig {
@@ -273,6 +279,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let config = PeerManagerConfig {
@@ -336,6 +343,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let config = PeerManagerConfig {
@@ -389,6 +397,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let config = PeerManagerConfig {
@@ -442,6 +451,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let config = PeerManagerConfig {
@@ -506,6 +516,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let config = PeerManagerConfig {
@@ -537,6 +548,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -572,6 +584,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -622,6 +635,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -663,6 +677,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -739,6 +754,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
         let _temp_file = NamedTempFile::new().unwrap();
         let file_path = _temp_file.path().to_path_buf();
@@ -810,6 +826,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -848,6 +865,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -888,6 +906,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -933,6 +952,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -970,6 +990,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1021,6 +1042,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1078,6 +1100,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1124,6 +1147,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1193,6 +1217,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1236,6 +1261,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1287,6 +1313,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1360,6 +1387,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1430,6 +1458,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1496,6 +1525,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1556,6 +1586,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1616,6 +1647,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
 
         // Try to use connect_peer before initializing - should fail
@@ -1664,6 +1696,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
         let _temp_file = NamedTempFile::new().unwrap();
         let file_path = _temp_file.path().to_path_buf();
@@ -1757,6 +1790,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
         let _temp_file = NamedTempFile::new().unwrap();
         let file_path = _temp_file.path().to_path_buf();
@@ -1849,6 +1883,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
         let _temp_file = NamedTempFile::new().unwrap();
         let file_path = _temp_file.path().to_path_buf();
@@ -1935,6 +1970,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            50,
         );
         let _temp_file = NamedTempFile::new().unwrap();
         let file_path = _temp_file.path().to_path_buf();

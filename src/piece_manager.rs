@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use log::{debug, error};
+use log::{debug, error, warn};
 use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -176,6 +176,26 @@ impl FilePieceManager {
         }
     }
 
+    /// Verify the invariant: pending_count + in_flight_count + completed_count == total_pieces
+    /// This should always be true if state transitions are correct.
+    /// Used for debugging - kept for future use in tests and diagnostics.
+    #[allow(dead_code)]
+    async fn verify_invariant(&self) {
+        let inner = self.inner.read().await;
+        let total =
+            inner.stats.pending_count + inner.stats.in_flight_count + inner.stats.completed_count;
+        if total != inner.stats.total_pieces {
+            warn!(
+                "Piece count invariant violated! {} + {} + {} = {} != {}",
+                inner.stats.pending_count,
+                inner.stats.in_flight_count,
+                inner.stats.completed_count,
+                total,
+                inner.stats.total_pieces
+            );
+        }
+    }
+
     /// Initialize the manager with total pieces and file (call once after construction)
     pub async fn initialize(
         &self,
@@ -205,7 +225,8 @@ impl FilePieceManager {
         Ok(())
     }
 
-    /// Add piece to pending queue
+    /// Add piece to pending queue - first state transition for a piece.
+    /// Invariant: pending_count increases by 1
     pub async fn queue_piece(&self, request: PieceDownloadRequest) -> Result<()> {
         let mut inner = self.inner.write().await;
 
@@ -227,14 +248,16 @@ impl FilePieceManager {
         Ok(())
     }
 
-    /// Pop next pending piece index
+    /// Pop next pending piece index from the queue
+    /// Does NOT change piece state or stats - the piece is still Pending until start_download() is called
     pub async fn pop_pending(&self) -> Option<u32> {
         let mut inner = self.inner.write().await;
         inner.pending_queue.pop_front()
     }
 
-    /// Updates the piece state to downloading (from in flight to pending).
+    /// Move piece from Pending → InFlight when a peer starts downloading it.
     /// Returns the download request if successful, None if piece is not in Pending state.
+    /// Invariant: pending_count -= 1, in_flight_count += 1 (net zero change to total)
     pub async fn start_download(
         &self,
         piece_index: u32,
@@ -268,7 +291,8 @@ impl FilePieceManager {
         }
     }
 
-    /// Complete a piece - writes to disk AND updates state atomically
+    /// Move piece from InFlight → Completed after successful download and write.
+    /// Invariant: in_flight_count -= 1, completed_count += 1 (net zero change to total)
     pub async fn complete_piece(&self, piece_index: u32, data: Vec<u8>) -> Result<()> {
         let mut inner = self.inner.write().await;
 
@@ -316,8 +340,9 @@ impl FilePieceManager {
         Ok(())
     }
 
-    /// Atomic transition: InFlight → Pending (for retry)
-    /// Returns retry count if successful, None if piece is not in InFlight state
+    /// Move piece from InFlight → Pending when download fails and needs retry.
+    /// Returns retry count if successful, None if piece is not in InFlight state.
+    /// Invariant: in_flight_count -= 1, pending_count += 1 (net zero change to total)
     pub async fn retry_piece(&self, piece_index: u32, push_front: bool) -> Option<u32> {
         let mut inner = self.inner.write().await;
 
@@ -466,13 +491,14 @@ impl FilePieceManager {
     }
 
     /// Re-queue a piece when for some reason the popped piece was not assigned.
+    /// Only affects the queue, not the piece state or stats (piece must already be Pending).
     pub async fn requeue_piece(&self, piece_index: u32) {
         let mut inner = self.inner.write().await;
 
-        // Only requeue if piece still exists and not in pending queue already
-        if inner.states.contains_key(&piece_index) {
+        // Only requeue if piece still exists and is actually in Pending state
+        if let Some(PieceState::Pending { .. }) = inner.states.get(&piece_index) {
             inner.pending_queue.push_back(piece_index);
-            inner.stats.pending_count += 1;
+            // Don't increment pending_count - piece was already counted as pending
         }
     }
 
@@ -600,7 +626,8 @@ impl FilePieceManager {
                     inner.pending_queue.push_front(piece_index); // High priority
                     inner.completed_set.remove(&piece_index);
 
-                    // Update stats
+                    // Update stats: transitioning Completed → Pending
+                    // Swap maintains the invariant: pending + inflight + completed = total
                     inner.stats.completed_count -= 1;
                     inner.stats.pending_count += 1;
                 }
@@ -1140,16 +1167,16 @@ mod tests {
 
         let snapshot1 = mgr.get_snapshot().await;
         // Piece still exists in states but not in queue
-        // pending_count was decremented when we transitioned away from Pending state
-        // But pop_pending doesn't change state, so count is still 1
+        // pop_pending doesn't change piece state, so pending_count is still 1
         assert_eq!(snapshot1.pending_count, 1);
 
         // Requeue it (used in rollback scenarios)
         mgr.requeue_piece(piece_index).await;
 
         let snapshot2 = mgr.get_snapshot().await;
-        // Now pending_count should be 2 (piece is back in queue)
-        assert_eq!(snapshot2.pending_count, 2);
+        // pending_count stays 1 because piece was already counted as pending
+        // Requeue only affects the queue, not the stats
+        assert_eq!(snapshot2.pending_count, 1);
 
         // Verify we can pop it again
         let popped_again = mgr.pop_pending().await;

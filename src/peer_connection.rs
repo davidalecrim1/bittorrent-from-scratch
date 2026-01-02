@@ -66,14 +66,19 @@ pub struct PeerConnection {
     download_queue: VecDeque<PieceDownloadRequest>,
     max_concurrent_pieces: usize,
 
-    // Block semaphore to limit the concurrent downloads of blocks (chunks of pieces) at the same time.
-    block_semaphore: Arc<tokio::sync::Semaphore>,
     piece_channels: HashMap<u32, mpsc::Sender<messages::PieceMessage>>,
 
     // Upload support
     piece_manager: Arc<dyn PieceManager>,
+
+    // Limiter for the upload/download from the client.
     bandwidth_limiter: Option<BandwidthLimiter>,
+
+    // Statistics about upload/download with peers.
     bandwidth_stats: Arc<crate::BandwidthStats>,
+
+    // Block semaphore to limit the concurrent downloads of blocks (chunks of pieces) at the same time.
+    block_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 // Creates a connection with the Peer provided and wraps it within
