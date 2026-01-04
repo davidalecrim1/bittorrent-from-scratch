@@ -1124,7 +1124,7 @@ mod tests {
         let peer = Peer::new("192.168.1.1".to_string(), 6881);
         let disconnect = PeerDisconnected {
             peer: peer.clone(),
-            reason: "Connection lost".to_string(),
+            error: bittorrent_from_scratch::error::AppError::PeerStreamClosed,
         };
 
         let result = peer_manager.process_disconnect(disconnect).await;
@@ -1630,7 +1630,7 @@ mod tests {
         let peer = Peer::new("192.168.1.1".to_string(), 6881);
         let disconnect = PeerDisconnected {
             peer: peer.clone(),
-            reason: "Test disconnect".to_string(),
+            error: bittorrent_from_scratch::error::AppError::PeerStreamClosed,
         };
 
         let result = peer_manager.process_disconnect(disconnect).await;

@@ -48,8 +48,20 @@ pub enum AppError {
     #[error("Handshake failed: {0}")]
     HandshakeFailed(String),
 
-    #[error("Peer disconnected")]
-    PeerDisconnected,
+    #[error("Peer write error: {0}")]
+    PeerWriteError(String),
+
+    #[error("Peer read error: {0}")]
+    PeerReadError(String),
+
+    #[error("Peer stream closed")]
+    PeerStreamClosed,
+
+    #[error("Peer inbound channel closed")]
+    PeerInboundChannelClosed,
+
+    #[error("Peer download request channel closed")]
+    PeerDownloadRequestChannelClosed,
 
     // File I/O errors
     #[error("File I/O error: {0}")]
@@ -100,6 +112,63 @@ pub enum AppError {
 }
 
 pub type Result<T> = anyhow::Result<T>;
+
+impl Clone for AppError {
+    fn clone(&self) -> Self {
+        match self {
+            // Cloneable variants
+            AppError::InvalidBencode(s) => AppError::InvalidBencode(s.clone()),
+            AppError::MissingField(s) => AppError::MissingField(s.clone()),
+            AppError::InvalidFieldType { field, expected } => AppError::InvalidFieldType {
+                field: field.clone(),
+                expected: expected.clone(),
+            },
+            AppError::HexDecoding(s) => AppError::HexDecoding(s.clone()),
+            AppError::InvalidPieceHash => AppError::InvalidPieceHash,
+            AppError::TrackerRejected(s) => AppError::TrackerRejected(s.clone()),
+            AppError::NoPeersAvailable => AppError::NoPeersAvailable,
+            AppError::HandshakeFailed(s) => AppError::HandshakeFailed(s.clone()),
+            AppError::PeerWriteError(s) => AppError::PeerWriteError(s.clone()),
+            AppError::PeerReadError(s) => AppError::PeerReadError(s.clone()),
+            AppError::PeerStreamClosed => AppError::PeerStreamClosed,
+            AppError::PeerInboundChannelClosed => AppError::PeerInboundChannelClosed,
+            AppError::PeerDownloadRequestChannelClosed => {
+                AppError::PeerDownloadRequestChannelClosed
+            }
+            AppError::HashVerificationFailed { piece_index } => AppError::HashVerificationFailed {
+                piece_index: *piece_index,
+            },
+            AppError::IncompletePiece(idx) => AppError::IncompletePiece(*idx),
+            AppError::PieceDownloadFailed {
+                piece_index,
+                attempts,
+            } => AppError::PieceDownloadFailed {
+                piece_index: *piece_index,
+                attempts: *attempts,
+            },
+            AppError::PieceAlreadyDownloading => AppError::PieceAlreadyDownloading,
+            AppError::PeerQueueFull => AppError::PeerQueueFull,
+            AppError::PeerDoesNotHavePiece => AppError::PeerDoesNotHavePiece,
+            AppError::PeerNotReady {
+                choking,
+                bitfield_empty,
+            } => AppError::PeerNotReady {
+                choking: *choking,
+                bitfield_empty: *bitfield_empty,
+            },
+            AppError::HashMismatch => AppError::HashMismatch,
+            AppError::DownloadTimeout => AppError::DownloadTimeout,
+            AppError::ChannelSend(s) => AppError::ChannelSend(s.clone()),
+            AppError::ArrayConversion(s) => AppError::ArrayConversion(s.clone()),
+
+            // Non-cloneable variants - convert to string
+            AppError::Codec(e) => AppError::Other(anyhow::anyhow!("{}", e)),
+            AppError::Io(e) => AppError::Other(anyhow::anyhow!("{}", e)),
+            AppError::HttpRequest(e) => AppError::Other(anyhow::anyhow!("{}", e)),
+            AppError::Other(e) => AppError::Other(anyhow::anyhow!("{}", e)),
+        }
+    }
+}
 
 impl AppError {
     pub fn missing_field(field: &str) -> Self {

@@ -1,9 +1,8 @@
 // Designed to be small and simple types used in the codebase,
 // anything more complex deserves it's own module.
-pub use crate::peer_connection::PeerConnection;
+pub use crate::peer_connection::{PeerConnection, PieceDownloadTask};
 
 use anyhow::{Result, anyhow};
-use log::debug;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
 use std::net::IpAddr;
@@ -11,9 +10,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 
-use crate::download_state::DownloadState;
 use crate::error::AppError;
-use crate::messages::{PeerMessage, PieceMessage, RequestMessage};
 
 #[derive(Debug, Clone)]
 pub struct PieceDownloadRequest {
@@ -136,10 +133,10 @@ pub struct FailedPiece {
     pub push_front: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PeerDisconnected {
     pub peer: Peer,
-    pub reason: String,
+    pub error: AppError,
 }
 
 /// Unified event type for peer manager events
@@ -164,120 +161,6 @@ impl PeerManagerHandle {
     pub fn shutdown(self) {
         // Send shutdown signal to all subscribers
         let _ = self.shutdown_tx.send(());
-    }
-}
-
-pub struct PieceDownloadTask {
-    pub piece_index: u32,
-    pub download_state: DownloadState,
-    pub block_semaphore: Arc<tokio::sync::Semaphore>,
-    pub outbound_tx: mpsc::Sender<PeerMessage>,
-    pub inbound_rx: mpsc::Receiver<PieceMessage>,
-    pub event_tx: mpsc::UnboundedSender<PeerEvent>,
-    pub peer_addr: String,
-}
-
-impl PieceDownloadTask {
-    pub async fn run(mut self) -> Result<()> {
-        debug!(
-            "Piece {}: Starting download task for peer {}",
-            self.piece_index, self.peer_addr
-        );
-
-        loop {
-            if let Some((begin, length)) = self.download_state.get_next_block_to_request() {
-                let _permit = self.block_semaphore.acquire().await?;
-
-                debug!(
-                    "Piece {}: Requesting block at offset {} (length {}) from peer {} (available permits: {})",
-                    self.piece_index,
-                    begin,
-                    length,
-                    self.peer_addr,
-                    self.block_semaphore.available_permits()
-                );
-
-                let request = RequestMessage {
-                    piece_index: self.piece_index,
-                    begin,
-                    length,
-                };
-
-                self.outbound_tx.send(PeerMessage::Request(request)).await?;
-
-                let piece_msg = match self.inbound_rx.recv().await {
-                    Some(msg) => msg,
-                    None => {
-                        debug!(
-                            "Piece {}: Channel closed, peer disconnected",
-                            self.piece_index
-                        );
-                        self.send_failure(AppError::PeerDisconnected).await?;
-                        return Ok(());
-                    }
-                };
-
-                self.download_state
-                    .add_block(piece_msg.begin, piece_msg.block)?;
-
-                if self.download_state.is_complete() {
-                    self.finalize_piece().await?;
-                    return Ok(());
-                }
-            } else {
-                if self.download_state.is_complete() {
-                    self.finalize_piece().await?;
-                    return Ok(());
-                }
-
-                let piece_msg = match self.inbound_rx.recv().await {
-                    Some(msg) => msg,
-                    None => {
-                        debug!(
-                            "Piece {}: Channel closed, peer disconnected",
-                            self.piece_index
-                        );
-                        self.send_failure(AppError::PeerDisconnected).await?;
-                        return Ok(());
-                    }
-                };
-
-                self.download_state
-                    .add_block(piece_msg.begin, piece_msg.block)?;
-            }
-        }
-    }
-
-    async fn finalize_piece(&self) -> Result<()> {
-        let piece_data = self.download_state.assemble_piece()?;
-
-        if self.download_state.verify_hash(&piece_data)? {
-            debug!(
-                "Piece {}: Hash verified, sending completion",
-                self.piece_index
-            );
-            self.event_tx
-                .send(PeerEvent::WritePiece(WritePieceRequest {
-                    piece_index: self.piece_index,
-                    data: piece_data,
-                    peer_addr: self.peer_addr.clone(),
-                }))?;
-        } else {
-            debug!("Piece {}: Hash mismatch, sending failure", self.piece_index);
-            self.send_failure(AppError::HashMismatch).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn send_failure(&self, error: AppError) -> Result<()> {
-        self.event_tx.send(PeerEvent::Failure(FailedPiece {
-            piece_index: self.piece_index,
-            peer_addr: self.peer_addr.clone(),
-            error,
-            push_front: false,
-        }))?;
-        Ok(())
     }
 }
 

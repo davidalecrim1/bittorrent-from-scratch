@@ -17,13 +17,12 @@ use crate::messages::{
     BitfieldMessage, InterestedMessage, PeerMessage, PieceMessage, UnchokeMessage,
 };
 use crate::piece_manager::PieceManager;
-use crate::types::{
-    FailedPiece, Peer, PeerDisconnected, PeerEvent, PieceDownloadRequest, PieceDownloadTask,
-};
+use crate::types::{FailedPiece, Peer, PeerDisconnected, PeerEvent, PieceDownloadRequest};
 
 const DEFAULT_BLOCK_SIZE: usize = 16 * 1024; // 16 KiB per BitTorrent spec
-const BLOCK_PIPELINE_SIZE: usize = 5; // Request 5 blocks ahead
 const MAX_PIECES_PER_PEER: usize = 5; // Max concurrent pieces per peer
+
+const SEMAPHORE_BLOCK_CONCURRENCY: usize = 20;
 
 const OUTBOUND_CHANNEL_SIZE: usize = 1024;
 const INBOUND_CHANNEL_SIZE: usize = 1024;
@@ -31,7 +30,127 @@ const DOWNLOAD_REQUEST_CHANNEL_SIZE: usize = 256;
 
 const MAX_RETRIES_HANDSHAKE: usize = 3;
 
+pub struct PieceDownloadTask {
+    pub piece_index: u32,
+    pub download_state: DownloadState,
+    pub block_semaphore: Arc<tokio::sync::Semaphore>,
+    pub outbound_tx: mpsc::Sender<PeerMessage>,
+    pub inbound_rx: mpsc::UnboundedReceiver<PieceMessage>,
+    pub event_tx: mpsc::UnboundedSender<crate::types::PeerEvent>,
+    pub peer_addr: String,
+}
+
+impl PieceDownloadTask {
+    pub async fn run(mut self) -> Result<()> {
+        debug!(
+            "Piece {}: Starting download task for peer {}",
+            self.piece_index, self.peer_addr
+        );
+
+        loop {
+            if let Some((begin, length)) = self.download_state.get_next_block_to_request() {
+                let _permit = self.block_semaphore.acquire().await?;
+
+                debug!(
+                    "Piece {}: Requesting block at offset {} (length {}) from peer {} (available permits: {})",
+                    self.piece_index,
+                    begin,
+                    length,
+                    self.peer_addr,
+                    self.block_semaphore.available_permits()
+                );
+
+                let request = messages::RequestMessage {
+                    piece_index: self.piece_index,
+                    begin,
+                    length,
+                };
+
+                self.outbound_tx.send(PeerMessage::Request(request)).await?;
+
+                let piece_msg = match self.inbound_rx.recv().await {
+                    Some(msg) => msg,
+                    None => {
+                        debug!(
+                            "Piece {}: Channel closed, peer disconnected",
+                            self.piece_index
+                        );
+                        self.send_failure(AppError::PeerStreamClosed).await?;
+                        return Ok(());
+                    }
+                };
+
+                self.download_state
+                    .add_block(piece_msg.begin, piece_msg.block)?;
+
+                if self.download_state.is_complete() {
+                    self.finalize_piece().await?;
+                    return Ok(());
+                }
+            } else {
+                if self.download_state.is_complete() {
+                    self.finalize_piece().await?;
+                    return Ok(());
+                }
+
+                let piece_msg = match self.inbound_rx.recv().await {
+                    Some(msg) => msg,
+                    None => {
+                        debug!(
+                            "Piece {}: Channel closed, peer disconnected",
+                            self.piece_index
+                        );
+                        self.send_failure(AppError::PeerStreamClosed).await?;
+                        return Ok(());
+                    }
+                };
+
+                self.download_state
+                    .add_block(piece_msg.begin, piece_msg.block)?;
+            }
+        }
+    }
+
+    async fn finalize_piece(&self) -> Result<()> {
+        let piece_data = self.download_state.assemble_piece()?;
+
+        if self.download_state.verify_hash(&piece_data)? {
+            log::info!(
+                "Piece {} completed from peer {} (size: {} bytes)",
+                self.piece_index,
+                self.peer_addr,
+                piece_data.len()
+            );
+            self.event_tx.send(crate::types::PeerEvent::WritePiece(
+                crate::types::WritePieceRequest {
+                    piece_index: self.piece_index,
+                    data: piece_data,
+                    peer_addr: self.peer_addr.clone(),
+                },
+            ))?;
+        } else {
+            debug!("Piece {}: Hash mismatch, sending failure", self.piece_index);
+            self.send_failure(AppError::HashMismatch).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn send_failure(&self, error: AppError) -> Result<()> {
+        self.event_tx.send(crate::types::PeerEvent::Failure(
+            crate::types::FailedPiece {
+                piece_index: self.piece_index,
+                peer_addr: self.peer_addr.clone(),
+                error,
+                push_front: false,
+            },
+        ))?;
+        Ok(())
+    }
+}
+
 pub struct PeerConnection {
+    // Peer basic information
     peer: Peer,
 
     // Stream is only present after handshake
@@ -51,7 +170,7 @@ pub struct PeerConnection {
     // Piece download channels
     download_request_rx: Option<mpsc::Receiver<PieceDownloadRequest>>,
 
-    // Unified event channel
+    // Unified event channel with Peer Manager
     event_tx: mpsc::UnboundedSender<crate::types::PeerEvent>,
 
     // Peer Status
@@ -66,9 +185,10 @@ pub struct PeerConnection {
     download_queue: VecDeque<PieceDownloadRequest>,
     max_concurrent_pieces: usize,
 
-    piece_channels: HashMap<u32, mpsc::Sender<messages::PieceMessage>>,
+    // Senders for delivering received blocks to their respective piece download tasks
+    piece_block_txs: HashMap<u32, mpsc::UnboundedSender<messages::PieceMessage>>,
 
-    // Upload support
+    // Manager for reading and writing pieces to disk
     piece_manager: Arc<dyn PieceManager>,
 
     // Limiter for the upload/download from the client.
@@ -104,7 +224,7 @@ impl PeerConnection {
             mpsc::channel(DOWNLOAD_REQUEST_CHANNEL_SIZE);
 
         let bitfield = Arc::new(RwLock::new(Vec::new()));
-        let block_semaphore = Arc::new(tokio::sync::Semaphore::new(BLOCK_PIPELINE_SIZE));
+        let block_semaphore = Arc::new(tokio::sync::Semaphore::new(SEMAPHORE_BLOCK_CONCURRENCY));
         let outbound_tx_clone = outbound_tx.clone();
 
         let peer_conn = Self {
@@ -124,7 +244,7 @@ impl PeerConnection {
             download_queue: VecDeque::new(),
             max_concurrent_pieces: MAX_PIECES_PER_PEER,
             block_semaphore,
-            piece_channels: HashMap::new(),
+            piece_block_txs: HashMap::new(),
             piece_manager,
             bandwidth_limiter,
             bandwidth_stats,
@@ -238,7 +358,7 @@ impl PeerConnection {
                         if let Err(e) = message_io.write_message(&msg).await {
                             let _ = event_tx.send(PeerEvent::Disconnect(PeerDisconnected {
                                 peer: peer.clone(),
-                                reason: format!("write_error: {}", e),
+                                error: AppError::PeerWriteError(e.to_string()),
                             }));
                             break;
                         }
@@ -257,14 +377,14 @@ impl PeerConnection {
                                 // Stream ended gracefully
                                 let _ = event_tx.send(PeerEvent::Disconnect(PeerDisconnected {
                                     peer: peer.clone(),
-                                    reason: "stream_closed".to_string(),
+                                    error: AppError::PeerStreamClosed,
                                 }));
                                 break;
                             }
                             Err(e) => {
                                 let _ = event_tx.send(PeerEvent::Disconnect(PeerDisconnected {
                                     peer: peer.clone(),
-                                    reason: format!("read_error: {}", e),
+                                    error: AppError::PeerReadError(e.to_string()),
                                 }));
                                 break;
                             }
@@ -327,7 +447,7 @@ impl PeerConnection {
                                 // Reader channel closed (peer disconnected)
                                 let _ = event_tx.send(PeerEvent::Disconnect(PeerDisconnected {
                                     peer: peer.clone(),
-                                    reason: "inbound_channel_closed".to_string(),
+                                    error: AppError::PeerInboundChannelClosed,
                                 }));
                                 break;
                             }
@@ -355,7 +475,7 @@ impl PeerConnection {
                                 debug!("Peer Connector download_request channel closed unexpectedly from Peer {}", peer_addr);
                                 let _ = event_tx.send(PeerEvent::Disconnect(PeerDisconnected {
                                     peer: peer.clone(),
-                                    reason: "download_request_channel_closed".to_string(),
+                                    error: AppError::PeerDownloadRequestChannelClosed,
                                 }));
                                 break;
                             }
@@ -489,8 +609,8 @@ impl PeerConnection {
                     piece_index, piece.begin, peer_addr
                 );
 
-                if let Some(tx) = self.piece_channels.get(&piece_index) {
-                    if let Err(e) = tx.send(piece).await {
+                if let Some(tx) = self.piece_block_txs.get(&piece_index) {
+                    if let Err(e) = tx.send(piece) {
                         debug!("Failed to route piece {} block to task: {}", piece_index, e);
                     }
                 } else {
@@ -513,6 +633,8 @@ impl PeerConnection {
         Ok(())
     }
 
+    // Spawns a download task for a piece, creating an unbounded channel to receive blocks
+    // and tracking the task handle for cleanup on completion or disconnection.
     fn activate_piece_download(&mut self, request: PieceDownloadRequest) {
         let piece_index = request.piece_index;
         let download_state = DownloadState::new(
@@ -522,8 +644,8 @@ impl PeerConnection {
             request.expected_hash,
         );
 
-        let (piece_tx, piece_rx) = mpsc::channel(BLOCK_PIPELINE_SIZE);
-        self.piece_channels.insert(piece_index, piece_tx);
+        let (piece_tx, piece_rx) = mpsc::unbounded_channel::<PieceMessage>();
+        self.piece_block_txs.insert(piece_index, piece_tx);
 
         let task = PieceDownloadTask {
             piece_index,
@@ -656,7 +778,7 @@ impl PeerConnection {
         });
 
         for piece_index in completed_pieces {
-            self.piece_channels.remove(&piece_index);
+            self.piece_block_txs.remove(&piece_index);
             debug!(
                 "Peer {}: Cleaned up completed task for piece {}",
                 self.peer.get_addr(),
@@ -676,8 +798,8 @@ impl PeerConnection {
             self.active_downloads.len()
         );
 
-        for (piece_index, channel) in self.piece_channels.drain() {
-            drop(channel);
+        for (piece_index, tx) in self.piece_block_txs.drain() {
+            drop(tx);
             debug!(
                 "Peer {}: Closed channel for piece {}",
                 self.peer.get_addr(),

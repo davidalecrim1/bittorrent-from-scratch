@@ -412,7 +412,7 @@ impl PeerManager {
     /// Process a single peer disconnect event.
     pub async fn process_disconnect(&self, disconnect: PeerDisconnected) -> Result<()> {
         let peer_addr = disconnect.peer.get_addr();
-        debug!("Peer {} disconnected: {}", peer_addr, disconnect.reason);
+        debug!("Peer {} disconnected: {}", peer_addr, disconnect.error);
 
         let pieces_in_flight = self.piece_manager.get_peer_pieces(&peer_addr).await;
 
@@ -432,7 +432,7 @@ impl PeerManager {
                 self.process_failure(FailedPiece {
                     piece_index: piece_idx,
                     peer_addr: peer_addr.clone(),
-                    error: AppError::PeerDisconnected,
+                    error: disconnect.error.clone(),
                     push_front: false,
                 })
                 .await?;
