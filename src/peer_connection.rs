@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use log::debug;
+use log::{debug, error, info};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
@@ -115,7 +115,7 @@ impl PieceDownloadTask {
         let piece_data = self.download_state.assemble_piece()?;
 
         if self.download_state.verify_hash(&piece_data)? {
-            log::info!(
+            info!(
                 "Piece {} completed from peer {} (size: {} bytes)",
                 self.piece_index,
                 self.peer_addr,
@@ -657,9 +657,14 @@ impl PeerConnection {
             peer_addr: self.peer.get_addr(),
         };
 
+        let peer_addr = self.peer.get_addr().clone();
+
         let handle = tokio::spawn(async move {
             if let Err(e) = task.run().await {
-                log::error!("Piece {} download task failed: {}", piece_index, e);
+                error!(
+                    "Peer {} faied to download Piece {} on task: {}",
+                    peer_addr, piece_index, e
+                );
             }
         });
 
@@ -810,8 +815,8 @@ impl PeerConnection {
         for (piece_index, handle) in self.active_downloads.drain() {
             match tokio::time::timeout(Duration::from_secs(2), handle).await {
                 Ok(Ok(())) => debug!("Piece {} task exited cleanly", piece_index),
-                Ok(Err(e)) => log::error!("Piece {} task panicked: {:?}", piece_index, e),
-                Err(_) => log::error!("Piece {} task did not exit within timeout", piece_index),
+                Ok(Err(e)) => error!("Piece {} task panicked: {:?}", piece_index, e),
+                Err(_) => error!("Piece {} task did not exit within timeout", piece_index),
             }
         }
 

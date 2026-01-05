@@ -1,4 +1,5 @@
 use crate::error::{AppError, Result};
+use log::{debug, error};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -38,7 +39,7 @@ impl DownloadState {
 
     pub fn add_block(&mut self, begin: u32, data: Vec<u8>) -> Result<()> {
         if self.received_blocks.contains_key(&begin) {
-            log::debug!(
+            debug!(
                 "Piece {}: Duplicate block at offset {} (size {}), skipping",
                 self.piece_index,
                 begin,
@@ -47,7 +48,7 @@ impl DownloadState {
             return Ok(());
         }
 
-        log::debug!(
+        debug!(
             "Piece {}: Storing block at offset {} with size {}",
             self.piece_index,
             begin,
@@ -71,25 +72,21 @@ impl DownloadState {
         let mut piece_data = Vec::with_capacity(self.piece_length);
         let mut offset = 0u32;
 
-        log::debug!(
+        debug!(
             "Piece {}: Assembling {} blocks, expected piece length {}",
-            self.piece_index,
-            self.total_blocks,
-            self.piece_length
+            self.piece_index, self.total_blocks, self.piece_length
         );
 
         for block_num in 0..self.total_blocks {
             let block = self.received_blocks.get(&offset).ok_or_else(|| {
-                log::error!(
+                error!(
                     "Piece {}: Missing block at offset {} (block {})",
-                    self.piece_index,
-                    offset,
-                    block_num
+                    self.piece_index, offset, block_num
                 );
                 anyhow::Error::from(AppError::IncompletePiece(self.piece_index))
             })?;
 
-            log::debug!(
+            debug!(
                 "Piece {}: Assembling block {} at offset {} with size {}",
                 self.piece_index,
                 block_num,
@@ -101,7 +98,7 @@ impl DownloadState {
             offset += self.block_size as u32;
         }
 
-        log::debug!(
+        debug!(
             "Piece {}: Assembled data length {} (expected {}), truncating to piece_length",
             self.piece_index,
             piece_data.len(),
@@ -110,7 +107,7 @@ impl DownloadState {
 
         piece_data.truncate(self.piece_length);
 
-        log::debug!(
+        debug!(
             "Piece {}: Final data length after truncate: {}",
             self.piece_index,
             piece_data.len()
@@ -146,10 +143,9 @@ impl DownloadState {
                 let length = std::cmp::min(self.block_size, remaining) as u32;
 
                 if self.pending_blocks.insert(offset, now).is_some() {
-                    log::debug!(
+                    debug!(
                         "Piece {}: Retrying block at offset {} after timeout",
-                        self.piece_index,
-                        offset
+                        self.piece_index, offset
                     );
                 }
 
