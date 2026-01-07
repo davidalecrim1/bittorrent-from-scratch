@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use crate::bandwidth_limiter::BandwidthLimiter;
 use crate::encoding::Decoder;
 use crate::error::{AppError, Result};
-use crate::messages::{HaveMessage, PeerMessage};
+use crate::peer_messages::{HaveMessage, PeerMessage};
 use crate::piece_manager::{FilePieceManager, PieceManager};
 use crate::tcp_connector::DefaultTcpStreamFactory;
 use crate::tracker_client::{HttpTrackerClient, TrackerClient};
@@ -11,6 +11,7 @@ use crate::types::{
     AnnounceRequest, ConnectedPeer, FailedPiece, Peer, PeerAddr, PeerConnection, PeerDisconnected,
     PeerEvent, PeerManagerConfig, PeerManagerHandle, PieceDownloadRequest,
 };
+use crate::{BandwidthStats, PeerConnectionStats};
 use async_trait::async_trait;
 use log::{debug, info};
 use reqwest::Client;
@@ -21,6 +22,7 @@ const WATCH_TRACKER_DELAY: u64 = 30;
 const PROGRESS_REPORT_INTERVAL_SECS: u64 = 10;
 const PEER_CONNECTOR_INTERVAL_SECS: u64 = 10;
 const STALE_DOWNLOAD_CHECK_INTERVAL_SECS: u64 = 30;
+const MAX_CONCURRENT_HANDSHAKES: usize = 10;
 
 #[async_trait]
 pub trait PeerConnectionFactory: Send + Sync {
@@ -34,7 +36,8 @@ pub trait PeerConnectionFactory: Send + Sync {
         num_pieces: usize,
         piece_manager: Arc<dyn PieceManager>,
         bandwidth_limiter: Option<BandwidthLimiter>,
-        bandwidth_stats: Arc<crate::BandwidthStats>,
+        bandwidth_stats: Arc<BandwidthStats>,
+        broadcast_rx: broadcast::Receiver<PeerMessage>,
     ) -> Result<ConnectedPeer>;
 }
 
@@ -51,7 +54,8 @@ impl PeerConnectionFactory for DefaultPeerConnectionFactory {
         num_pieces: usize,
         piece_manager: Arc<dyn PieceManager>,
         bandwidth_limiter: Option<BandwidthLimiter>,
-        bandwidth_stats: Arc<crate::BandwidthStats>,
+        bandwidth_stats: Arc<BandwidthStats>,
+        broadcast_rx: broadcast::Receiver<PeerMessage>,
     ) -> Result<ConnectedPeer> {
         let tcp_connector = Arc::new(DefaultTcpStreamFactory);
         let (mut peer_conn, download_request_tx, bitfield, message_tx) = PeerConnection::new(
@@ -61,6 +65,7 @@ impl PeerConnectionFactory for DefaultPeerConnectionFactory {
             piece_manager,
             bandwidth_limiter,
             bandwidth_stats,
+            broadcast_rx,
         );
 
         peer_conn.handshake(client_peer_id, info_hash).await?;
@@ -89,8 +94,15 @@ pub struct PeerManager {
     connector: Arc<dyn PeerConnectionFactory>,
 
     bandwidth_limiter: Option<BandwidthLimiter>,
-    bandwidth_stats: Arc<crate::BandwidthStats>,
+    bandwidth_stats: Arc<BandwidthStats>,
+    connection_stats: Arc<PeerConnectionStats>,
     max_peers: usize,
+
+    // Limits concurrent handshake attempts to prevent network overload
+    handshake_semaphore: Arc<tokio::sync::Semaphore>,
+
+    // Broadcast channel for efficiently sending messages to all peers
+    message_broadcast_tx: broadcast::Sender<PeerMessage>,
 }
 
 impl PeerManager {
@@ -98,7 +110,8 @@ impl PeerManager {
         decoder: Decoder,
         http_client: Client,
         bandwidth_limiter: Option<BandwidthLimiter>,
-        bandwidth_stats: Arc<crate::BandwidthStats>,
+        bandwidth_stats: Arc<BandwidthStats>,
+        connection_stats: Arc<PeerConnectionStats>,
         max_peers: usize,
     ) -> Self {
         let tracker_client = Arc::new(HttpTrackerClient::new(http_client, decoder));
@@ -107,6 +120,7 @@ impl PeerManager {
             Arc::new(DefaultPeerConnectionFactory),
             bandwidth_limiter,
             bandwidth_stats,
+            connection_stats,
             max_peers,
         )
     }
@@ -115,9 +129,15 @@ impl PeerManager {
         tracker_client: Arc<dyn TrackerClient>,
         connector: Arc<dyn PeerConnectionFactory>,
         bandwidth_limiter: Option<BandwidthLimiter>,
-        bandwidth_stats: Arc<crate::BandwidthStats>,
+        bandwidth_stats: Arc<BandwidthStats>,
+        connection_stats: Arc<PeerConnectionStats>,
         max_peers: usize,
     ) -> Self {
+        let handshake_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_HANDSHAKES));
+
+        // Create broadcast channel for messages with capacity of 100
+        let (message_broadcast_tx, _) = broadcast::channel(100);
+
         Self {
             tracker_client,
             available_peers: Arc::new(RwLock::new(HashMap::new())),
@@ -127,7 +147,10 @@ impl PeerManager {
             connector,
             bandwidth_limiter,
             bandwidth_stats,
+            connection_stats,
             max_peers,
+            handshake_semaphore,
+            message_broadcast_tx,
         }
     }
 
@@ -202,16 +225,10 @@ impl PeerManager {
         Some(peer.piece_count().await)
     }
 
-    /// Cleanup piece tracking after completion/failure.
+    /// Get peer address for a piece (if in-flight).
+    /// Used for debug logging after piece completion/failure.
     pub async fn cleanup_piece_tracking(&self, piece_index: u32) -> Option<String> {
-        let peer_addr = self.piece_manager.get_peer_for_piece(piece_index).await?;
-
-        let mut connected_peers = self.connected_peers.write().await;
-        if let Some(peer) = connected_peers.get_mut(&peer_addr) {
-            peer.mark_complete(piece_index);
-        }
-
-        Some(peer_addr)
+        self.piece_manager.get_peer_for_piece(piece_index).await
     }
 
     pub async fn get_piece_snapshot(&self) -> crate::piece_manager::PieceStats {
@@ -269,6 +286,8 @@ impl PeerManager {
         // Spawn task to show the current status of the pieces
         let peer_manager_progress = self.clone();
         let bandwidth_stats = self.bandwidth_stats.clone();
+        let connection_stats = self.connection_stats.clone();
+        let available_peers = self.available_peers.clone();
         tokio::task::spawn(async move {
             let mut interval =
                 tokio::time::interval(Duration::from_secs(PROGRESS_REPORT_INTERVAL_SECS));
@@ -283,7 +302,8 @@ impl PeerManager {
                     snapshot.in_flight_count,
                 );
 
-                let connected_peers = peer_manager_progress.connected_peers.read().await.len();
+                let (total_peers, choking_peers) = connection_stats.get_stats();
+                let available_peer_count = available_peers.read().await.len();
                 let percentage = (completed * 100) / num_pieces;
 
                 // Get bandwidth rates
@@ -298,19 +318,22 @@ impl PeerManager {
                 // Note: We use print! (not info!) to avoid newlines from the logger
                 use std::io::Write;
 
-                // Use ANSI escape codes to clear the line properly
+                // Use ANSI escape codes to clear line and move cursor to start
                 print!(
-                    "\x1B[2K\r[Progress] {}/{} pieces ({}%) | {} peers | {} pending | {} in-flight | ↓ {} | ↑ {}",
+                    "\r\x1B[KPeers: {} connected, {} available, {} choking | Pieces: {}/{} ({}%) - {} pending, {} downloading | ↓ {} ↑ {}",
+                    total_peers,
+                    available_peer_count,
+                    choking_peers,
                     completed,
                     num_pieces,
                     percentage,
-                    connected_peers,
                     pending,
                     in_flight,
                     download_str,
                     upload_str
                 );
-                std::io::stdout().flush().unwrap();
+
+                let _ = std::io::stdout().flush();
             }
         });
 
@@ -343,11 +366,7 @@ impl PeerManager {
         self.broadcast_have(piece_index).await;
 
         if let Some(peer) = self.cleanup_piece_tracking(piece_index).await {
-            let connected_peers = self.connected_peers.read().await;
-            let active_count = connected_peers
-                .get(&peer)
-                .map(|p| p.active_download_count())
-                .unwrap_or(0);
+            let active_count = self.piece_manager.get_peer_piece_count(&peer).await;
 
             debug!(
                 "Peer {} completed piece {}, active_downloads now: {}",
@@ -383,11 +402,7 @@ impl PeerManager {
         }
 
         if let Some(peer_addr) = self.cleanup_piece_tracking(piece_index).await {
-            let connected_peers = self.connected_peers.read().await;
-            let active_count = connected_peers
-                .get(&peer_addr)
-                .map(|p| p.active_download_count())
-                .unwrap_or(0);
+            let active_count = self.piece_manager.get_peer_piece_count(&peer_addr).await;
 
             debug!(
                 "Peer {} failed piece {} ({}), active_downloads now: {}",
@@ -418,7 +433,9 @@ impl PeerManager {
 
         {
             let mut connected_peers = self.connected_peers.write().await;
-            connected_peers.remove(&peer_addr);
+            if connected_peers.remove(&peer_addr).is_some() {
+                self.connection_stats.decrement_peers();
+            }
         }
 
         if !pieces_in_flight.is_empty() {
@@ -442,19 +459,13 @@ impl PeerManager {
         Ok(())
     }
 
-    /// Broadcast Have message to all connected peers
+    /// Broadcast Have message to all connected peers using broadcast channel
     async fn broadcast_have(&self, piece_index: u32) {
-        let connected_peers = self.connected_peers.read().await;
+        let have_msg = PeerMessage::Have(HaveMessage { piece_index });
 
-        for (_, connected_peer) in connected_peers.iter() {
-            let have_msg = PeerMessage::Have(HaveMessage { piece_index });
-            if let Err(e) = connected_peer.send_message(have_msg).await {
-                debug!(
-                    "Failed to send Have message for piece {} to peer: {}",
-                    piece_index, e
-                );
-            }
-        }
+        // Send to broadcast channel - all subscribed peers will receive it
+        // Ignore error if there are no receivers (no peers connected yet)
+        let _ = self.message_broadcast_tx.send(have_msg);
     }
 
     /// Unified event handler for all peer events - merges completion, failure, and disconnect handlers
@@ -465,7 +476,7 @@ impl PeerManager {
     ) {
         while let Some(event) = event_rx.recv().await {
             match event {
-                PeerEvent::WritePiece(completed) => {
+                PeerEvent::StorePiece(completed) => {
                     let _ = self
                         .process_completion(
                             completed.piece_index,
@@ -479,6 +490,12 @@ impl PeerManager {
                 }
                 PeerEvent::Disconnect(disconnect) => {
                     let _ = self.process_disconnect(disconnect).await;
+                }
+                PeerEvent::PeerChoked(_addr) => {
+                    self.connection_stats.increment_choking();
+                }
+                PeerEvent::PeerUnchoked(_addr) => {
+                    self.connection_stats.decrement_choking();
                 }
             }
         }
@@ -615,6 +632,7 @@ impl PeerManager {
                 self.piece_manager.clone(),
                 self.bandwidth_limiter.clone(),
                 self.bandwidth_stats.clone(),
+                self.message_broadcast_tx.subscribe(),
             )
             .await
     }
@@ -643,9 +661,13 @@ impl PeerManager {
             let mut candidates: Vec<(String, usize)> = Vec::new();
 
             for (addr, peer) in connected_peers.iter() {
-                let has_piece = peer.has_piece(piece_index as usize).await;
-                let is_busy = peer.is_downloading(piece_index);
-                let active_count = peer.active_download_count();
+                let peer_addr = addr.clone();
+                let has_piece = peer.has_piece(piece_index).await;
+                let is_busy = self
+                    .piece_manager
+                    .is_peer_downloading_piece(&peer_addr, piece_index)
+                    .await;
+                let active_count = self.piece_manager.get_peer_piece_count(&peer_addr).await;
                 let num_pieces = peer.piece_count().await;
                 let bitfield_len = peer.bitfield_len().await;
 
@@ -672,7 +694,6 @@ impl PeerManager {
             (best_addr, peer_debug_data)
         }; // Read lock released here
 
-        // Debug logging happens WITHOUT holding any locks
         for (addr, has_piece, is_busy, active_count, num_pieces, bitfield_len) in debug_info {
             debug!(
                 "Peer {}, piece={}, has_piece={}, already_downloading={}, active_downloads={}, total_pieces={}/{}",
@@ -697,18 +718,13 @@ impl PeerManager {
         // Phase 3: Send request WITHOUT holding any locks
         sender.send(request.clone()).await?;
 
-        // Phase 4: Update state with brief WRITE lock
-        {
-            let mut connected_peers = self.connected_peers.write().await;
-            if let Some(peer) = connected_peers.get_mut(&best_peer_addr) {
-                peer.mark_downloading(piece_index);
-            }
-        } // Write lock released here
-
-        let _ = self
-            .piece_manager
-            .start_download(piece_index, best_peer_addr)
-            .await;
+        // Phase 4: Transition piece to InFlight state
+        self.piece_manager
+            .start_download(piece_index, best_peer_addr.clone())
+            .await
+            .ok_or(anyhow::Error::msg(
+                "Failed to start download - piece not in Pending state",
+            ))?;
 
         Ok(())
     }
@@ -893,11 +909,12 @@ impl PeerManager {
         Ok(response.peers)
     }
 
-    /// Drop peers with empty bitfields when at max capacity.
+    /// Drop peers with empty bitfields or only completed pieces when at max capacity.
     ///
     /// This is called after tracker announces to make room for potentially
-    /// better peers when we're at maximum connections. Peers with no pieces
-    /// (empty bitfield) are useless and should be dropped first.
+    /// better peers when we're at maximum connections. Peers are considered useless if:
+    /// 1. They have an empty bitfield (no pieces at all), OR
+    /// 2. All pieces they have are already completed (we don't need them anymore)
     pub async fn drop_useless_peers_if_at_capacity(&self, max_peers: usize) {
         let peers_to_drop = {
             let connected = self.connected_peers.read().await;
@@ -908,8 +925,23 @@ impl PeerManager {
 
             let mut useless_peers = Vec::new();
             for (addr, peer) in connected.iter() {
-                let piece_count = peer.piece_count().await;
-                if piece_count == 0 {
+                let bitfield_len = peer.bitfield_len().await;
+                if bitfield_len == 0 {
+                    useless_peers.push(addr.clone());
+                    continue;
+                }
+
+                let mut has_needed_piece = false;
+                for piece_idx in 0..bitfield_len {
+                    if peer.has_piece(piece_idx as u32).await
+                        && !self.piece_manager.is_completed(piece_idx as u32).await
+                    {
+                        has_needed_piece = true;
+                        break;
+                    }
+                }
+
+                if !has_needed_piece {
                     useless_peers.push(addr.clone());
                 }
             }
@@ -918,23 +950,58 @@ impl PeerManager {
         };
 
         if peers_to_drop.is_empty() {
+            let choking_peers = {
+                let connected = self.connected_peers.read().await;
+                let (_, choking_count) = self.connection_stats.get_stats();
+
+                if choking_count == 0 {
+                    return;
+                }
+
+                connected
+                    .keys()
+                    .take(choking_count)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+
+            if choking_peers.is_empty() {
+                return;
+            }
+
+            debug!(
+                "At max capacity ({} peers), strategies 1-2 found no peers to drop. Dropping {} choking peers",
+                max_peers,
+                choking_peers.len()
+            );
+
+            for addr in choking_peers {
+                let mut connected = self.connected_peers.write().await;
+                if let Some(peer) = connected.remove(&addr) {
+                    self.connection_stats.decrement_peers();
+                    self.connection_stats.decrement_choking();
+                    info!("Dropped peer {} (choking us)", addr);
+                    drop(peer);
+                    drop(connected);
+                }
+            }
+
             return;
         }
 
         debug!(
-            "At max capacity ({} peers), dropping {} peers with empty bitfields",
+            "At max capacity ({} peers), dropping {} useless peers",
             max_peers,
             peers_to_drop.len()
         );
 
-        let mut connected = self.connected_peers.write().await;
         for addr in peers_to_drop {
+            let mut connected = self.connected_peers.write().await;
             if let Some(peer) = connected.remove(&addr) {
-                info!(
-                    "Dropped peer {} (empty bitfield, no pieces available)",
-                    addr
-                );
+                self.connection_stats.decrement_peers();
+                info!("Dropped peer {} (no needed pieces available)", addr);
                 drop(peer);
+                drop(connected);
             }
         }
     }
@@ -945,7 +1012,6 @@ impl PeerManager {
     /// until reaching the maximum number of concurrent peers. It's called automatically by
     /// the background orchestration task in `start()`, but can also be invoked manually
     /// when immediate peer connections are needed.
-    ///
     pub async fn connect_with_peers(
         &self,
         max_peers: usize,
@@ -956,12 +1022,15 @@ impl PeerManager {
             let connected = self.connected_peers.read().await;
             let needed = max_peers.saturating_sub(connected.len());
 
-            let peers = available
+            let mut peers = available
                 .values()
                 .filter(|p| !connected.contains_key(&p.get_addr()))
-                .take(needed)
                 .cloned()
                 .collect::<Vec<_>>();
+
+            // Prioritize IPv4 peers over IPv6 peers
+            peers.sort_by_key(|p| p.ip.is_ipv6());
+            peers.truncate(needed);
 
             (peers, available.len(), connected.len(), needed)
         };
@@ -989,6 +1058,7 @@ impl PeerManager {
         }
 
         // Spawn connection attempts without waiting (non-blocking)
+        // Use semaphore to limit concurrent handshakes and prevent network overload
         let num_attempts = peers_to_connect.len();
         for peer in peers_to_connect {
             let connected_peers = self.connected_peers.clone();
@@ -999,9 +1069,16 @@ impl PeerManager {
             let piece_manager = self.piece_manager.clone();
             let bandwidth_limiter = self.bandwidth_limiter.clone();
             let bandwidth_stats = self.bandwidth_stats.clone();
+            let connection_stats = self.connection_stats.clone();
+            let semaphore = self.handshake_semaphore.clone();
+            let broadcast_rx = self.message_broadcast_tx.subscribe();
 
             tokio::spawn(async move {
                 let peer_addr = peer.get_addr();
+
+                // Acquire semaphore permit before attempting handshake
+                let _permit = semaphore.acquire().await.unwrap();
+
                 match connector
                     .connect(
                         peer,
@@ -1012,38 +1089,43 @@ impl PeerManager {
                         piece_manager,
                         bandwidth_limiter,
                         bandwidth_stats,
+                        broadcast_rx,
                     )
                     .await
                 {
                     Ok(connected_peer) => {
                         info!("Successfully connected to peer {}", peer_addr);
                         let mut connected = connected_peers.write().await;
-                        connected.insert(peer_addr, connected_peer);
+                        connected.insert(peer_addr.clone(), connected_peer);
+                        connection_stats.increment_peers();
                     }
                     Err(e) => {
                         debug!("Failed to connect to peer {}: {}", peer_addr, e);
                         available_peers.write().await.remove(&peer_addr);
                     }
                 }
+                // Permit automatically released when _permit is dropped
             });
         }
 
         Ok(num_attempts)
     }
 
-    /// Fetches a piece from the pending list and try to assign it to a connected peer.
+    /// Queue a piece download request. The background piece assignment task will assign it to a peer.
     pub async fn download_piece(&self, request: PieceDownloadRequest) -> Result<()> {
-        let _ = self.piece_manager.queue_piece(request.clone()).await;
-
-        let _ = self.assign_piece_to_peer(request).await;
-
-        Ok(())
+        self.piece_manager.queue_piece(request).await
     }
 
     pub async fn verify_completed_pieces(&self, expected_hashes: &[[u8; 20]]) -> Result<Vec<u32>> {
         self.piece_manager
             .verify_completed_pieces(expected_hashes)
             .await
+    }
+
+    /// For testing: pop a piece from the pending queue
+    #[doc(hidden)]
+    pub async fn pop_pending_for_test(&self) -> Option<u32> {
+        self.piece_manager.pop_pending().await
     }
 
     /// For testing: mark a piece as being downloaded by a peer

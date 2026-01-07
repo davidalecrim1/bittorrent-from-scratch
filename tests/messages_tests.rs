@@ -1,4 +1,4 @@
-use bittorrent_from_scratch::messages::{
+use bittorrent_from_scratch::peer_messages::{
     BitfieldMessage, CancelMessage, ChokeMessage, HaveMessage, InterestedMessage,
     NotInterestedMessage, PeerMessage, PieceMessage, RequestMessage, UnchokeMessage,
 };

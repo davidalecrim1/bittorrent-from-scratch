@@ -72,6 +72,12 @@ pub trait PieceManager: Send + Sync {
     /// Get pieces assigned to a peer
     async fn get_peer_pieces(&self, peer_addr: &str) -> Vec<u32>;
 
+    /// Get count of pieces being downloaded by a peer
+    async fn get_peer_piece_count(&self, peer_addr: &str) -> usize;
+
+    /// Check if a specific peer is downloading a specific piece
+    async fn is_peer_downloading_piece(&self, peer_addr: &str, piece_index: u32) -> bool;
+
     /// Get request for a piece
     async fn get_request(&self, piece_index: u32) -> Option<PieceDownloadRequest>;
 
@@ -436,6 +442,34 @@ impl FilePieceManager {
             .collect()
     }
 
+    /// Get count of pieces being downloaded by a specific peer
+    pub async fn get_peer_piece_count(&self, peer_addr: &str) -> usize {
+        let inner = self.inner.read().await;
+
+        inner
+            .states
+            .values()
+            .filter(|state| match state {
+                PieceState::InFlight {
+                    peer_addr: addr, ..
+                } => addr == peer_addr,
+                _ => false,
+            })
+            .count()
+    }
+
+    /// Check if a specific peer is downloading a specific piece
+    pub async fn is_peer_downloading_piece(&self, peer_addr: &str, piece_index: u32) -> bool {
+        let inner = self.inner.read().await;
+
+        match inner.states.get(&piece_index) {
+            Some(PieceState::InFlight {
+                peer_addr: addr, ..
+            }) => addr == peer_addr,
+            _ => false,
+        }
+    }
+
     /// Get request for a piece
     pub async fn get_request(&self, piece_index: u32) -> Option<PieceDownloadRequest> {
         let inner = self.inner.read().await;
@@ -708,6 +742,14 @@ impl PieceManager for FilePieceManager {
         Self::get_peer_pieces(self, peer_addr).await
     }
 
+    async fn get_peer_piece_count(&self, peer_addr: &str) -> usize {
+        Self::get_peer_piece_count(self, peer_addr).await
+    }
+
+    async fn is_peer_downloading_piece(&self, peer_addr: &str, piece_index: u32) -> bool {
+        Self::is_peer_downloading_piece(self, peer_addr, piece_index).await
+    }
+
     async fn get_request(&self, piece_index: u32) -> Option<PieceDownloadRequest> {
         Self::get_request(self, piece_index).await
     }
@@ -915,6 +957,14 @@ impl PieceManager for InMemoryPieceManager {
 
     async fn get_peer_pieces(&self, peer_addr: &str) -> Vec<u32> {
         self.state.get_peer_pieces(peer_addr).await
+    }
+
+    async fn get_peer_piece_count(&self, peer_addr: &str) -> usize {
+        self.state.get_peer_piece_count(peer_addr).await
+    }
+
+    async fn is_peer_downloading_piece(&self, peer_addr: &str, piece_index: u32) -> bool {
+        self.state.is_peer_downloading_piece(peer_addr, piece_index).await
     }
 
     async fn get_request(&self, piece_index: u32) -> Option<PieceDownloadRequest> {
@@ -1452,5 +1502,51 @@ mod tests {
         assert_eq!(failed.len(), 1);
         assert!(failed.contains(&1));
         assert!(mgr.is_pending(1).await);
+    }
+
+    #[tokio::test]
+    async fn test_get_peer_piece_count() {
+        let (mgr, _temp_file) = create_test_manager(10).await;
+
+        mgr.queue_piece(create_test_request(0)).await.unwrap();
+        mgr.queue_piece(create_test_request(1)).await.unwrap();
+        mgr.queue_piece(create_test_request(2)).await.unwrap();
+
+        mgr.pop_pending().await;
+        mgr.pop_pending().await;
+        mgr.pop_pending().await;
+
+        mgr.start_download(0, "peer1".to_string()).await;
+        mgr.start_download(1, "peer1".to_string()).await;
+        mgr.start_download(2, "peer2".to_string()).await;
+
+        let peer1_count = mgr.get_peer_piece_count("peer1").await;
+        let peer2_count = mgr.get_peer_piece_count("peer2").await;
+        let peer3_count = mgr.get_peer_piece_count("peer3").await;
+
+        assert_eq!(peer1_count, 2);
+        assert_eq!(peer2_count, 1);
+        assert_eq!(peer3_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_is_peer_downloading_piece() {
+        let (mgr, _temp_file) = create_test_manager(10).await;
+
+        mgr.queue_piece(create_test_request(0)).await.unwrap();
+        mgr.queue_piece(create_test_request(1)).await.unwrap();
+
+        mgr.pop_pending().await;
+        mgr.pop_pending().await;
+
+        mgr.start_download(0, "peer1".to_string()).await;
+        mgr.start_download(1, "peer2".to_string()).await;
+
+        assert!(mgr.is_peer_downloading_piece("peer1", 0).await);
+        assert!(!mgr.is_peer_downloading_piece("peer1", 1).await);
+        assert!(!mgr.is_peer_downloading_piece("peer2", 0).await);
+        assert!(mgr.is_peer_downloading_piece("peer2", 1).await);
+        assert!(!mgr.is_peer_downloading_piece("peer3", 0).await);
+        assert!(!mgr.is_peer_downloading_piece("peer1", 5).await);
     }
 }

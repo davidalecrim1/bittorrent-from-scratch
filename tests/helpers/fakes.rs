@@ -2,8 +2,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bittorrent_from_scratch::bandwidth_limiter::BandwidthLimiter;
 use bittorrent_from_scratch::io::MessageIO;
-use bittorrent_from_scratch::messages::PeerMessage;
 use bittorrent_from_scratch::peer_manager::PeerConnectionFactory;
+use bittorrent_from_scratch::peer_messages::PeerMessage;
 use bittorrent_from_scratch::piece_manager::{InMemoryPieceManager, PieceManager};
 use bittorrent_from_scratch::tracker_client::TrackerClient;
 use bittorrent_from_scratch::types::{AnnounceRequest, AnnounceResponse, ConnectedPeer, Peer};
@@ -167,6 +167,9 @@ impl PeerConnectionFactory for FakePeerConnectionFactory {
         _piece_manager: Arc<dyn PieceManager>,
         _bandwidth_limiter: Option<BandwidthLimiter>,
         _bandwidth_stats: Arc<bittorrent_from_scratch::BandwidthStats>,
+        _broadcast_rx: tokio::sync::broadcast::Receiver<
+            bittorrent_from_scratch::peer_messages::PeerMessage,
+        >,
     ) -> Result<ConnectedPeer> {
         let (download_request_tx, rx) =
             mpsc::channel::<bittorrent_from_scratch::types::PieceDownloadRequest>(10);
@@ -179,9 +182,15 @@ impl PeerConnectionFactory for FakePeerConnectionFactory {
         let peer_addr = peer.get_addr();
         let configured_bitfield = self.peer_bitfields.lock().await.get(&peer_addr).cloned();
 
-        // Use configured bitfield or default to empty (backward compatible)
-        let bitfield_data = configured_bitfield.unwrap_or_else(Vec::new);
-        let bitfield = Arc::new(tokio::sync::RwLock::new(bitfield_data));
+        // Use configured bitfield or default to empty HashSet (backward compatible)
+        // Convert Vec<bool> to HashSet<u32>
+        let bitfield_set: std::collections::HashSet<u32> = configured_bitfield
+            .unwrap_or_else(Vec::new)
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &has)| if has { Some(idx as u32) } else { None })
+            .collect();
+        let bitfield = Arc::new(tokio::sync::RwLock::new(bitfield_set));
 
         Ok(ConnectedPeer::new(
             peer,
@@ -202,4 +211,19 @@ pub fn create_test_bandwidth_stats() -> Arc<bittorrent_from_scratch::BandwidthSt
     Arc::new(bittorrent_from_scratch::BandwidthStats::new(
         std::time::Duration::from_secs(3),
     ))
+}
+
+/// Helper function to create test connection stats
+pub fn create_test_connection_stats() -> Arc<bittorrent_from_scratch::PeerConnectionStats> {
+    Arc::new(bittorrent_from_scratch::PeerConnectionStats::default())
+}
+
+/// Create a broadcast receiver for testing peer connections.
+/// Returns a receiver that will never receive messages but won't error on recv().
+/// The sender is leaked to keep the channel open indefinitely.
+pub fn create_test_broadcast_receiver()
+-> tokio::sync::broadcast::Receiver<bittorrent_from_scratch::peer_messages::PeerMessage> {
+    let (tx, rx) = tokio::sync::broadcast::channel(100);
+    std::mem::forget(tx); // Leak sender to keep channel open
+    rx
 }

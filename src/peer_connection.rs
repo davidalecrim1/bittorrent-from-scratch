@@ -1,7 +1,8 @@
 use anyhow::{Result, anyhow};
 use log::{debug, error, info};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -12,23 +13,27 @@ use crate::bandwidth_limiter::BandwidthLimiter;
 use crate::download_state::DownloadState;
 use crate::error::AppError;
 use crate::io::ThrottledMessageIO;
-use crate::messages::{self, PeerHandshakeMessage};
-use crate::messages::{
+use crate::peer_messages::{self, PeerHandshakeMessage};
+use crate::peer_messages::{
     BitfieldMessage, InterestedMessage, PeerMessage, PieceMessage, UnchokeMessage,
 };
 use crate::piece_manager::PieceManager;
-use crate::types::{FailedPiece, Peer, PeerDisconnected, PeerEvent, PieceDownloadRequest};
+use crate::types::{
+    FailedPiece, Peer, PeerDisconnected, PeerEvent, PieceDownloadRequest, StorePieceRequest,
+};
 
 const DEFAULT_BLOCK_SIZE: usize = 16 * 1024; // 16 KiB per BitTorrent spec
-const MAX_PIECES_PER_PEER: usize = 5; // Max concurrent pieces per peer
+const MAX_PIECES_PER_PEER: usize = 1; // Max concurrent pieces per peer
 
-const SEMAPHORE_BLOCK_CONCURRENCY: usize = 20;
+// Limits the amount of concurrent pieces blocks (chunks) that can be
+// downloaded concurrently.
+const SEMAPHORE_BLOCK_CONCURRENCY: usize = 6;
 
 const OUTBOUND_CHANNEL_SIZE: usize = 1024;
 const INBOUND_CHANNEL_SIZE: usize = 1024;
 const DOWNLOAD_REQUEST_CHANNEL_SIZE: usize = 256;
 
-const MAX_RETRIES_HANDSHAKE: usize = 3;
+const MAX_RETRIES_HANDSHAKE: usize = 2;
 
 pub struct PieceDownloadTask {
     pub piece_index: u32,
@@ -36,7 +41,7 @@ pub struct PieceDownloadTask {
     pub block_semaphore: Arc<tokio::sync::Semaphore>,
     pub outbound_tx: mpsc::Sender<PeerMessage>,
     pub inbound_rx: mpsc::UnboundedReceiver<PieceMessage>,
-    pub event_tx: mpsc::UnboundedSender<crate::types::PeerEvent>,
+    pub event_tx: mpsc::UnboundedSender<PeerEvent>,
     pub peer_addr: String,
 }
 
@@ -60,7 +65,7 @@ impl PieceDownloadTask {
                     self.block_semaphore.available_permits()
                 );
 
-                let request = messages::RequestMessage {
+                let request = peer_messages::RequestMessage {
                     piece_index: self.piece_index,
                     begin,
                     length,
@@ -121,13 +126,12 @@ impl PieceDownloadTask {
                 self.peer_addr,
                 piece_data.len()
             );
-            self.event_tx.send(crate::types::PeerEvent::WritePiece(
-                crate::types::WritePieceRequest {
+            self.event_tx
+                .send(PeerEvent::StorePiece(StorePieceRequest {
                     piece_index: self.piece_index,
                     data: piece_data,
                     peer_addr: self.peer_addr.clone(),
-                },
-            ))?;
+                }))?;
         } else {
             debug!("Piece {}: Hash mismatch, sending failure", self.piece_index);
             self.send_failure(AppError::HashMismatch).await?;
@@ -137,14 +141,12 @@ impl PieceDownloadTask {
     }
 
     async fn send_failure(&self, error: AppError) -> Result<()> {
-        self.event_tx.send(crate::types::PeerEvent::Failure(
-            crate::types::FailedPiece {
-                piece_index: self.piece_index,
-                peer_addr: self.peer_addr.clone(),
-                error,
-                push_front: false,
-            },
-        ))?;
+        self.event_tx.send(PeerEvent::Failure(FailedPiece {
+            piece_index: self.piece_index,
+            peer_addr: self.peer_addr.clone(),
+            error,
+            push_front: false,
+        }))?;
         Ok(())
     }
 }
@@ -167,18 +169,23 @@ pub struct PeerConnection {
     inbound_tx: mpsc::Sender<PeerMessage>,
     inbound_rx: Option<mpsc::Receiver<PeerMessage>>,
 
+    // Receives broadcast messages from PeerManager to send to all peers simultaneously.
+    // Used for efficiently broadcasting Have messages when we complete pieces.
+    broadcast_rx: Option<tokio::sync::broadcast::Receiver<PeerMessage>>,
+
     // Piece download channels
     download_request_rx: Option<mpsc::Receiver<PieceDownloadRequest>>,
 
     // Unified event channel with Peer Manager
-    event_tx: mpsc::UnboundedSender<crate::types::PeerEvent>,
+    event_tx: mpsc::UnboundedSender<PeerEvent>,
 
     // Peer Status
-    is_choking: bool,
+    is_choking: Arc<AtomicBool>,
+    // Means if the peer is interested in us to request pieces to be uploaded to them.
     is_interested: bool,
 
-    // Peer Information (shared with PeerManager)
-    bitfield: Arc<RwLock<Vec<bool>>>,
+    // Peer Information (shared with PeerManager) - tracks which pieces the peer has
+    bitfield: Arc<RwLock<HashSet<u32>>>,
 
     // Multi-piece download state
     active_downloads: HashMap<u32, tokio::task::JoinHandle<()>>,
@@ -186,7 +193,7 @@ pub struct PeerConnection {
     max_concurrent_pieces: usize,
 
     // Senders for delivering received blocks to their respective piece download tasks
-    piece_block_txs: HashMap<u32, mpsc::UnboundedSender<messages::PieceMessage>>,
+    piece_block_txs: HashMap<u32, mpsc::UnboundedSender<peer_messages::PieceMessage>>,
 
     // Manager for reading and writing pieces to disk
     piece_manager: Arc<dyn PieceManager>,
@@ -207,15 +214,16 @@ impl PeerConnection {
     #[allow(clippy::type_complexity)]
     pub fn new(
         peer: Peer,
-        event_tx: mpsc::UnboundedSender<crate::types::PeerEvent>,
+        event_tx: mpsc::UnboundedSender<PeerEvent>,
         tcp_connector: Arc<dyn crate::tcp_connector::TcpStreamFactory>,
         piece_manager: Arc<dyn PieceManager>,
         bandwidth_limiter: Option<BandwidthLimiter>,
         bandwidth_stats: Arc<crate::BandwidthStats>,
+        broadcast_rx: tokio::sync::broadcast::Receiver<PeerMessage>,
     ) -> (
         Self,
         mpsc::Sender<PieceDownloadRequest>,
-        Arc<RwLock<Vec<bool>>>,
+        Arc<RwLock<HashSet<u32>>>,
         mpsc::Sender<PeerMessage>,
     ) {
         let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CHANNEL_SIZE);
@@ -223,9 +231,10 @@ impl PeerConnection {
         let (download_request_tx, download_request_rx) =
             mpsc::channel(DOWNLOAD_REQUEST_CHANNEL_SIZE);
 
-        let bitfield = Arc::new(RwLock::new(Vec::new()));
+        let bitfield = Arc::new(RwLock::new(HashSet::new()));
         let block_semaphore = Arc::new(tokio::sync::Semaphore::new(SEMAPHORE_BLOCK_CONCURRENCY));
         let outbound_tx_clone = outbound_tx.clone();
+        let is_choking = Arc::new(AtomicBool::new(false));
 
         let peer_conn = Self {
             peer,
@@ -235,9 +244,10 @@ impl PeerConnection {
             outbound_rx: Some(outbound_rx),
             inbound_tx,
             inbound_rx: Some(inbound_rx),
+            broadcast_rx: Some(broadcast_rx),
             download_request_rx: Some(download_request_rx),
             event_tx,
-            is_choking: false,
+            is_choking,
             is_interested: false,
             bitfield: bitfield.clone(),
             active_downloads: HashMap::new(),
@@ -418,7 +428,9 @@ impl PeerConnection {
 
     fn handle_incoming_messages(mut self) {
         let mut inbound_rx = self.inbound_rx.take().unwrap();
+        let mut broadcast_rx = self.broadcast_rx.take().unwrap();
         let mut download_request_rx = self.download_request_rx.take().unwrap();
+        let outbound_tx = self.outbound_tx.clone();
         let event_tx = self.event_tx.clone();
         let peer = self.peer.clone();
         let peer_addr = peer.get_addr();
@@ -434,6 +446,23 @@ impl PeerConnection {
 
                     _ = cleanup_interval.tick() => {
                         self.cleanup_completed_tasks().await;
+                    }
+
+                    result = broadcast_rx.recv() => {
+                        match result {
+                            Ok(msg) => {
+                                // Forward broadcast message to outbound channel
+                                if let Err(e) = outbound_tx.send(msg).await {
+                                    debug!("Failed to send broadcast message to peer {}: {}", peer_addr, e);
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                debug!("Peer {} lagged and missed {} broadcast messages", peer_addr, skipped);
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                debug!("Broadcast channel closed for peer {}", peer_addr);
+                            }
+                        }
                     }
 
                     result = inbound_rx.recv() => {
@@ -499,14 +528,23 @@ impl PeerConnection {
             }
 
             PeerMessage::Choke(_) => {
-                // Peer is choking us - we should stop requesting pieces
-                // Current download can continue receiving already-requested blocks
-                // but we won't send new requests until unchoked
-                self.is_choking = true;
+                let was_choking = self.is_choking.swap(true, Ordering::Relaxed);
+                if !was_choking {
+                    info!("Peer {} is now choking us", peer_addr);
+                    let _ = self.event_tx.send(PeerEvent::PeerChoked(peer_addr.clone()));
+                }
             }
 
             PeerMessage::Bitfield(bitfield) => {
-                let num_pieces_available = bitfield.bitfield.iter().filter(|&&has| has).count();
+                // Convert Vec<bool> bitfield to HashSet of piece indices
+                let piece_indices: HashSet<u32> = bitfield
+                    .bitfield
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, &has)| if has { Some(idx as u32) } else { None })
+                    .collect();
+
+                let num_pieces_available = piece_indices.len();
                 debug!(
                     "Peer Connector received Bitfield with {}/{} pieces available from Peer {}",
                     num_pieces_available,
@@ -515,12 +553,17 @@ impl PeerConnection {
                 );
 
                 let mut bf = self.bitfield.write().await;
-                *bf = bitfield.bitfield;
+                *bf = piece_indices;
             }
 
             PeerMessage::Unchoke(_) => {
-                debug!("Peer Connector received Unchoke from Peer {}", peer_addr);
-                self.is_choking = false;
+                let was_choking = self.is_choking.swap(false, Ordering::Relaxed);
+                if was_choking {
+                    info!("Peer {} unchoked us", peer_addr);
+                    let _ = self
+                        .event_tx
+                        .send(PeerEvent::PeerUnchoked(peer_addr.clone()));
+                }
             }
 
             PeerMessage::Interested(_) => {
@@ -545,11 +588,8 @@ impl PeerConnection {
                     "Peer Connector received Have (now has piece {}) from Peer {}",
                     have.piece_index, peer_addr,
                 );
-                let piece_index = have.piece_index as usize;
                 let mut bf = self.bitfield.write().await;
-                if piece_index < bf.len() {
-                    bf[piece_index] = true;
-                }
+                bf.insert(have.piece_index);
             }
 
             PeerMessage::Request(request) => {
@@ -722,7 +762,7 @@ impl PeerConnection {
             return Ok(());
         }
 
-        if !self.has_piece(piece_index as usize).await {
+        if !self.has_piece(piece_index).await {
             self.event_tx.send(PeerEvent::Failure(FailedPiece {
                 piece_index,
                 peer_addr: self.peer.get_addr(),
@@ -737,7 +777,7 @@ impl PeerConnection {
                 piece_index,
                 peer_addr: self.peer.get_addr(),
                 error: AppError::PeerNotReady {
-                    choking: self.is_choking,
+                    choking: self.is_choking.load(Ordering::Relaxed),
                     bitfield_empty: self.bitfield.read().await.is_empty(),
                 },
                 push_front: false,
@@ -827,14 +867,14 @@ impl PeerConnection {
         );
     }
 
-    pub async fn has_piece(&self, piece_index: usize) -> bool {
+    pub async fn has_piece(&self, piece_index: u32) -> bool {
         let bf = self.bitfield.read().await;
-        bf.get(piece_index).copied().unwrap_or(false)
+        bf.contains(&piece_index)
     }
 
     pub async fn can_download_pieces(&self) -> bool {
         let bf = self.bitfield.read().await;
-        !self.is_choking && !bf.is_empty()
+        !self.is_choking.load(Ordering::Relaxed) && !bf.is_empty()
     }
 
     async fn get_our_bitfield(&self) -> Option<BitfieldMessage> {

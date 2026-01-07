@@ -4,7 +4,7 @@ mod helpers;
 mod tests {
     use super::helpers::{self, fakes::FakeMessageIO};
     use bittorrent_from_scratch::io::MessageIO;
-    use bittorrent_from_scratch::messages::{PeerMessage, PieceMessage};
+    use bittorrent_from_scratch::peer_messages::{PeerMessage, PieceMessage};
     use bittorrent_from_scratch::types::{Peer, PeerConnection, PieceDownloadRequest};
     use tokio::sync::mpsc;
 
@@ -35,6 +35,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         // Create a pair of fake MessageIO instances
@@ -78,6 +79,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         // Create a pair of fake MessageIO instances
@@ -94,7 +96,7 @@ mod tests {
         // Send a Bitfield message with 5 pieces, pieces 0, 2, 4 available
         let bitfield_data = vec![true, false, true, false, true];
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: bitfield_data.clone(),
             });
 
@@ -103,9 +105,14 @@ mod tests {
         // Give it time to process
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        // Check that the bitfield was updated
+        // Check that the bitfield was updated - should contain pieces 0, 2, 4
         let bf = bitfield.read().await;
-        assert_eq!(*bf, bitfield_data, "Bitfield should be updated");
+        assert_eq!(bf.len(), 3, "Bitfield should have 3 available pieces");
+        assert!(bf.contains(&0), "Piece 0 should be available");
+        assert!(!bf.contains(&1), "Piece 1 should not be available");
+        assert!(bf.contains(&2), "Piece 2 should be available");
+        assert!(!bf.contains(&3), "Piece 3 should not be available");
+        assert!(bf.contains(&4), "Piece 4 should be available");
     }
 
     #[tokio::test]
@@ -124,6 +131,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         // Create a pair of fake MessageIO instances
@@ -140,7 +148,7 @@ mod tests {
         // Send Bitfield first - peer needs to know which pieces are available
         let bitfield_data = vec![true]; // Peer has piece 0
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: bitfield_data,
             });
         client_io.write_message(&bitfield_msg).await.unwrap();
@@ -149,7 +157,7 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Send Choke message
-        let choke_msg = PeerMessage::Choke(bittorrent_from_scratch::messages::ChokeMessage {});
+        let choke_msg = PeerMessage::Choke(bittorrent_from_scratch::peer_messages::ChokeMessage {});
         client_io.write_message(&choke_msg).await.unwrap();
 
         // Give it time to process
@@ -157,7 +165,7 @@ mod tests {
 
         // Send Unchoke message
         let unchoke_msg =
-            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+            PeerMessage::Unchoke(bittorrent_from_scratch::peer_messages::UnchokeMessage {});
         client_io.write_message(&unchoke_msg).await.unwrap();
 
         // Give it time to process
@@ -204,6 +212,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         // Create a pair of fake MessageIO instances
@@ -220,7 +229,7 @@ mod tests {
         // Send Bitfield - peer has piece 0
         let bitfield_data = vec![true];
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: bitfield_data,
             });
         client_io.write_message(&bitfield_msg).await.unwrap();
@@ -228,7 +237,7 @@ mod tests {
 
         // Send Unchoke
         let unchoke_msg =
-            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+            PeerMessage::Unchoke(bittorrent_from_scratch::peer_messages::UnchokeMessage {});
         client_io.write_message(&unchoke_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -272,7 +281,7 @@ mod tests {
 
         // Wait for completion notification
         match tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await {
-            Ok(Some(bittorrent_from_scratch::types::PeerEvent::WritePiece(completed))) => {
+            Ok(Some(bittorrent_from_scratch::types::PeerEvent::StorePiece(completed))) => {
                 assert_eq!(
                     completed.piece_index, 0,
                     "Completed piece should be index 0"
@@ -303,6 +312,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         // Create a pair of fake MessageIO instances
@@ -319,7 +329,7 @@ mod tests {
         // Send Bitfield - peer has piece 0
         let bitfield_data = vec![true];
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: bitfield_data,
             });
         client_io.write_message(&bitfield_msg).await.unwrap();
@@ -327,7 +337,7 @@ mod tests {
 
         // Send Unchoke
         let unchoke_msg =
-            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+            PeerMessage::Unchoke(bittorrent_from_scratch::peer_messages::UnchokeMessage {});
         client_io.write_message(&unchoke_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -398,6 +408,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         // Create a pair of fake MessageIO instances
@@ -411,35 +422,93 @@ mod tests {
         // Wait for Interested message
         let _ = client_io.read_message().await;
 
-        // Send Bitfield with 5 pieces, initially all false
+        // Send Bitfield with 5 pieces, initially all false (empty bitfield)
         let bitfield_data = vec![false, false, false, false, false];
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: bitfield_data.clone(),
             });
         client_io.write_message(&bitfield_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        // Verify initial bitfield
+        // Verify initial bitfield is empty (no pieces available)
         {
             let bf = bitfield.read().await;
-            assert_eq!(*bf, bitfield_data, "Initial bitfield should match");
+            assert_eq!(bf.len(), 0, "Initial bitfield should be empty");
         }
 
         // Send Have message for piece 2
-        let have_msg =
-            PeerMessage::Have(bittorrent_from_scratch::messages::HaveMessage { piece_index: 2 });
+        let have_msg = PeerMessage::Have(bittorrent_from_scratch::peer_messages::HaveMessage {
+            piece_index: 2,
+        });
         client_io.write_message(&have_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Verify piece 2 is now true
         {
             let bf = bitfield.read().await;
-            assert_eq!(bf[0], false, "Piece 0 should still be false");
-            assert_eq!(bf[1], false, "Piece 1 should still be false");
-            assert_eq!(bf[2], true, "Piece 2 should be true after Have message");
-            assert_eq!(bf[3], false, "Piece 3 should still be false");
-            assert_eq!(bf[4], false, "Piece 4 should still be false");
+            assert!(!bf.contains(&0), "Piece 0 should still be false");
+            assert!(!bf.contains(&1), "Piece 1 should still be false");
+            assert!(bf.contains(&2), "Piece 2 should be true after Have message");
+            assert!(!bf.contains(&3), "Piece 3 should still be false");
+            assert!(!bf.contains(&4), "Piece 4 should still be false");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_have_message_without_prior_bitfield() {
+        let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
+
+        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let tcp_connector =
+            std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
+
+        let (peer_conn, _download_request_tx, bitfield, _message_tx) = PeerConnection::new(
+            peer,
+            event_tx,
+            tcp_connector,
+            helpers::create_test_piece_manager(),
+            None,
+            helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
+        );
+
+        let (mut client_io, peer_io) = FakeMessageIO::pair();
+
+        tokio::spawn(async move {
+            let _ = peer_conn.start_with_io(Box::new(peer_io)).await;
+        });
+
+        let _ = client_io.read_message().await;
+
+        {
+            let bf = bitfield.read().await;
+            assert_eq!(bf.len(), 0, "Initial bitfield should be empty");
+        }
+
+        let have_msg = PeerMessage::Have(bittorrent_from_scratch::peer_messages::HaveMessage {
+            piece_index: 5,
+        });
+        client_io.write_message(&have_msg).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        {
+            let bf = bitfield.read().await;
+            assert!(bf.contains(&5), "Piece 5 should be available after Have message");
+            assert_eq!(bf.len(), 1, "Bitfield should contain exactly one piece");
+        }
+
+        let have_msg2 = PeerMessage::Have(bittorrent_from_scratch::peer_messages::HaveMessage {
+            piece_index: 10,
+        });
+        client_io.write_message(&have_msg2).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        {
+            let bf = bitfield.read().await;
+            assert!(bf.contains(&5), "Piece 5 should still be available");
+            assert!(bf.contains(&10), "Piece 10 should be available after second Have message");
+            assert_eq!(bf.len(), 2, "Bitfield should contain exactly two pieces");
         }
     }
 
@@ -459,6 +528,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         // Create a pair of fake MessageIO instances
@@ -474,7 +544,7 @@ mod tests {
 
         // Send Bitfield
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: vec![true],
             });
         client_io.write_message(&bitfield_msg).await.unwrap();
@@ -482,12 +552,12 @@ mod tests {
 
         // Send Unchoke first
         let unchoke_msg =
-            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+            PeerMessage::Unchoke(bittorrent_from_scratch::peer_messages::UnchokeMessage {});
         client_io.write_message(&unchoke_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Send Choke message
-        let choke_msg = PeerMessage::Choke(bittorrent_from_scratch::messages::ChokeMessage {});
+        let choke_msg = PeerMessage::Choke(bittorrent_from_scratch::peer_messages::ChokeMessage {});
         client_io.write_message(&choke_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -536,6 +606,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         // Create a pair of fake MessageIO instances
@@ -551,7 +622,7 @@ mod tests {
 
         // Send Bitfield
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: vec![true, true],
             });
         client_io.write_message(&bitfield_msg).await.unwrap();
@@ -559,7 +630,7 @@ mod tests {
 
         // Send Unchoke
         let unchoke_msg =
-            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+            PeerMessage::Unchoke(bittorrent_from_scratch::peer_messages::UnchokeMessage {});
         client_io.write_message(&unchoke_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -620,6 +691,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         // Create a pair of fake MessageIO instances
@@ -635,7 +707,7 @@ mod tests {
 
         // Send Bitfield - peer only has piece 0
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: vec![true, false], // Only piece 0
             });
         client_io.write_message(&bitfield_msg).await.unwrap();
@@ -643,7 +715,7 @@ mod tests {
 
         // Send Unchoke
         let unchoke_msg =
-            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+            PeerMessage::Unchoke(bittorrent_from_scratch::peer_messages::UnchokeMessage {});
         client_io.write_message(&unchoke_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -690,6 +762,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         // Create a pair of fake MessageIO instances
@@ -710,31 +783,34 @@ mod tests {
 
         // Send Interested message
         let interested_msg =
-            PeerMessage::Interested(bittorrent_from_scratch::messages::InterestedMessage {});
+            PeerMessage::Interested(bittorrent_from_scratch::peer_messages::InterestedMessage {});
         client_io.write_message(&interested_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Send NotInterested message
-        let not_interested_msg =
-            PeerMessage::NotInterested(bittorrent_from_scratch::messages::NotInterestedMessage {});
+        let not_interested_msg = PeerMessage::NotInterested(
+            bittorrent_from_scratch::peer_messages::NotInterestedMessage {},
+        );
         client_io.write_message(&not_interested_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Send Request message (should be no-op, we don't support uploading)
-        let request_msg = PeerMessage::Request(bittorrent_from_scratch::messages::RequestMessage {
-            piece_index: 0,
-            begin: 0,
-            length: 16384,
-        });
+        let request_msg =
+            PeerMessage::Request(bittorrent_from_scratch::peer_messages::RequestMessage {
+                piece_index: 0,
+                begin: 0,
+                length: 16384,
+            });
         client_io.write_message(&request_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Send Cancel message (should be no-op)
-        let cancel_msg = PeerMessage::Cancel(bittorrent_from_scratch::messages::CancelMessage {
-            piece_index: 0,
-            begin: 0,
-            length: 16384,
-        });
+        let cancel_msg =
+            PeerMessage::Cancel(bittorrent_from_scratch::peer_messages::CancelMessage {
+                piece_index: 0,
+                begin: 0,
+                length: 16384,
+            });
         client_io.write_message(&cancel_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -758,6 +834,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         // Create a pair of fake MessageIO instances
@@ -799,6 +876,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         // Create a pair of fake MessageIO instances
@@ -814,7 +892,7 @@ mod tests {
 
         // Send Bitfield
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: vec![true],
             });
         client_io.write_message(&bitfield_msg).await.unwrap();
@@ -822,7 +900,7 @@ mod tests {
 
         // Send Unchoke
         let unchoke_msg =
-            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+            PeerMessage::Unchoke(bittorrent_from_scratch::peer_messages::UnchokeMessage {});
         client_io.write_message(&unchoke_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -878,7 +956,7 @@ mod tests {
 
         // Wait for completion
         match tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await {
-            Ok(Some(bittorrent_from_scratch::types::PeerEvent::WritePiece(completed))) => {
+            Ok(Some(bittorrent_from_scratch::types::PeerEvent::StorePiece(completed))) => {
                 assert_eq!(completed.piece_index, 0);
                 assert_eq!(completed.data.len(), piece_length);
                 assert_eq!(completed.data, piece_data);
@@ -927,6 +1005,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         let write_count = Arc::new(Mutex::new(0));
@@ -988,6 +1067,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         let closed_io = ClosedStreamMessageIO {};
@@ -1038,6 +1118,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         let failing_io = FailingReadMessageIO {};
@@ -1075,6 +1156,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         // Create fake I/O with aggressive timing - peer sends bitfield IMMEDIATELY
@@ -1100,7 +1182,7 @@ mod tests {
 
         // Immediately send bitfield response (simulating fast peer)
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: vec![true, true, true, true, false],
             });
         client_io.write_message(&bitfield_msg).await.unwrap();
@@ -1110,12 +1192,12 @@ mod tests {
 
         // Verify bitfield was populated (not lost due to race condition)
         let bf = bitfield.read().await;
-        assert_eq!(bf.len(), 5, "Bitfield should have 5 pieces");
-        assert_eq!(bf[0], true, "Piece 0 should be available");
-        assert_eq!(bf[1], true, "Piece 1 should be available");
-        assert_eq!(bf[2], true, "Piece 2 should be available");
-        assert_eq!(bf[3], true, "Piece 3 should be available");
-        assert_eq!(bf[4], false, "Piece 4 should not be available");
+        assert_eq!(bf.len(), 4, "Bitfield should have 4 available pieces");
+        assert!(bf.contains(&0), "Piece 0 should be available");
+        assert!(bf.contains(&1), "Piece 1 should be available");
+        assert!(bf.contains(&2), "Piece 2 should be available");
+        assert!(bf.contains(&3), "Piece 3 should be available");
+        assert!(!bf.contains(&4), "Piece 4 should not be available");
     }
 
     #[tokio::test]
@@ -1134,6 +1216,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -1147,7 +1230,7 @@ mod tests {
 
         // Send Bitfield with 3 pieces available
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: vec![true, true, true],
             });
         client_io.write_message(&bitfield_msg).await.unwrap();
@@ -1155,7 +1238,7 @@ mod tests {
 
         // Send Unchoke
         let unchoke_msg =
-            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+            PeerMessage::Unchoke(bittorrent_from_scratch::peer_messages::UnchokeMessage {});
         client_io.write_message(&unchoke_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -1203,7 +1286,7 @@ mod tests {
         let mut completed_pieces = std::collections::HashSet::new();
         for _ in 0..3 {
             match tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await {
-                Ok(Some(bittorrent_from_scratch::types::PeerEvent::WritePiece(completed))) => {
+                Ok(Some(bittorrent_from_scratch::types::PeerEvent::StorePiece(completed))) => {
                     assert!(completed.piece_index < 3);
                     completed_pieces.insert(completed.piece_index);
                 }
@@ -1233,6 +1316,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -1244,14 +1328,14 @@ mod tests {
         let _ = client_io.read_message().await;
 
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: vec![true; 10],
             });
         client_io.write_message(&bitfield_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let unchoke_msg =
-            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+            PeerMessage::Unchoke(bittorrent_from_scratch::peer_messages::UnchokeMessage {});
         client_io.write_message(&unchoke_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -1306,6 +1390,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -1317,14 +1402,14 @@ mod tests {
         let _ = client_io.read_message().await;
 
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: vec![true],
             });
         client_io.write_message(&bitfield_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let unchoke_msg =
-            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+            PeerMessage::Unchoke(bittorrent_from_scratch::peer_messages::UnchokeMessage {});
         client_io.write_message(&unchoke_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -1374,6 +1459,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -1386,14 +1472,14 @@ mod tests {
         consume_initial_interested(&mut client_io).await;
 
         let bitfield_msg =
-            PeerMessage::Bitfield(bittorrent_from_scratch::messages::BitfieldMessage {
+            PeerMessage::Bitfield(bittorrent_from_scratch::peer_messages::BitfieldMessage {
                 bitfield: vec![true, true, true, true, true],
             });
         client_io.write_message(&bitfield_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let unchoke_msg =
-            PeerMessage::Unchoke(bittorrent_from_scratch::messages::UnchokeMessage {});
+            PeerMessage::Unchoke(bittorrent_from_scratch::peer_messages::UnchokeMessage {});
         client_io.write_message(&unchoke_msg).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -1433,16 +1519,17 @@ mod tests {
         }
 
         assert!(
-            request_count <= 5,
-            "Should receive at most 5 concurrent block requests due to semaphore limit, got {}",
+            request_count <= 6,
+            "Should receive at most 6 concurrent block requests due to semaphore limit (SEMAPHORE_BLOCK_CONCURRENCY), got {}",
             request_count
         );
 
         assert!(request_count > 0, "Should receive at least 1 request");
 
-        assert!(
-            unique_pieces.len() > 1,
-            "Should request blocks from multiple pieces, got {} pieces",
+        assert_eq!(
+            unique_pieces.len(),
+            1,
+            "Should only download 1 piece at a time due to MAX_PIECES_PER_PEER=1, got {} pieces",
             unique_pieces.len()
         );
     }
@@ -1484,6 +1571,7 @@ mod tests {
             piece_manager,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -1494,11 +1582,12 @@ mod tests {
 
         consume_initial_interested(&mut client_io).await;
 
-        let request_msg = PeerMessage::Request(bittorrent_from_scratch::messages::RequestMessage {
-            piece_index: 0,
-            begin: 0,
-            length: 1024,
-        });
+        let request_msg =
+            PeerMessage::Request(bittorrent_from_scratch::peer_messages::RequestMessage {
+                piece_index: 0,
+                begin: 0,
+                length: 1024,
+            });
         client_io.write_message(&request_msg).await.unwrap();
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -1537,6 +1626,7 @@ mod tests {
             helpers::create_test_piece_manager(),
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -1547,11 +1637,12 @@ mod tests {
 
         consume_initial_interested(&mut client_io).await;
 
-        let request_msg = PeerMessage::Request(bittorrent_from_scratch::messages::RequestMessage {
-            piece_index: 99,
-            begin: 0,
-            length: 1024,
-        });
+        let request_msg =
+            PeerMessage::Request(bittorrent_from_scratch::peer_messages::RequestMessage {
+                piece_index: 99,
+                begin: 0,
+                length: 1024,
+            });
         client_io.write_message(&request_msg).await.unwrap();
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -1607,6 +1698,7 @@ mod tests {
             piece_manager,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_broadcast_receiver(),
         );
 
         let (mut client_io, peer_io) = FakeMessageIO::pair();
@@ -1617,11 +1709,12 @@ mod tests {
 
         consume_initial_interested(&mut client_io).await;
 
-        let request_msg = PeerMessage::Request(bittorrent_from_scratch::messages::RequestMessage {
-            piece_index: 0,
-            begin: 1000,
-            length: 500,
-        });
+        let request_msg =
+            PeerMessage::Request(bittorrent_from_scratch::peer_messages::RequestMessage {
+                piece_index: 0,
+                begin: 1000,
+                length: 500,
+            });
         client_io.write_message(&request_msg).await.unwrap();
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

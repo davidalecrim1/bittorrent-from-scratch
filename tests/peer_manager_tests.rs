@@ -21,6 +21,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -52,6 +53,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -100,6 +102,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -138,6 +141,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -179,6 +183,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -231,6 +236,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -279,6 +285,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -343,6 +350,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -397,6 +405,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -451,6 +460,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -516,6 +526,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -548,6 +559,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -584,6 +596,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -635,6 +648,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -677,6 +691,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -754,6 +769,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
         let _temp_file = NamedTempFile::new().unwrap();
@@ -806,13 +822,18 @@ mod tests {
         // Check if peer has pieces (for debugging)
         let _piece_count = peer_manager.get_peer_piece_count("192.168.1.1:6881").await;
 
-        // Assign piece 1 (peer has it)
+        // Queue piece 1 first
         let request = PieceDownloadRequest {
             piece_index: 1,
             piece_length: 16384,
             expected_hash: [0u8; 20],
         };
+        peer_manager.download_piece(request.clone()).await.unwrap();
 
+        // Pop it from queue to prepare for assignment
+        peer_manager.pop_pending_for_test().await;
+
+        // Assign piece 1 (peer has it)
         let result = peer_manager.assign_piece_to_peer(request).await;
         assert!(result.is_ok(), "Should assign piece to peer that has it");
     }
@@ -826,6 +847,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -865,6 +887,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -906,6 +929,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -952,6 +976,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -990,6 +1015,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -1042,6 +1068,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -1100,6 +1127,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -1147,6 +1175,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -1217,6 +1246,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -1261,6 +1291,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -1313,6 +1344,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -1387,6 +1419,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -1458,6 +1491,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -1525,6 +1559,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -1586,6 +1621,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -1647,6 +1683,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
 
@@ -1668,15 +1705,15 @@ mod tests {
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
-        // All peers have piece 5
+        // All peers have pieces 5 and 6
         connector
-            .with_specific_pieces("192.168.1.1:6881".to_string(), vec![5], 10)
+            .with_specific_pieces("192.168.1.1:6881".to_string(), vec![5, 6], 10)
             .await;
         connector
-            .with_specific_pieces("192.168.1.2:6881".to_string(), vec![5], 10)
+            .with_specific_pieces("192.168.1.2:6881".to_string(), vec![5, 6], 10)
             .await;
         connector
-            .with_specific_pieces("192.168.1.3:6881".to_string(), vec![5], 10)
+            .with_specific_pieces("192.168.1.3:6881".to_string(), vec![5, 6], 10)
             .await;
 
         // Setup tracker to return all peers
@@ -1696,6 +1733,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1745,25 +1783,33 @@ mod tests {
         // Verify all 3 peers connected
         assert_eq!(peer_manager.connected_peer_count().await, 3);
 
+        // Queue pieces first
+        let request1 = PieceDownloadRequest {
+            piece_index: 5,
+            piece_length: 16384,
+            expected_hash: [0u8; 20],
+        };
+        let request2 = PieceDownloadRequest {
+            piece_index: 6,
+            piece_length: 16384,
+            expected_hash: [1u8; 20],
+        };
+        peer_manager.download_piece(request1.clone()).await.unwrap();
+        peer_manager.download_piece(request2.clone()).await.unwrap();
+
+        // Pop from queue
+        peer_manager.pop_pending_for_test().await;
+        peer_manager.pop_pending_for_test().await;
+
         // Assign piece to first peer (now has 1 active download)
-        peer_manager
-            .assign_piece_to_peer(PieceDownloadRequest {
-                piece_index: 5,
-                piece_length: 16384,
-                expected_hash: [0u8; 20],
-            })
-            .await
-            .unwrap();
+        peer_manager.assign_piece_to_peer(request1).await.unwrap();
 
         // Second assignment should select a less busy peer (not the one with active download)
-        let result = peer_manager
-            .assign_piece_to_peer(PieceDownloadRequest {
-                piece_index: 5,
-                piece_length: 16384,
-                expected_hash: [1u8; 20],
-            })
-            .await;
+        let result = peer_manager.assign_piece_to_peer(request2).await;
 
+        if let Err(e) = &result {
+            panic!("Assignment failed: {}", e);
+        }
         assert!(result.is_ok(), "Should select least busy peer");
     }
 
@@ -1790,6 +1836,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1883,6 +1930,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
         let _temp_file = NamedTempFile::new().unwrap();
@@ -1970,6 +2018,7 @@ mod tests {
             connector,
             None,
             helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
             50,
         );
         let _temp_file = NamedTempFile::new().unwrap();

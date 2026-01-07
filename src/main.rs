@@ -1,7 +1,7 @@
 use std::fs::{self, OpenOptions};
 
 use bittorrent_from_scratch::{
-    BandwidthStats,
+    BandwidthStats, PeerConnectionStats,
     bandwidth_limiter::{BandwidthLimiter, parse_bandwidth_arg},
     bittorrent_client::BitTorrent,
     cli::Args,
@@ -79,13 +79,14 @@ async fn main() {
     };
 
     let http_client = Client::new();
-    let max_peers = args.max_peers.unwrap_or(50);
+    let max_peers = args.max_peers.unwrap_or(20);
     info!("Max concurrent peers: {}", max_peers);
     let peer_manager = PeerManager::new(
         Decoder {},
         http_client,
         bandwidth_limiter,
         Arc::new(BandwidthStats::default()),
+        Arc::new(PeerConnectionStats::default()),
         max_peers,
     );
 

@@ -187,6 +187,46 @@ loop {
 **Common pitfall:**
 Placing `interval.tick().await` at the END of the loop causes work to execute immediately on the first iteration (before any async state is ready), then enters a long wait. This creates duplicate logs at startup and incorrect timing.
 
+### Import Organization
+
+Always declare imports at the top of the file and reference types/functions directly. Avoid inline module paths in type signatures and function calls.
+
+**Bad:**
+```rust
+// Inline module paths in type signatures
+fn process(
+    stats: Arc<crate::BandwidthStats>,
+    rx: broadcast::Receiver<crate::peer_messages::PeerMessage>
+) { }
+
+// Inline module paths in function calls
+fn example() {
+    log::debug!("message");
+    std::mem::drop(value);
+}
+```
+
+**Good:**
+```rust
+use crate::peer_messages::PeerMessage;
+use crate::BandwidthStats;
+use log::debug;
+
+fn process(
+    stats: Arc<BandwidthStats>,
+    rx: broadcast::Receiver<PeerMessage>
+) { }
+
+fn example() {
+    debug!("message");
+    drop(value);
+}
+```
+
+**Common imports to add:**
+- Logging: `use log::{debug, info, warn, error};`
+- Standard library: Import specific items rather than using `std::` prefix
+
 ### Avoid Deep Nesting (TL;DR)
 - **Avoid deep nesting** → prefer early returns (`return`, `?`, `let-else`)
 - **Use `?` aggressively** to eliminate match/if pyramids

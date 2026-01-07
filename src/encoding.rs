@@ -5,7 +5,7 @@ use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Decoder as TokioDecoder, Encoder as TokioEncoder};
 
 use crate::error::CodecError;
-use crate::messages::PeerMessage;
+use crate::peer_messages::PeerMessage;
 use crate::types::BencodeTypes;
 
 #[derive(Debug, PartialEq, Eq)]

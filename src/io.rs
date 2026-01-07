@@ -1,6 +1,6 @@
 use crate::bandwidth_limiter::GovernorRateLimiter;
 use crate::encoding::{PeerMessageDecoder, PeerMessageEncoder};
-use crate::messages::PeerMessage;
+use crate::peer_messages::PeerMessage;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
