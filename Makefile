@@ -35,3 +35,10 @@ coverage:
 
 coverage-by-file:
 	@./scripts/coverage-by-file.sh
+
+# Source: https://releases.ubuntu.com/noble/SHA256SUMS
+verify-hash-ubuntu-image:
+	@echo "Expected Hash"
+	@echo "faabcf33ae53976d2b8207a001ff32f4e5daae013505ac7188c9ea63988f8328"
+	@echo "Actual Hash"
+	@shasum -a 256 ./output/ubuntu-24.04.3-desktop-amd64.iso
