@@ -23,6 +23,7 @@ const PROGRESS_REPORT_INTERVAL_SECS: u64 = 10;
 const PEER_CONNECTOR_INTERVAL_SECS: u64 = 10;
 const STALE_DOWNLOAD_CHECK_INTERVAL_SECS: u64 = 30;
 const MAX_CONCURRENT_HANDSHAKES: usize = 10;
+const MAX_PIECES_PER_PEER: usize = 1;
 
 #[async_trait]
 pub trait PeerConnectionFactory: Send + Sync {
@@ -97,6 +98,7 @@ pub struct PeerManager {
     bandwidth_stats: Arc<BandwidthStats>,
     connection_stats: Arc<PeerConnectionStats>,
     max_peers: usize,
+    max_pieces_per_peer: usize,
 
     // Limits concurrent handshake attempts to prevent network overload
     handshake_semaphore: Arc<tokio::sync::Semaphore>,
@@ -149,6 +151,7 @@ impl PeerManager {
             bandwidth_stats,
             connection_stats,
             max_peers,
+            max_pieces_per_peer: MAX_PIECES_PER_PEER,
             handshake_semaphore,
             message_broadcast_tx,
         }
@@ -435,6 +438,7 @@ impl PeerManager {
             let mut connected_peers = self.connected_peers.write().await;
             if connected_peers.remove(&peer_addr).is_some() {
                 self.connection_stats.decrement_peers();
+                self.connection_stats.remove_peer(&peer_addr);
             }
         }
 
@@ -491,11 +495,11 @@ impl PeerManager {
                 PeerEvent::Disconnect(disconnect) => {
                     let _ = self.process_disconnect(disconnect).await;
                 }
-                PeerEvent::PeerChoked(_addr) => {
-                    self.connection_stats.increment_choking();
+                PeerEvent::PeerChoked(addr) => {
+                    self.connection_stats.set_choking(&addr);
                 }
-                PeerEvent::PeerUnchoked(_addr) => {
-                    self.connection_stats.decrement_choking();
+                PeerEvent::PeerUnchoked(addr) => {
+                    self.connection_stats.set_unchoked(&addr);
                 }
             }
         }
@@ -680,7 +684,11 @@ impl PeerManager {
                     bitfield_len,
                 ));
 
-                if has_piece && !is_busy {
+                // Only consider peers that:
+                // 1. Have the piece
+                // 2. Are not already downloading this specific piece
+                // 3. Are not at max_pieces_per_peer capacity
+                if has_piece && !is_busy && active_count < self.max_pieces_per_peer {
                     candidates.push((addr.clone(), active_count));
                 }
             }
@@ -979,7 +987,7 @@ impl PeerManager {
                 let mut connected = self.connected_peers.write().await;
                 if let Some(peer) = connected.remove(&addr) {
                     self.connection_stats.decrement_peers();
-                    self.connection_stats.decrement_choking();
+                    self.connection_stats.remove_peer(&addr);
                     info!("Dropped peer {} (choking us)", addr);
                     drop(peer);
                     drop(connected);
@@ -999,6 +1007,7 @@ impl PeerManager {
             let mut connected = self.connected_peers.write().await;
             if let Some(peer) = connected.remove(&addr) {
                 self.connection_stats.decrement_peers();
+                self.connection_stats.remove_peer(&addr);
                 info!("Dropped peer {} (no needed pieces available)", addr);
                 drop(peer);
                 drop(connected);

@@ -4,7 +4,7 @@ sample-run-1: clean
 		-o ./output/ \
 		--max-download-rate 2M \
 		--max-upload-rate 100K \
-		--max-peers 10
+		--max-peers 15
 
 sample-run-2: clean
 	LOG_LEVEL=INFO RUST_BACKTRACE=1 cargo run -- \
@@ -12,7 +12,7 @@ sample-run-2: clean
 		-o ./output/ \
 		--max-download-rate 2M \
 		--max-upload-rate 100K \
-		--max-peers 10
+		--max-peers 15
 
 build:
 	cargo build --release

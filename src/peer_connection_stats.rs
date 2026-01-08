@@ -1,15 +1,23 @@
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+use crate::types::PeerAddr;
+
+#[derive(Debug, Clone)]
+struct PeerChokeState {
+    is_choking: bool,
+    last_choke_time: Option<Instant>,
+    last_unchoke_time: Option<Instant>,
+}
+
 /// Peer connection statistics (tracks connected peers and choke state)
 #[derive(Debug)]
 pub struct PeerConnectionStats {
     total_peers: AtomicUsize,
-    choking_peers: AtomicUsize,
-    last_choke_time: Mutex<Option<Instant>>,
-    last_unchoke_time: Mutex<Option<Instant>>,
+    choke_states: Mutex<HashMap<PeerAddr, PeerChokeState>>,
 }
 
 impl Default for PeerConnectionStats {
@@ -22,9 +30,7 @@ impl PeerConnectionStats {
     pub fn new() -> Self {
         Self {
             total_peers: AtomicUsize::new(0),
-            choking_peers: AtomicUsize::new(0),
-            last_choke_time: Mutex::new(None),
-            last_unchoke_time: Mutex::new(None),
+            choke_states: Mutex::new(HashMap::new()),
         }
     }
 
@@ -36,32 +42,84 @@ impl PeerConnectionStats {
         self.total_peers.fetch_sub(1, Ordering::Relaxed);
     }
 
-    pub fn increment_choking(&self) {
-        self.choking_peers.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut time) = self.last_choke_time.try_lock() {
-            *time = Some(Instant::now());
-        }
+    pub fn set_choking(&self, peer_addr: &str) {
+        let mut states = self.choke_states.lock().unwrap();
+        states
+            .entry(peer_addr.to_string())
+            .and_modify(|state| {
+                state.is_choking = true;
+                state.last_choke_time = Some(Instant::now());
+            })
+            .or_insert(PeerChokeState {
+                is_choking: true,
+                last_choke_time: Some(Instant::now()),
+                last_unchoke_time: None,
+            });
     }
 
-    pub fn decrement_choking(&self) {
-        self.choking_peers.fetch_sub(1, Ordering::Relaxed);
-        if let Ok(mut time) = self.last_unchoke_time.try_lock() {
-            *time = Some(Instant::now());
-        }
+    pub fn set_unchoked(&self, peer_addr: &str) {
+        let mut states = self.choke_states.lock().unwrap();
+        states
+            .entry(peer_addr.to_string())
+            .and_modify(|state| {
+                state.is_choking = false;
+                state.last_unchoke_time = Some(Instant::now());
+            })
+            .or_insert(PeerChokeState {
+                is_choking: false,
+                last_choke_time: None,
+                last_unchoke_time: Some(Instant::now()),
+            });
     }
 
     pub fn get_stats(&self) -> (usize, usize) {
-        (
-            self.total_peers.load(Ordering::Relaxed),
-            self.choking_peers.load(Ordering::Relaxed),
-        )
+        let total = self.total_peers.load(Ordering::Relaxed);
+        let states = self.choke_states.lock().unwrap();
+        let choking = states.values().filter(|s| s.is_choking).count();
+        (total, choking)
     }
 
-    pub fn get_last_choke_time(&self) -> Option<Instant> {
-        self.last_choke_time.try_lock().ok().and_then(|t| *t)
+    pub fn is_choking(&self, peer_addr: &str) -> bool {
+        self.choke_states
+            .lock()
+            .unwrap()
+            .get(peer_addr)
+            .map(|s| s.is_choking)
+            .unwrap_or(false)
     }
 
-    pub fn get_last_unchoke_time(&self) -> Option<Instant> {
-        self.last_unchoke_time.try_lock().ok().and_then(|t| *t)
+    pub fn get_choke_time(&self, peer_addr: &str) -> Option<Instant> {
+        self.choke_states
+            .lock()
+            .unwrap()
+            .get(peer_addr)
+            .and_then(|s| s.last_choke_time)
+    }
+
+    pub fn get_unchoke_time(&self, peer_addr: &str) -> Option<Instant> {
+        self.choke_states
+            .lock()
+            .unwrap()
+            .get(peer_addr)
+            .and_then(|s| s.last_unchoke_time)
+    }
+
+    pub fn get_choking_peers(&self) -> Vec<PeerAddr> {
+        self.choke_states
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(addr, state)| {
+                if state.is_choking {
+                    Some(addr.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn remove_peer(&self, peer_addr: &str) {
+        self.choke_states.lock().unwrap().remove(peer_addr);
     }
 }
