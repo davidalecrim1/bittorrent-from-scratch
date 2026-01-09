@@ -19,7 +19,11 @@ pub struct Args {
     #[arg(long = "max-upload-rate")]
     pub max_upload_rate: Option<String>,
 
-    /// Maximum number of concurrent peer connections (default: 50)
+    /// Maximum number of concurrent peer connections (default: 20)
     #[arg(long = "max-peers")]
     pub max_peers: Option<usize>,
+
+    /// Directory to store log files (default: ~/Library/Logs/bittorrent on macOS, ./logs elsewhere)
+    #[arg(long = "log-dir")]
+    pub log_dir: Option<String>,
 }

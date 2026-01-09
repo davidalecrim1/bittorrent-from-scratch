@@ -494,7 +494,10 @@ mod tests {
 
         {
             let bf = bitfield.read().await;
-            assert!(bf.contains(&5), "Piece 5 should be available after Have message");
+            assert!(
+                bf.contains(&5),
+                "Piece 5 should be available after Have message"
+            );
             assert_eq!(bf.len(), 1, "Bitfield should contain exactly one piece");
         }
 
@@ -507,7 +510,10 @@ mod tests {
         {
             let bf = bitfield.read().await;
             assert!(bf.contains(&5), "Piece 5 should still be available");
-            assert!(bf.contains(&10), "Piece 10 should be available after second Have message");
+            assert!(
+                bf.contains(&10),
+                "Piece 10 should be available after second Have message"
+            );
             assert_eq!(bf.len(), 2, "Bitfield should contain exactly two pieces");
         }
     }

@@ -4,7 +4,8 @@ sample-run-1: clean
 		-o ./output/ \
 		--max-download-rate 2M \
 		--max-upload-rate 100K \
-		--max-peers 15
+		--max-peers 15 \
+		--log-dir ./logs
 
 sample-run-2: clean
 	LOG_LEVEL=INFO RUST_BACKTRACE=1 cargo run -- \
@@ -12,10 +13,18 @@ sample-run-2: clean
 		-o ./output/ \
 		--max-download-rate 2M \
 		--max-upload-rate 100K \
-		--max-peers 15
+		--max-peers 15 \
+		--log-dir ./logs
 
 build:
 	cargo build --release
+
+install:
+	cargo build --release
+	@mkdir -p ~/.local/bin
+	@cp target/release/bittorrent-from-scratch ~/.local/bin/bittorrent
+	@echo "Installed to ~/.local/bin/bittorrent"
+	@echo "Make sure ~/.local/bin is in your PATH"
 
 clean:
 	@rm -rf output/*

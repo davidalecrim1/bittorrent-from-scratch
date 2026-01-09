@@ -98,7 +98,7 @@ All tasks listen on a `broadcast::Receiver<()>` shutdown channel and terminate g
 
 **Download Orchestration**: The architecture cleanly separates concerns:
 - **BitTorrent** (in `bittorrent_client.rs`): Handles torrent metadata, writes completed pieces to disk, verifies file integrity, and displays download progress with timing metrics
-- **PeerManager**: Manages the peer connection pool (up to 50 concurrent peers), assigns pieces to least-busy peers based on bitfield availability, handles retry logic for failed pieces (unlimited retries), tracks completed piece indices to prevent re-queuing
+- **PeerManager**: Manages the peer connection pool (up to 20 concurrent peers by default), assigns pieces to least-busy peers based on bitfield availability, handles retry logic for failed pieces (unlimited retries), tracks completed piece indices to prevent re-queuing
 - **PeerConnection**: Handles raw TCP I/O with individual peers, downloads piece blocks using pipelined requests (5 blocks ahead), reports completion/failure via channels
 
 Pieces flow through channels: BitTorrent client requests pieces → PeerManager assigns to optimal peers → PeerConnection downloads → completion reported back to BitTorrent client for writing.
@@ -129,7 +129,7 @@ Uses `anyhow::Result<T>` for error propagation throughout the codebase. Incomple
 ### Current State
 The BitTorrent client has achieved 70%+ test coverage on core modules and has a clean separation of concerns:
 - **BitTorrent** (`bittorrent_client.rs`): Orchestrates the download process, writes pieces to disk, verifies file integrity with SHA1 hashes, displays download progress and timing metrics (duration, speed)
-- **PeerManager** (`peer_manager.rs`): Manages a pool of connected peers (up to 50), assigns pieces to least-busy peers based on bitfield availability, handles unlimited retry logic for failed pieces, tracks completed piece indices to prevent re-queuing, spawns 7 background tasks for orchestration
+- **PeerManager** (`peer_manager.rs`): Manages a pool of connected peers (up to 20 by default), assigns pieces to least-busy peers based on bitfield availability, handles unlimited retry logic for failed pieces, tracks completed piece indices to prevent re-queuing, spawns 7 background tasks for orchestration
 - **PeerConnection** (`peer_connection.rs`): Handles block-level downloads using the BitTorrent peer protocol with pipelined requests (5 blocks ahead)
 
 The client uses eager piece assignment (all pieces requested at once) for better parallelism and supports multi-peer parallel downloads. Pieces are limited to 1 concurrent download per peer to ensure stability.

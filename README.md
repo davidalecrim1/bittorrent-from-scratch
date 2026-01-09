@@ -1,12 +1,14 @@
 # BitTorrent Client (Rust)
 
-Educational BitTorrent client implementation in Rust, built from scratch to learn peer-to-peer networking, TCP async I/O with Tokio, and the BitTorrent protocol.
+Educational BitTorrent client implementation in Rust, built from scratch to explore distributed systems, network protocols, and concurrent programming.
+
+This project uses an **actor concurrency model** with **event-driven communication** through channels, enabling true parallelism while naturally preventing shared mutable state issues.
 
 ## Features
 
 - Parse .torrent files using custom Bencode decoder
 - Connect to tracker servers and discover peers
-- Download files from multiple peers concurrently (up to 50 peers)
+- Download files from multiple peers concurrently (up to 20 peers by default)
 - Block pipelining: 5 concurrent block requests per peer for optimal throughput
 - Verify downloaded pieces with SHA1 hashing
 - Automatic retry logic for failed pieces with unlimited retries
@@ -15,17 +17,51 @@ Educational BitTorrent client implementation in Rust, built from scratch to lear
 
 ## Quick Start
 
+### Run Sample Download
+
 ```bash
-cargo build
-cargo run -- -i <path-to-torrent-file> -o <output-directory>
+make sample-run-1
 ```
 
-## Architecture Overview
+### Build and Install Binary
 
-- **BitTorrent** (`bittorrent_client.rs`): Orchestrates the download process, manages torrent metadata, writes completed pieces to disk, verifies file integrity with SHA1 hashes, and displays download progress with timing metrics
-- **PeerManager** (`peer_manager.rs`): Manages a pool of connected peers (up to 50), assigns pieces to least-busy peers based on bitfield availability, handles unlimited retry logic for failed pieces, tracks completed piece indices to prevent re-queuing
-- **PeerConnection** (`peer_connection.rs`): Handles block-level downloads using the BitTorrent peer protocol with pipelined requests (5 blocks ahead), manages individual peer TCP connections
-- **Encoding** (`encoding.rs`): Custom Bencode encoder/decoder for parsing .torrent files (built from scratch, not using serde)
+In MacOS:
+```bash
+make install
+```
+
+This installs the binary as `bittorrent` in `~/.local/bin/`. Make sure `~/.local/bin` is in your PATH.
+
+### Usage
+
+```bash
+bittorrent -i <torrent-file> -o <output-directory> [options]
+
+Options:
+  -i, --input <FILE>              Path to .torrent file
+  -o, --output <DIR>              Output directory for downloaded file
+  --max-download-rate <RATE>      Max download rate (e.g., 2M, 500K)
+  --max-upload-rate <RATE>        Max upload rate (e.g., 100K, 1M)
+  --max-peers <NUM>               Maximum concurrent peers (default: 20)
+  --log-dir <DIR>                 Directory to store log files
+                                  (default: ~/Library/Logs/bittorrent on macOS, ./logs elsewhere)
+```
+
+Example:
+```bash
+bittorrent -i ./tests/testdata/ubuntu-24.04.3-desktop-amd64.iso.torrent -o ~/Downloads --max-download-rate 2M --max-peers 15
+```
+
+### Example Output
+
+```
+Peers: 5 connected, 52 available, 0 choking | Pieces: 4/24208 (0%) - 24200 pending, 4 downloading | ↓ 59.2 KB/s ↑ 59.3 KB/s
+```
+
+Watch as pieces flow in from multiple peers across the internet and reassemble into a verified file!
+
+## Architecture Overview
+![Excalidraw Diagram](./docs/system-design-bittorrent-client.excalidraw.png)
 
 ## Technical Details
 
@@ -36,7 +72,7 @@ cargo run -- -i <path-to-torrent-file> -o <output-directory>
 - **Block Size**: 16 KiB per network request (as per BitTorrent spec)
 
 ### Concurrency Architecture
-- **Peer Pool**: Up to 50 concurrent peer connections for maximum parallelism
+- **Peer Pool**: Up to 20 concurrent peer connections by default for maximum parallelism
 - **Block Pipelining**: 5 concurrent block requests per peer to keep TCP pipeline full
 - **Piece Limiting**: 1 concurrent piece download per peer to ensure stability
 - **Task Model**: Background tasks for peer connection, piece assignment, completion handling, failure retry, disconnect handling, tracker refresh, and progress reporting
@@ -49,7 +85,7 @@ cargo run -- -i <path-to-torrent-file> -o <output-directory>
 - **Disconnect Handling**: Failed pieces are automatically requeued when peers disconnect
 
 ### Performance Characteristics
-- **Theoretical Max Concurrency**: 50 peers downloading in parallel
+- **Theoretical Max Concurrency**: 20 peers downloading in parallel (configurable)
 - **Network Efficiency**: Block pipelining (5 blocks ahead) keeps TCP pipeline full
 - **Latency Optimization**: Pipelined requests reduce round-trip wait time
 - **Backpressure**: Channel-based communication provides natural backpressure
@@ -62,6 +98,17 @@ cargo test              # Run all tests
 make coverage          # Generate coverage report with tarpaulin
 ```
 
+## Download Completion
+
+When the download finishes, you'll see a summary:
+
+```
+[2026-01-08T06:40:22Z INFO] ✅ All pieces verified successfully
+[2026-01-08T06:40:22Z INFO] 📊 Download completed in 38592.34s
+[2026-01-08T06:40:22Z INFO] 📦 File size: 6051.91 MB
+[2026-01-08T06:40:22Z INFO] ⚡ Average speed: 0.16 MB/s
+```
+
 ## Limitations & Educational Notes
 
 This is an **MVP implementation** focused on learning:
@@ -69,33 +116,4 @@ This is an **MVP implementation** focused on learning:
 - Single-file torrents only (no multi-file support)
 - No DHT (Distributed Hash Table) support
 - No magnet link support
-- No peer upload (seeding) capabilities
 - Built from scratch for educational purposes
-
-## Project Structure
-
-```
-src/
-├── main.rs              # Entry point, CLI setup
-├── cli.rs               # Command-line argument parsing
-├── bittorrent_client.rs # Torrent metadata, file I/O, progress tracking
-├── peer_manager.rs      # Peer pool orchestration
-├── peer_connection.rs   # Individual peer TCP connection
-├── messages.rs          # BitTorrent peer wire protocol messages
-├── encoding.rs          # Bencode encoder/decoder
-├── tracker_client.rs    # HTTP tracker communication
-├── tcp_connector.rs     # TCP connection establishment
-├── io.rs                # Message I/O with tokio_util::codec
-└── types.rs             # Core types and data structures
-```
-
-## Code Quality
-
-```bash
-make format  # Format code with rustfmt
-make lint    # Check for issues with clippy
-```
-
-## Logging
-
-The application uses `env_logger` with debug level enabled by default. Logs are helpful for debugging protocol interactions and tracking download progress.
