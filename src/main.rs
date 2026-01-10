@@ -18,12 +18,9 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    // CLI Arguments (parse early to get log_dir)
     let args = Args::parse();
 
-    // Determine log directory - use macOS standard location if not specified
     let default_log_dir = if cfg!(target_os = "macos") {
-        // Use ~/Library/Logs/bittorrent for macOS
         std::env::var("HOME")
             .map(|home| format!("{}/Library/Logs/bittorrent", home))
             .unwrap_or_else(|_| "./logs".to_string())
@@ -33,7 +30,12 @@ async fn main() {
 
     let log_dir = args.log_dir.as_deref().unwrap_or(&default_log_dir);
     fs::create_dir_all(log_dir).unwrap();
-    let filename = format!("{}/app-{}.log", log_dir, Utc::now().format("%Y-%m-%d_%H-%M-%S"));
+
+    let filename = format!(
+        "{}/app-{}.log",
+        log_dir,
+        Utc::now().format("%Y-%m-%d_%H-%M-%S")
+    );
 
     let file = OpenOptions::new()
         .create(true)

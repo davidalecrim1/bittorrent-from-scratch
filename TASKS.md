@@ -1,6 +1,6 @@
 # BitTorrent Client - Pending Tasks
 
-This file tracks pending tasks and improvements identified in the codebase.
+:This file tracks pending tasks and improvements identified in the codebase.
 
 ## Features
 - [ ] Consider the DHT feature to download any kind of file.
