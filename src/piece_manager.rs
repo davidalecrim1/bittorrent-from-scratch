@@ -201,9 +201,13 @@ impl FilePieceManager {
             );
         }
     }
+}
 
+// Implement PieceManager trait for FilePieceManager
+#[async_trait]
+impl PieceManager for FilePieceManager {
     /// Initialize the manager with total pieces and file (call once after construction)
-    pub async fn initialize(
+    async fn initialize(
         &self,
         total_pieces: usize,
         file_path: PathBuf,
@@ -233,7 +237,7 @@ impl FilePieceManager {
 
     /// Add piece to pending queue - first state transition for a piece.
     /// Invariant: pending_count increases by 1
-    pub async fn queue_piece(&self, request: PieceDownloadRequest) -> Result<()> {
+    async fn queue_piece(&self, request: PieceDownloadRequest) -> Result<()> {
         let mut inner = self.inner.write().await;
 
         let piece_index = request.piece_index;
@@ -256,7 +260,7 @@ impl FilePieceManager {
 
     /// Pop next pending piece index from the queue
     /// Does NOT change piece state or stats - the piece is still Pending until start_download() is called
-    pub async fn pop_pending(&self) -> Option<u32> {
+    async fn pop_pending(&self) -> Option<u32> {
         let mut inner = self.inner.write().await;
         inner.pending_queue.pop_front()
     }
@@ -264,7 +268,7 @@ impl FilePieceManager {
     /// Move piece from Pending → InFlight when a peer starts downloading it.
     /// Returns the download request if successful, None if piece is not in Pending state.
     /// Invariant: pending_count -= 1, in_flight_count += 1 (net zero change to total)
-    pub async fn start_download(
+    async fn start_download(
         &self,
         piece_index: u32,
         peer_addr: String,
@@ -299,7 +303,7 @@ impl FilePieceManager {
 
     /// Move piece from InFlight → Completed after successful download and write.
     /// Invariant: in_flight_count -= 1, completed_count += 1 (net zero change to total)
-    pub async fn complete_piece(&self, piece_index: u32, data: Vec<u8>) -> Result<()> {
+    async fn complete_piece(&self, piece_index: u32, data: Vec<u8>) -> Result<()> {
         let mut inner = self.inner.write().await;
 
         // Check state first
@@ -349,7 +353,7 @@ impl FilePieceManager {
     /// Move piece from InFlight → Pending when download fails and needs retry.
     /// Returns retry count if successful, None if piece is not in InFlight state.
     /// Invariant: in_flight_count -= 1, pending_count += 1 (net zero change to total)
-    pub async fn retry_piece(&self, piece_index: u32, push_front: bool) -> Option<u32> {
+    async fn retry_piece(&self, piece_index: u32, push_front: bool) -> Option<u32> {
         let mut inner = self.inner.write().await;
 
         let state = inner.states.get_mut(&piece_index)?;
@@ -401,17 +405,17 @@ impl FilePieceManager {
         }
     }
 
-    pub async fn get_snapshot(&self) -> PieceStats {
+    async fn get_snapshot(&self) -> PieceStats {
         let inner = self.inner.read().await;
         inner.stats.clone()
     }
 
-    pub async fn is_completed(&self, piece_index: u32) -> bool {
+    async fn is_completed(&self, piece_index: u32) -> bool {
         let inner = self.inner.read().await;
         inner.completed_set.contains(&piece_index)
     }
 
-    pub async fn is_pending(&self, piece_index: u32) -> bool {
+    async fn is_pending(&self, piece_index: u32) -> bool {
         let inner = self.inner.read().await;
         matches!(
             inner.states.get(&piece_index),
@@ -419,7 +423,7 @@ impl FilePieceManager {
         )
     }
 
-    pub async fn is_in_flight(&self, piece_index: u32) -> bool {
+    async fn is_in_flight(&self, piece_index: u32) -> bool {
         let inner = self.inner.read().await;
         matches!(
             inner.states.get(&piece_index),
@@ -427,7 +431,7 @@ impl FilePieceManager {
         )
     }
 
-    pub async fn get_peer_pieces(&self, peer_addr: &str) -> Vec<u32> {
+    async fn get_peer_pieces(&self, peer_addr: &str) -> Vec<u32> {
         let inner = self.inner.read().await;
 
         inner
@@ -443,7 +447,7 @@ impl FilePieceManager {
     }
 
     /// Get count of pieces being downloaded by a specific peer
-    pub async fn get_peer_piece_count(&self, peer_addr: &str) -> usize {
+    async fn get_peer_piece_count(&self, peer_addr: &str) -> usize {
         let inner = self.inner.read().await;
 
         inner
@@ -459,7 +463,7 @@ impl FilePieceManager {
     }
 
     /// Check if a specific peer is downloading a specific piece
-    pub async fn is_peer_downloading_piece(&self, peer_addr: &str, piece_index: u32) -> bool {
+    async fn is_peer_downloading_piece(&self, peer_addr: &str, piece_index: u32) -> bool {
         let inner = self.inner.read().await;
 
         match inner.states.get(&piece_index) {
@@ -471,7 +475,7 @@ impl FilePieceManager {
     }
 
     /// Get request for a piece
-    pub async fn get_request(&self, piece_index: u32) -> Option<PieceDownloadRequest> {
+    async fn get_request(&self, piece_index: u32) -> Option<PieceDownloadRequest> {
         let inner = self.inner.read().await;
 
         match inner.states.get(&piece_index)? {
@@ -482,7 +486,7 @@ impl FilePieceManager {
     }
 
     /// Get the peer address for a piece (if in-flight)
-    pub async fn get_peer_for_piece(&self, piece_index: u32) -> Option<String> {
+    async fn get_peer_for_piece(&self, piece_index: u32) -> Option<String> {
         let inner = self.inner.read().await;
 
         match inner.states.get(&piece_index)? {
@@ -492,7 +496,7 @@ impl FilePieceManager {
     }
 
     /// Get the retry count for a piece
-    pub async fn get_retry_count(&self, piece_index: u32) -> Option<u32> {
+    async fn get_retry_count(&self, piece_index: u32) -> Option<u32> {
         let inner = self.inner.read().await;
 
         match inner.states.get(&piece_index)? {
@@ -504,7 +508,7 @@ impl FilePieceManager {
 
     /// Check for stale downloads that have exceeded the timeout
     /// Returns list of (piece_index, peer_addr) for pieces that should be retried
-    pub async fn get_stale_downloads(&self) -> Vec<(u32, String)> {
+    async fn get_stale_downloads(&self) -> Vec<(u32, String)> {
         let inner = self.inner.read().await;
         let now = Instant::now();
 
@@ -526,7 +530,7 @@ impl FilePieceManager {
 
     /// Re-queue a piece when for some reason the popped piece was not assigned.
     /// Only affects the queue, not the piece state or stats (piece must already be Pending).
-    pub async fn requeue_piece(&self, piece_index: u32) {
+    async fn requeue_piece(&self, piece_index: u32) {
         let mut inner = self.inner.write().await;
 
         // Only requeue if piece still exists and is actually in Pending state
@@ -537,7 +541,7 @@ impl FilePieceManager {
     }
 
     /// Read a block for upload/seeding
-    pub async fn read_block(
+    async fn read_block(
         &self,
         piece_index: u32,
         begin: u32,
@@ -571,14 +575,14 @@ impl FilePieceManager {
     }
 
     /// Check if piece is completed
-    pub async fn has_piece(&self, piece_index: u32) -> bool {
+    async fn has_piece(&self, piece_index: u32) -> bool {
         let inner = self.inner.read().await;
         inner.completed_set.contains(&piece_index)
     }
 
     /// Get bitfield representing which pieces we have
     /// Returns None if we don't have any pieces
-    pub async fn get_bitfield(&self) -> Option<Vec<bool>> {
+    async fn get_bitfield(&self) -> Option<Vec<bool>> {
         let inner = self.inner.read().await;
         let total_pieces = inner.stats.total_pieces;
         if total_pieces == 0 {
@@ -597,7 +601,7 @@ impl FilePieceManager {
 
     /// Verify all completed pieces by reading from file and checking hashes
     /// Returns indices of pieces that failed verification
-    pub async fn verify_completed_pieces(&self, expected_hashes: &[[u8; 20]]) -> Result<Vec<u32>> {
+    async fn verify_completed_pieces(&self, expected_hashes: &[[u8; 20]]) -> Result<Vec<u32>> {
         let inner = self.inner.read().await;
         let file_path = inner
             .file_path
@@ -669,113 +673,6 @@ impl FilePieceManager {
         }
 
         Ok(failed_pieces)
-    }
-}
-
-// Implement PieceManager trait for PieceManager
-#[async_trait]
-impl PieceManager for FilePieceManager {
-    async fn initialize(
-        &self,
-        total_pieces: usize,
-        file_path: PathBuf,
-        file_size: u64,
-        piece_length: usize,
-    ) -> Result<()> {
-        Self::initialize(self, total_pieces, file_path, file_size, piece_length).await
-    }
-
-    async fn queue_piece(&self, request: PieceDownloadRequest) -> Result<()> {
-        Self::queue_piece(self, request).await
-    }
-
-    async fn complete_piece(&self, piece_index: u32, data: Vec<u8>) -> Result<()> {
-        Self::complete_piece(self, piece_index, data).await
-    }
-
-    async fn read_block(
-        &self,
-        piece_index: u32,
-        begin: u32,
-        length: u32,
-    ) -> Result<Option<Vec<u8>>> {
-        Self::read_block(self, piece_index, begin, length).await
-    }
-
-    async fn has_piece(&self, piece_index: u32) -> bool {
-        Self::has_piece(self, piece_index).await
-    }
-
-    async fn pop_pending(&self) -> Option<u32> {
-        Self::pop_pending(self).await
-    }
-
-    async fn start_download(
-        &self,
-        piece_index: u32,
-        peer_addr: String,
-    ) -> Option<PieceDownloadRequest> {
-        Self::start_download(self, piece_index, peer_addr).await
-    }
-
-    async fn retry_piece(&self, piece_index: u32, push_front: bool) -> Option<u32> {
-        Self::retry_piece(self, piece_index, push_front).await
-    }
-
-    async fn get_snapshot(&self) -> PieceStats {
-        Self::get_snapshot(self).await
-    }
-
-    async fn is_pending(&self, piece_index: u32) -> bool {
-        Self::is_pending(self, piece_index).await
-    }
-
-    async fn is_in_flight(&self, piece_index: u32) -> bool {
-        Self::is_in_flight(self, piece_index).await
-    }
-
-    async fn is_completed(&self, piece_index: u32) -> bool {
-        Self::is_completed(self, piece_index).await
-    }
-
-    async fn get_peer_pieces(&self, peer_addr: &str) -> Vec<u32> {
-        Self::get_peer_pieces(self, peer_addr).await
-    }
-
-    async fn get_peer_piece_count(&self, peer_addr: &str) -> usize {
-        Self::get_peer_piece_count(self, peer_addr).await
-    }
-
-    async fn is_peer_downloading_piece(&self, peer_addr: &str, piece_index: u32) -> bool {
-        Self::is_peer_downloading_piece(self, peer_addr, piece_index).await
-    }
-
-    async fn get_request(&self, piece_index: u32) -> Option<PieceDownloadRequest> {
-        Self::get_request(self, piece_index).await
-    }
-
-    async fn get_peer_for_piece(&self, piece_index: u32) -> Option<String> {
-        Self::get_peer_for_piece(self, piece_index).await
-    }
-
-    async fn get_retry_count(&self, piece_index: u32) -> Option<u32> {
-        Self::get_retry_count(self, piece_index).await
-    }
-
-    async fn get_stale_downloads(&self) -> Vec<(u32, String)> {
-        Self::get_stale_downloads(self).await
-    }
-
-    async fn requeue_piece(&self, piece_index: u32) {
-        Self::requeue_piece(self, piece_index).await
-    }
-
-    async fn verify_completed_pieces(&self, expected_hashes: &[[u8; 20]]) -> Result<Vec<u32>> {
-        Self::verify_completed_pieces(self, expected_hashes).await
-    }
-
-    async fn get_bitfield(&self) -> Option<Vec<bool>> {
-        FilePieceManager::get_bitfield(self).await
     }
 }
 

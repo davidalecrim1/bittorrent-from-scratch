@@ -889,9 +889,7 @@ impl PeerManager {
                     retry_count += 1;
                     warn!(
                         "DHT found 0 peers, retrying in {} seconds (attempt {}/{})",
-                        RETRY_DELAY_SECS,
-                        retry_count,
-                        MAX_IMMEDIATE_RETRIES
+                        RETRY_DELAY_SECS, retry_count, MAX_IMMEDIATE_RETRIES
                     );
 
                     tokio::select! {
