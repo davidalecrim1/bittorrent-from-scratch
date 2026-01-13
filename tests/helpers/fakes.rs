@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use bittorrent_from_scratch::bandwidth_limiter::BandwidthLimiter;
+use bittorrent_from_scratch::dht::DhtClient;
 use bittorrent_from_scratch::io::MessageIO;
 use bittorrent_from_scratch::peer_manager::PeerConnectionFactory;
 use bittorrent_from_scratch::peer_messages::PeerMessage;
@@ -226,4 +227,43 @@ pub fn create_test_broadcast_receiver()
     let (tx, rx) = tokio::sync::broadcast::channel(100);
     std::mem::forget(tx); // Leak sender to keep channel open
     rx
+}
+
+/// Mock DHT client for testing
+pub struct MockDhtClient {
+    responses: Mutex<VecDeque<Result<Vec<Peer>>>>,
+}
+
+impl MockDhtClient {
+    pub fn new() -> Self {
+        Self {
+            responses: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    pub async fn expect_get_peers(&self, peers: Vec<Peer>) {
+        self.responses.lock().await.push_back(Ok(peers));
+    }
+
+    pub async fn expect_failure(&self, error_msg: &str) {
+        self.responses
+            .lock()
+            .await
+            .push_back(Err(anyhow::anyhow!(error_msg.to_string())));
+    }
+}
+
+#[async_trait]
+impl DhtClient for MockDhtClient {
+    async fn get_peers(&self, _info_hash: [u8; 20]) -> Result<Vec<Peer>> {
+        self.responses
+            .lock()
+            .await
+            .pop_front()
+            .unwrap_or_else(|| Ok(vec![]))
+    }
+
+    async fn announce(&self, _info_hash: [u8; 20], _port: u16) -> Result<()> {
+        Ok(())
+    }
 }

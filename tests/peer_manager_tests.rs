@@ -163,7 +163,7 @@ mod tests {
         let peer_manager = Arc::new(peer_manager);
 
         let result = peer_manager
-            .start("http://tracker.example.com/announce".to_string())
+            .start(Some("http://tracker.example.com/announce".to_string()))
             .await;
 
         assert!(result.is_ok(), "start should return a handle");
@@ -955,7 +955,7 @@ mod tests {
 
         let handle = peer_manager
             .clone()
-            .start("http://tracker.example.com".to_string())
+            .start(Some("http://tracker.example.com".to_string()))
             .await
             .unwrap();
 

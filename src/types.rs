@@ -533,5 +533,4 @@ mod tests {
 
         assert_eq!(connected_peer.peer(), &peer);
     }
-
 }

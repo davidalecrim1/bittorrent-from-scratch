@@ -31,7 +31,14 @@ impl Encoder {
                 let res = self.from_dictionary(d)?;
                 Ok(res)
             }
-            BencodeTypes::Raw(r) => Ok(r),
+            BencodeTypes::Raw(r) => {
+                let len = r.len();
+                let prefix = format!("{}:", len).into_bytes();
+                let mut res = Vec::with_capacity(prefix.len() + r.len());
+                res.extend_from_slice(&prefix);
+                res.extend_from_slice(&r);
+                Ok(res)
+            }
         }
     }
 
@@ -155,8 +162,20 @@ impl Decoder {
         }
 
         if self.is_string(bytes) {
-            let (n, val) = self.decode_string(bytes)?;
-            return Ok((n, BencodeTypes::String(val)));
+            let (n, len) = self.get_next_data_len(bytes)?;
+            let start = n + 1;
+            let end = start + len;
+
+            if end > bytes.len() {
+                return Err(anyhow!("String length exceeds buffer"));
+            }
+
+            let string_bytes = &bytes[start..end];
+
+            match std::str::from_utf8(string_bytes) {
+                Ok(s) => return Ok((end, BencodeTypes::String(s.to_string()))),
+                Err(_) => return Ok((end, BencodeTypes::Raw(string_bytes.to_vec()))),
+            }
         }
 
         Err(anyhow!("the provided data is not a valid primitive"))

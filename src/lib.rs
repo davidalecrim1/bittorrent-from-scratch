@@ -2,6 +2,7 @@ pub mod bandwidth_limiter;
 pub mod bandwidth_stats;
 pub mod bittorrent_client;
 pub mod cli;
+pub mod dht;
 pub mod download_state;
 pub mod encoding;
 pub mod error;

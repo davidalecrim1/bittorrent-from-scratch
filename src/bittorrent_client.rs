@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use log::{debug, info};
+use log::{debug, info, warn};
 use sha1::{Digest, Sha1};
 use std::sync::Arc;
 use std::time::Instant;
@@ -152,6 +152,11 @@ impl BitTorrent {
 
         let file_size = self.get_file_size()?;
         let announce_url = self.get_announce_url()?;
+
+        if announce_url.is_none() {
+            warn!("No announce URL found in torrent file - tracker will not be used");
+        }
+
         let piece_length = self.get_piece_length()?;
         let num_pieces = self.get_num_pieces()?;
         let pieces_hashes = self.get_pieces_hashes()?;
@@ -282,18 +287,16 @@ impl BitTorrent {
         }
     }
 
-    fn get_announce_url(&self) -> Result<String> {
+    fn get_announce_url(&self) -> Result<Option<String>> {
         let metadata = self
             .metadata
             .as_ref()
             .ok_or_else(|| anyhow!("Metadata not loaded"))?;
 
-        match metadata
-            .get("announce")
-            .ok_or_else(|| anyhow!("announce field not found"))?
-        {
-            BencodeTypes::String(s) => Ok(s.clone()),
-            _ => Err(anyhow!("announce field is not a string")),
+        match metadata.get("announce") {
+            Some(BencodeTypes::String(s)) => Ok(Some(s.clone())),
+            Some(_) => Err(anyhow!("announce field is not a string")),
+            None => Ok(None),
         }
     }
 

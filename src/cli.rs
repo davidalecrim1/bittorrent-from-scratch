@@ -26,4 +26,12 @@ pub struct Args {
     /// Directory to store log files (default: ~/Library/Logs/bittorrent on macOS, ./logs elsewhere)
     #[arg(long = "log-dir")]
     pub log_dir: Option<String>,
+
+    /// Disable HTTP tracker for peer discovery (DHT only)
+    #[arg(long = "no-tracker")]
+    pub no_tracker: bool,
+
+    /// Disable DHT for peer discovery (tracker only)
+    #[arg(long = "no-dht")]
+    pub no_dht: bool,
 }

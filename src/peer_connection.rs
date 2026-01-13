@@ -33,7 +33,7 @@ const OUTBOUND_CHANNEL_SIZE: usize = 1024;
 const INBOUND_CHANNEL_SIZE: usize = 1024;
 const DOWNLOAD_REQUEST_CHANNEL_SIZE: usize = 256;
 
-const MAX_RETRIES_HANDSHAKE: usize = 2;
+const MAX_RETRIES_HANDSHAKE: usize = 3;
 
 pub struct PieceDownloadTask {
     pub piece_index: u32,

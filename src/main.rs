@@ -5,16 +5,21 @@ use bittorrent_from_scratch::{
     bandwidth_limiter::{BandwidthLimiter, parse_bandwidth_arg},
     bittorrent_client::BitTorrent,
     cli::Args,
+    dht::{DefaultUdpSocketFactory, DhtClient, DhtManager, UdpMessageIO, UdpSocketFactory},
     encoding::{Decoder, Encoder},
     error::AppError,
-    peer_manager::PeerManager,
+    peer_manager::{DefaultPeerConnectionFactory, PeerManager},
+    tracker_client::{HttpTrackerClient, TrackerClient},
 };
 use chrono::Utc;
 use clap::Parser;
 use env_logger::{Builder, Target};
-use log::{LevelFilter, debug, info};
+use log::{LevelFilter, debug, info, warn};
 use reqwest::Client;
 use std::sync::Arc;
+use tokio::sync::broadcast;
+
+const DHT_PORT: u16 = 6881;
 
 #[tokio::main]
 async fn main() {
@@ -94,9 +99,81 @@ async fn main() {
     let http_client = Client::new();
     let max_peers = args.max_peers.unwrap_or(20);
     info!("Max concurrent peers: {}", max_peers);
-    let peer_manager = PeerManager::new(
-        Decoder {},
-        http_client,
+
+    if args.no_tracker && args.no_dht {
+        eprintln!("Error: Cannot disable both tracker and DHT. At least one must be enabled.");
+        std::process::exit(1);
+    }
+
+    let (_dht_shutdown_tx, dht_client): (
+        Option<broadcast::Sender<()>>,
+        Option<Arc<dyn DhtClient>>,
+    ) = if args.no_dht {
+        info!("DHT disabled via --no-dht flag");
+        (None, None)
+    } else {
+        let socket_factory = DefaultUdpSocketFactory;
+        let dht_bind_addr = format!("0.0.0.0:{}", DHT_PORT);
+        let udp_socket = match socket_factory.bind(&dht_bind_addr).await {
+            Ok(socket) => {
+                if let Ok(local_addr) = socket.local_addr() {
+                    info!("DHT listening on UDP {}", local_addr);
+                } else {
+                    info!("DHT listening on UDP port {}", DHT_PORT);
+                }
+                socket
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to bind UDP port {}: {}, trying ephemeral port",
+                    DHT_PORT, e
+                );
+                socket_factory
+                    .bind("0.0.0.0:0")
+                    .await
+                    .expect("Failed to bind UDP socket for DHT on ephemeral port")
+            }
+        };
+
+        let message_io = Arc::new(UdpMessageIO::new(udp_socket, Encoder {}, Decoder {}));
+        let dht_manager = Arc::new(DhtManager::new(message_io));
+
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+        dht_manager
+            .clone()
+            .spawn_message_handler(shutdown_tx.subscribe(), Some(ready_tx));
+        dht_manager
+            .clone()
+            .spawn_bootstrap_refresh(shutdown_tx.subscribe());
+        dht_manager
+            .clone()
+            .spawn_query_cleanup(shutdown_tx.subscribe());
+
+        ready_rx.await.expect("Message handler failed to start");
+        info!("DHT message handler ready, starting bootstrap");
+
+        if let Err(e) = dht_manager.bootstrap().await {
+            log::warn!("DHT bootstrap failed: {}", e);
+        } else {
+            info!("DHT bootstrapped successfully");
+        }
+
+        (Some(shutdown_tx), Some(dht_manager as Arc<dyn DhtClient>))
+    };
+
+    let tracker_client = if args.no_tracker {
+        info!("HTTP tracker disabled via --no-tracker flag");
+        None
+    } else {
+        Some(Arc::new(HttpTrackerClient::new(http_client, Decoder {})) as Arc<dyn TrackerClient>)
+    };
+
+    let peer_manager = PeerManager::new_with_dht(
+        tracker_client,
+        dht_client,
+        Arc::new(DefaultPeerConnectionFactory),
         bandwidth_limiter,
         Arc::new(BandwidthStats::default()),
         Arc::new(PeerConnectionStats::default()),

@@ -20,15 +20,17 @@ cargo test
 ```
 
 **Test Organization:**
-- **Unit tests**: Located in `src/**` files using `#[cfg(test)]` modules (25 tests)
-- **Integration tests**: Located in `tests/` directory for black-box testing of public APIs (72 tests)
+- **Unit tests**: Located in `src/**` files using `#[cfg(test)]` modules (26 tests including DHT)
+- **Integration tests**: Located in `tests/` directory for black-box testing of public APIs (87 tests)
   - `tests/encoding_tests.rs`: Bencode encoding/decoding tests (15 tests)
   - `tests/messages_tests.rs`: Peer protocol message serialization tests (28 tests)
-  - `tests/peer_connection_tests.rs`: PeerConnection protocol logic tests (16 tests)
+  - `tests/peer_connection_tests.rs`: PeerConnection protocol logic tests (24 tests)
   - `tests/peer_manager_tests.rs`: PeerManager orchestration tests (28 tests)
-  - `tests/helpers/fakes.rs`: Test doubles (FakeMessageIO, MockTrackerClient, MockPeerConnectionFactory)
+  - `tests/dht_tests.rs`: DHT protocol and integration tests (15 tests)
+  - `tests/bittorrent_client_tests.rs`: File I/O and piece verification tests (8 tests)
+  - `tests/helpers/fakes.rs`: Test doubles (FakeMessageIO, MockTrackerClient, MockDhtClient, MockPeerConnectionFactory)
 
-**Total: 97 tests achieving 70%+ coverage on core modules**
+**Total: 113 tests achieving 70%+ coverage on core modules**
 
 ### Coverage
 ```bash
@@ -68,6 +70,14 @@ The application uses `env_logger` with debug level enabled by default in main.rs
 - **tracker_client.rs**: HTTP tracker communication and TrackerClient trait
 - **tcp_connector.rs**: TCP connection establishment and TcpStreamFactory trait
 - **io.rs**: Message I/O implementation using tokio_util::codec and MessageIO trait
+- **dht/**: DHT (Distributed Hash Table) implementation for trackerless peer discovery
+  - **types.rs**: DHT protocol types (NodeId, KrpcMessage, Query/Response enums)
+  - **routing_table.rs**: Kademlia routing table with 160 k-buckets
+  - **socket_factory.rs**: UDP socket abstraction (UdpSocketFactory trait)
+  - **message_io.rs**: KRPC message serialization over UDP (DhtMessageIO trait)
+  - **query_manager.rs**: In-flight query tracking with timeout/retry
+  - **manager.rs**: DHT orchestration (DhtManager, background tasks)
+  - **client.rs**: DhtClient trait and production implementation
 
 ### Key Architecture Patterns
 
@@ -77,9 +87,10 @@ The application uses `env_logger` with debug level enabled by default in main.rs
 - **TcpStreamFactory** (in `tcp_connector.rs`): Abstracts TCP connection establishment (real vs in-memory)
 - **MessageIO** (in `io.rs`): Abstracts peer message I/O (TCP streams vs channels)
 - **TrackerClient** (in `tracker_client.rs`): Abstracts HTTP tracker communication (reqwest vs mock responses)
+- **DhtClient** (in `dht/client.rs`): Abstracts DHT peer discovery (UDP network vs mock responses)
 - **PeerConnectionFactory** (in `peer_manager.rs`): Abstracts peer connection lifecycle (real TCP vs test doubles)
 
-Production code uses concrete implementations (`DefaultTcpStreamFactory`, `TcpMessageIO`, `HttpTrackerClient`, `DefaultPeerConnectionFactory`), while tests inject fakes (`FakeMessageIO`) and mocks (`MockTrackerClient`, `MockPeerConnectionFactory`).
+Production code uses concrete implementations (`DefaultTcpStreamFactory`, `TcpMessageIO`, `HttpTrackerClient`, `DhtManager`, `DefaultPeerConnectionFactory`), while tests inject fakes (`FakeMessageIO`) and mocks (`MockTrackerClient`, `MockDhtClient`, `MockPeerConnectionFactory`).
 
 **Peer Connection Model**: Each `PeerConnection` splits TCP stream into reader/writer tasks after handshake. Inbound messages flow through `inbound_tx` channel, outbound messages through `outbound_tx` channel. This avoids locking and provides natural backpressure.
 
@@ -91,10 +102,18 @@ Production code uses concrete implementations (`DefaultTcpStreamFactory`, `TcpMe
 - **Completion handler**: Processes completed pieces, forwards to BitTorrent client, tracks progress
 - **Failure handler**: Handles failed pieces with retry logic (up to 3 attempts)
 - **Disconnect handler**: Cleans up disconnected peers, requeues in-flight pieces
-- **Tracker refresh task**: Periodically announces to tracker for new peers
+- **Tracker refresh task**: Periodically announces to HTTP tracker for new peers (every 30 minutes)
+- **DHT refresh task**: Periodically queries DHT for new peers (every 30 minutes)
 - **Progress reporter**: Displays download progress once per minute
 
 All tasks listen on a `broadcast::Receiver<()>` shutdown channel and terminate gracefully via `tokio::select!` when `PeerManagerHandle.shutdown()` is called.
+
+**DHT Background Tasks**: DhtManager spawns 3 additional background tasks:
+- **Message handler**: Listens on UDP socket, dispatches DHT responses to QueryManager
+- **Bootstrap refresh**: Re-bootstraps DHT routing table every 15 minutes
+- **Query cleanup**: Removes expired queries (5-second timeout) every 1 second
+
+These tasks are spawned in main.rs and receive shutdown signals via `broadcast::channel()`.
 
 **Download Orchestration**: The architecture cleanly separates concerns:
 - **BitTorrent** (in `bittorrent_client.rs`): Handles torrent metadata, writes completed pieces to disk, verifies file integrity, and displays download progress with timing metrics
@@ -112,6 +131,8 @@ Pieces flow through channels: BitTorrent client requests pieces → PeerManager 
 **Info Hash**: Computed as SHA1 of the bencoded "info" dictionary from the torrent file.
 
 **Tracker Protocol**: Uses compact format (compact=1) to get peer list as binary data.
+
+**DHT Protocol**: Implements Kademlia-based DHT following BEP 5. Uses KRPC protocol over UDP with bencode encoding. Enables trackerless peer discovery via iterative lookups (alpha=3 parallel queries, max 8 iterations). See docs/DHT.md for detailed protocol documentation.
 
 ## Important Implementation Details
 
@@ -326,6 +347,12 @@ Following Rust async testing best practices (Tokio, Jon Gjengset's Rust for Rust
   - `expect_announce(peers, interval)`: Queue successful response
   - `expect_failure(error_msg)`: Queue error response
   - Falls back to empty peer list if queue exhausted
+
+- **MockDhtClient**: VecDeque-based DHT response mock using `tokio::sync::Mutex`
+  - `expect_get_peers(peers)`: Queue successful DHT peer discovery response
+  - `expect_failure(error_msg)`: Queue error response
+  - Falls back to empty peer list if queue exhausted
+  - Mirrors MockTrackerClient pattern for consistency
 
 - **MockPeerConnector**: Always-successful peer connection mock
   - Returns ConnectedPeer with empty bitfield

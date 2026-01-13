@@ -11,9 +11,12 @@ use crate::types::{
     AnnounceRequest, ConnectedPeer, FailedPiece, Peer, PeerAddr, PeerConnection, PeerDisconnected,
     PeerEvent, PeerManagerConfig, PeerManagerHandle, PieceDownloadRequest,
 };
+
+use crate::dht::DhtClient;
+
 use crate::{BandwidthStats, PeerConnectionStats};
 use async_trait::async_trait;
-use log::{debug, info};
+use log::{debug, info, warn};
 use reqwest::Client;
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::time;
@@ -82,7 +85,8 @@ impl PeerConnectionFactory for DefaultPeerConnectionFactory {
 }
 
 pub struct PeerManager {
-    tracker_client: Arc<dyn TrackerClient>,
+    tracker_client: Option<Arc<dyn TrackerClient>>,
+    dht_client: Option<Arc<dyn DhtClient>>,
 
     // Manages the Peers based on the peer addr
     available_peers: Arc<RwLock<HashMap<PeerAddr, Peer>>>,
@@ -135,6 +139,26 @@ impl PeerManager {
         connection_stats: Arc<PeerConnectionStats>,
         max_peers: usize,
     ) -> Self {
+        Self::new_with_dht(
+            Some(tracker_client),
+            None,
+            connector,
+            bandwidth_limiter,
+            bandwidth_stats,
+            connection_stats,
+            max_peers,
+        )
+    }
+
+    pub fn new_with_dht(
+        tracker_client: Option<Arc<dyn TrackerClient>>,
+        dht_client: Option<Arc<dyn crate::dht::DhtClient>>,
+        connector: Arc<dyn PeerConnectionFactory>,
+        bandwidth_limiter: Option<BandwidthLimiter>,
+        bandwidth_stats: Arc<BandwidthStats>,
+        connection_stats: Arc<PeerConnectionStats>,
+        max_peers: usize,
+    ) -> Self {
         let handshake_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_HANDSHAKES));
 
         // Create broadcast channel for messages with capacity of 100
@@ -142,6 +166,7 @@ impl PeerManager {
 
         Self {
             tracker_client,
+            dht_client,
             available_peers: Arc::new(RwLock::new(HashMap::new())),
             connected_peers: Arc::new(RwLock::new(HashMap::new())),
             config: None,
@@ -250,7 +275,7 @@ impl PeerManager {
         self.piece_manager.is_in_flight(piece_index).await
     }
 
-    pub async fn start(self: Arc<Self>, announce_url: String) -> Result<PeerManagerHandle> {
+    pub async fn start(self: Arc<Self>, announce_url: Option<String>) -> Result<PeerManagerHandle> {
         let config = self.config()?;
 
         let info_hash = config.info_hash;
@@ -340,14 +365,24 @@ impl PeerManager {
             }
         });
 
-        self.clone()
-            .watch_tracker(
-                Duration::from_secs(WATCH_TRACKER_DELAY),
-                announce_url,
-                info_hash,
-                file_size,
-            )
-            .await?;
+        if self.tracker_client.is_some() {
+            if let Some(url) = announce_url {
+                self.clone()
+                    .watch_tracker(
+                        Duration::from_secs(WATCH_TRACKER_DELAY),
+                        url,
+                        info_hash,
+                        file_size,
+                    )
+                    .await?;
+            } else {
+                warn!("Tracker client available but no announce URL provided");
+            }
+        }
+
+        if self.dht_client.is_some() {
+            tokio::task::spawn(self.clone().watch_dht(info_hash, shutdown_rx.resubscribe()));
+        }
 
         Ok(PeerManagerHandle::new(shutdown_tx))
     }
@@ -512,10 +547,9 @@ impl PeerManager {
         event_tx: mpsc::UnboundedSender<PeerEvent>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) {
-        // Connect immediately on startup (don't wait for first interval tick)
-        let _ = self.connect_with_peers(max_peers, event_tx.clone()).await;
-
         let mut interval = tokio::time::interval(Duration::from_secs(PEER_CONNECTOR_INTERVAL_SECS));
+        interval.tick().await;
+
         loop {
             tokio::select! {
                 _ = shutdown_rx.recv() => {
@@ -813,6 +847,121 @@ impl PeerManager {
         Ok(())
     }
 
+    pub async fn watch_dht(
+        self: Arc<Self>,
+        info_hash: [u8; 20],
+        mut shutdown_rx: broadcast::Receiver<()>,
+    ) {
+        let Some(dht_client) = self.dht_client.clone() else {
+            return;
+        };
+
+        let available_peers = self.available_peers.clone();
+        let peer_manager = self.clone();
+
+        let mut retry_count = 0;
+        const MAX_IMMEDIATE_RETRIES: u32 = 3;
+        const RETRY_DELAY_SECS: u64 = 30;
+
+        loop {
+            match dht_client.get_peers(info_hash).await {
+                Ok(peers) => {
+                    let mut hash_map = available_peers.write().await;
+                    for peer in &peers {
+                        hash_map.insert(peer.get_addr(), peer.clone());
+                    }
+
+                    if retry_count == 0 {
+                        info!("DHT found {} initial peers", peers.len());
+                    } else {
+                        info!("DHT found {} peers on retry {}", peers.len(), retry_count);
+                    }
+                    drop(hash_map);
+
+                    peer_manager
+                        .drop_useless_peers_if_at_capacity(peer_manager.max_peers)
+                        .await;
+
+                    if !peers.is_empty() || retry_count >= MAX_IMMEDIATE_RETRIES {
+                        break;
+                    }
+
+                    retry_count += 1;
+                    warn!(
+                        "DHT found 0 peers, retrying in {} seconds (attempt {}/{})",
+                        RETRY_DELAY_SECS,
+                        retry_count,
+                        MAX_IMMEDIATE_RETRIES
+                    );
+
+                    tokio::select! {
+                        _ = shutdown_rx.recv() => {
+                            debug!("DHT watch task shutting down during retry");
+                            return;
+                        }
+                        _ = time::sleep(Duration::from_secs(RETRY_DELAY_SECS)) => {}
+                    }
+                }
+                Err(e) => {
+                    if retry_count == 0 {
+                        warn!("Initial DHT request failed: {}", e);
+                    } else {
+                        warn!("DHT request failed on retry {}: {}", retry_count, e);
+                    }
+
+                    if retry_count >= MAX_IMMEDIATE_RETRIES {
+                        break;
+                    }
+
+                    retry_count += 1;
+                    tokio::select! {
+                        _ = shutdown_rx.recv() => {
+                            debug!("DHT watch task shutting down during error retry");
+                            return;
+                        }
+                        _ = time::sleep(Duration::from_secs(RETRY_DELAY_SECS)) => {}
+                    }
+                }
+            }
+        }
+
+        let mut interval = time::interval(Duration::from_secs(2 * 60));
+        interval.tick().await;
+
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    debug!("DHT watch task shutting down");
+                    break;
+                }
+                _ = interval.tick() => {
+                    match dht_client.get_peers(info_hash).await {
+                        Ok(peers) => {
+                            let mut hash_map = available_peers.write().await;
+                            let previous_count = hash_map.len();
+                            for peer in &peers {
+                                hash_map.insert(peer.get_addr(), peer.clone());
+                            }
+                            debug!(
+                                "DHT updated available_peers: {} total (added {} new peers)",
+                                hash_map.len(),
+                                hash_map.len().saturating_sub(previous_count)
+                            );
+                            drop(hash_map);
+
+                            peer_manager
+                                .drop_useless_peers_if_at_capacity(peer_manager.max_peers)
+                                .await;
+                        }
+                        Err(e) => {
+                            debug!("DHT request failed: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Fetches peers from the tracker server to connect with.
     pub async fn get_peers(
         &self,
@@ -903,6 +1052,10 @@ impl PeerManager {
         info_hash: [u8; 20],
         file_size: usize,
     ) -> Result<Vec<Peer>> {
+        let Some(tracker_client) = &self.tracker_client else {
+            anyhow::bail!("Tracker client is disabled");
+        };
+
         let request = AnnounceRequest {
             endpoint: endpoint.to_string(),
             info_hash: info_hash.to_vec(),
@@ -913,7 +1066,7 @@ impl PeerManager {
             left: file_size,
         };
 
-        let response = self.tracker_client.announce(request).await?;
+        let response = tracker_client.announce(request).await?;
         Ok(response.peers)
     }
 
@@ -1047,12 +1200,12 @@ impl PeerManager {
         if peers_to_connect.is_empty() {
             if needed > 0 {
                 debug!(
-                    "Peer connector heartbeat: need {} more peers but no new peers available (available={}, connected={})",
+                    "Need {} more peers but no new peers available (available={}, connected={})",
                     needed, available_count, connected_count
                 );
             } else {
                 debug!(
-                    "Peer connector heartbeat: at capacity ({}/{} peers connected)",
+                    "At capacity ({}/{} peers connected)",
                     connected_count, max_peers
                 );
             }

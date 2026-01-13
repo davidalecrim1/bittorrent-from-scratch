@@ -136,7 +136,8 @@ fn test_encode_raw_bytes() {
     let original = BencodeTypes::Raw(raw_data.clone());
     let encoded = encoder.from_bencode_types(original).unwrap();
 
-    assert_eq!(encoded, raw_data);
+    let expected = b"4:\x01\x02\x03\x04".to_vec();
+    assert_eq!(encoded, expected);
 }
 
 #[test]

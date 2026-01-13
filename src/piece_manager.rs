@@ -964,7 +964,9 @@ impl PieceManager for InMemoryPieceManager {
     }
 
     async fn is_peer_downloading_piece(&self, peer_addr: &str, piece_index: u32) -> bool {
-        self.state.is_peer_downloading_piece(peer_addr, piece_index).await
+        self.state
+            .is_peer_downloading_piece(peer_addr, piece_index)
+            .await
     }
 
     async fn get_request(&self, piece_index: u32) -> Option<PieceDownloadRequest> {
