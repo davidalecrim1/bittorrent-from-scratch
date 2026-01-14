@@ -8,10 +8,7 @@ This file tracks pending tasks and improvements identified in the codebase.
 - [x] Consider the DHT feature to download any kind of file.
   - [ ] Add stats to see if the peer comes from DHT or Tracker.
   - [ ] Support IPV6 DHT Node - Until then will cause this: bittorrent_from_scratch::dht::manager] Failed to bootstrap from [2a02:752:0:18::128]:25401: Invalid argument (os error 22)
-  - [ ] Complete a working implementation of the DHT that gets peers without the torrent tracker server.
-- [ ] Handle NotInterested by stopping further uploads to that peer.
 - [ ] Add some folder structure consider the DHT to make it clearer.
-- [ ] Consider adding a folder structure to make things clearer in the project like done with DHT feature.
 - [ ] Fix the coverage on the DHT files to be 70% at least.
 
 ## Out of Scope
@@ -23,6 +20,7 @@ This file tracks pending tasks and improvements identified in the codebase.
 - [ ] Implement snubbing detection to deprioritize idle peers.
 - [ ] Implement per-peer upload fairness and accounting.
 - [ ] Support storing at the disk the current state of a file download.
+- [ ] Allow others peers to handshake with me?
 
 ## Testability Improvements
 - [ ] Add 70% coverage to the File Manager.
