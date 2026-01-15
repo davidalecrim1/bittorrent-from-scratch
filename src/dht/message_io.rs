@@ -1,7 +1,7 @@
 use super::types::{CompactNodeInfo, ErrorMessage, KrpcMessage, NodeId, Query, Response};
 use crate::encoding::{Decoder as BencodeDecoder, Encoder as BencodeEncoder};
 use crate::types::BencodeTypes;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use log::debug;
 use std::collections::BTreeMap;
@@ -195,33 +195,42 @@ impl UdpMessageIO {
     }
 
     pub fn decode_message(&self, bytes: &[u8]) -> Result<KrpcMessage> {
-        let (_bytes_read, bencode) = self.decoder.from_bytes(bytes)?;
+        let (_bytes_read, bencode) = self
+            .decoder
+            .from_bytes(bytes)
+            .context("Failed to decode bencode")?;
 
         let dict = match bencode {
             BencodeTypes::Dictionary(d) => d,
             _ => anyhow::bail!("KRPC message must be a dictionary"),
         };
 
-        let transaction_id = self.extract_transaction_id(&dict)?;
-        let message_type = self.extract_message_type(&dict)?;
+        let transaction_id = self
+            .extract_transaction_id(&dict)
+            .context("Failed to extract transaction_id")?;
+        let message_type = self
+            .extract_message_type(&dict)
+            .context("Failed to extract message type")?;
 
         match message_type.as_str() {
             "q" => {
-                let query = self.decode_query(&dict)?;
+                let query = self.decode_query(&dict).context("Failed to decode query")?;
                 Ok(KrpcMessage::Query {
                     transaction_id,
                     query,
                 })
             }
             "r" => {
-                let response = self.decode_response(&dict)?;
+                let response = self
+                    .decode_response(&dict)
+                    .context("Failed to decode response")?;
                 Ok(KrpcMessage::Response {
                     transaction_id,
                     response,
                 })
             }
             "e" => {
-                let error = self.decode_error(&dict)?;
+                let error = self.decode_error(&dict).context("Failed to decode error")?;
                 Ok(KrpcMessage::Error {
                     transaction_id,
                     error,
