@@ -1291,12 +1291,17 @@ impl PeerManager {
                 {
                     Ok(connected_peer) => {
                         info!("Successfully connected to peer {}", peer_addr);
+
+                        // Remove from available peers once connected
+                        available_peers.write().await.remove(&peer_addr);
+
                         let mut connected = connected_peers.write().await;
                         connected.insert(peer_addr.clone(), connected_peer);
                         connection_stats.increment_peers();
                     }
                     Err(e) => {
                         debug!("Failed to connect to peer {}: {}", peer_addr, e);
+                        // Remove from available peers after failed connection attempt
                         available_peers.write().await.remove(&peer_addr);
                     }
                 }
