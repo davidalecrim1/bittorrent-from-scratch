@@ -5,7 +5,7 @@ mod tests {
     use super::helpers::{self, fakes::FakeMessageIO};
     use bittorrent_from_scratch::io::MessageIO;
     use bittorrent_from_scratch::peer_messages::{PeerMessage, PieceMessage};
-    use bittorrent_from_scratch::types::{Peer, PeerConnection, PieceDownloadRequest};
+    use bittorrent_from_scratch::types::{Peer, PeerConnection, PeerSource, PieceDownloadRequest};
     use tokio::sync::mpsc;
 
     /// Helper to consume the initial Interested message that PeerConnection sends on start
@@ -24,7 +24,7 @@ mod tests {
         // Create channels for PeerConnection
         let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -68,7 +68,7 @@ mod tests {
         // Create channels for PeerConnection
         let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -120,7 +120,7 @@ mod tests {
         // Create channels for PeerConnection
         let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -201,7 +201,7 @@ mod tests {
         // Create channels for PeerConnection
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -301,7 +301,7 @@ mod tests {
         // Create channels for PeerConnection
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -397,7 +397,7 @@ mod tests {
         // Create channels for PeerConnection
         let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -459,7 +459,7 @@ mod tests {
     async fn test_have_message_without_prior_bitfield() {
         let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -523,7 +523,7 @@ mod tests {
         // Create channels for PeerConnection
         let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -601,7 +601,7 @@ mod tests {
         // Create channels for PeerConnection
         let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -686,7 +686,7 @@ mod tests {
         // Create channels for PeerConnection
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -757,7 +757,7 @@ mod tests {
         // Create channels for PeerConnection
         let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -829,7 +829,7 @@ mod tests {
         // Create channels for PeerConnection
         let (event_tx, mut _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -871,7 +871,7 @@ mod tests {
         // Create channels for PeerConnection
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -1000,7 +1000,7 @@ mod tests {
 
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -1062,7 +1062,7 @@ mod tests {
 
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -1113,7 +1113,7 @@ mod tests {
 
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -1151,7 +1151,7 @@ mod tests {
 
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -1211,7 +1211,7 @@ mod tests {
         // Test that exceeding queue capacity returns "Queue full" error
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -1285,7 +1285,7 @@ mod tests {
     async fn test_shutdown_piece_tasks_cleans_up_active_downloads() {
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -1354,7 +1354,7 @@ mod tests {
     async fn test_semaphore_limits_concurrent_block_requests() {
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -1444,7 +1444,7 @@ mod tests {
     async fn test_upload_request_sends_piece_message() {
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -1521,7 +1521,7 @@ mod tests {
     async fn test_upload_request_for_unavailable_piece_ignored() {
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 
@@ -1568,7 +1568,7 @@ mod tests {
     async fn test_upload_request_with_offset() {
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let tcp_connector =
             std::sync::Arc::new(bittorrent_from_scratch::tcp_connector::DefaultTcpStreamFactory);
 

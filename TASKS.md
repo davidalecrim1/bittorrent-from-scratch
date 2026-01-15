@@ -8,19 +8,27 @@ This file tracks pending tasks and improvements identified in the codebase.
 - [x] Consider the DHT feature to download any kind of file.
   - [ ] Add stats to see if the peer comes from DHT or Tracker.
   - [ ] Support IPV6 DHT Node - Until then will cause this: bittorrent_from_scratch::dht::manager] Failed to bootstrap from [2a02:752:0:18::128]:25401: Invalid argument (os error 22)
-- [ ] Add some folder structure consider the DHT to make it clearer.
-- [ ] Fix the coverage on the DHT files to be 70% at least.
+- [ ] Support magnet links instead of torrent files.
+  - **Plan:** `/Users/davidalecrim/.claude/plans/zazzy-noodling-yeti.md`
+  - Adds BEP 9 extension protocol for metadata exchange
+  - Enables downloads without .torrent files using info hash only
+  - Out of scope: base32 info hashes, multi-piece metadata (> 16 KiB)
 
 ## Out of Scope
 - [ ] Choke uploads if peers are abusing the requests.
-- [ ] Support magnet links instead of torrent files.
 - [ ] Implement upload task queuing with per-peer rate limits.
+  - Maybe a semaphore just like the for downloads.
 - [ ] Implement tit-for-tat unchoke rotation strategy.
 - [ ] Implement Cancel message support for aborting in-flight uploads.
 - [ ] Implement snubbing detection to deprioritize idle peers.
 - [ ] Implement per-peer upload fairness and accounting.
 - [ ] Support storing at the disk the current state of a file download.
 - [ ] Allow others peers to handshake with me?
+  - Does this make sense?
+  - How are they going to find me? Am I added to a tracker or DHT?
 
-## Testability Improvements
+## Maybe
 - [ ] Add 70% coverage to the File Manager.
+- [ ] Fix the coverage on the DHT files to be 70% at least.
+- [ ] Add some folder structure consider the DHT to make it clearer.
+- [ ] Instead of terminal printing, make a nice terminal UI.

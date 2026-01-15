@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::fmt;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::time::Instant;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -162,6 +162,58 @@ impl CompactNodeInfo {
     }
 }
 
+/// IPv6 compact node info format (38 bytes: 20-byte ID + 16-byte IPv6 + 2-byte port)
+#[derive(Clone, Debug)]
+pub struct CompactNodeInfoV6 {
+    pub id: NodeId,
+    pub addr: SocketAddrV6,
+}
+
+impl CompactNodeInfoV6 {
+    /// Serializes the node info to 38 bytes (20-byte ID + 16-byte IPv6 + 2-byte port).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(38);
+        bytes.extend_from_slice(self.id.as_bytes());
+        bytes.extend_from_slice(&self.addr.ip().octets());
+        bytes.extend_from_slice(&self.addr.port().to_be_bytes());
+        bytes
+    }
+
+    /// Deserializes node info from 38 bytes, returning an error if length is incorrect.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != 38 {
+            anyhow::bail!(
+                "CompactNodeInfoV6 must be exactly 38 bytes, got {}",
+                bytes.len()
+            );
+        }
+
+        let id = NodeId::from_slice(&bytes[0..20])?;
+        let mut ipv6_bytes = [0u8; 16];
+        ipv6_bytes.copy_from_slice(&bytes[20..36]);
+        let ip = Ipv6Addr::from(ipv6_bytes);
+        let port = u16::from_be_bytes([bytes[36], bytes[37]]);
+        let addr = SocketAddrV6::new(ip, port, 0, 0);
+
+        Ok(Self { id, addr })
+    }
+
+    /// Parses a list of compact node infos from bytes (length must be multiple of 38).
+    pub fn parse_multiple(bytes: &[u8]) -> Result<Vec<Self>> {
+        if !bytes.len().is_multiple_of(38) {
+            anyhow::bail!(
+                "Compact IPv6 node list length must be multiple of 38, got {}",
+                bytes.len()
+            );
+        }
+
+        bytes
+            .chunks(38)
+            .map(Self::from_bytes)
+            .collect::<Result<Vec<_>>>()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Query {
     Ping {
@@ -213,12 +265,14 @@ pub enum Response {
     FindNode {
         id: NodeId,
         nodes: Vec<CompactNodeInfo>,
+        nodes6: Vec<CompactNodeInfoV6>,
     },
     GetPeers {
         id: NodeId,
         token: Vec<u8>,
         values: Option<Vec<SocketAddrV4>>,
         nodes: Option<Vec<CompactNodeInfo>>,
+        nodes6: Option<Vec<CompactNodeInfoV6>>,
     },
     AnnouncePeer {
         id: NodeId,

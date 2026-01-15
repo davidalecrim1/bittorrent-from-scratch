@@ -316,6 +316,7 @@ impl PeerManager {
         let bandwidth_stats = self.bandwidth_stats.clone();
         let connection_stats = self.connection_stats.clone();
         let available_peers = self.available_peers.clone();
+        let dht_client = self.dht_client.clone();
         tokio::task::spawn(async move {
             let mut interval =
                 tokio::time::interval(Duration::from_secs(PROGRESS_REPORT_INTERVAL_SECS));
@@ -331,7 +332,21 @@ impl PeerManager {
                 );
 
                 let (total_peers, choking_peers) = connection_stats.get_stats();
-                let available_peer_count = available_peers.read().await.len();
+
+                // Calculate peer source breakdown
+                let (tracker_count, dht_count) = {
+                    let peers = available_peers.read().await;
+                    let tracker = peers
+                        .values()
+                        .filter(|p| p.source == crate::types::PeerSource::Tracker)
+                        .count();
+                    let dht = peers
+                        .values()
+                        .filter(|p| p.source == crate::types::PeerSource::Dht)
+                        .count();
+                    (tracker, dht)
+                };
+                let available_peer_count = tracker_count + dht_count;
                 let percentage = (completed * 100) / num_pieces;
 
                 // Get bandwidth rates
@@ -346,11 +361,31 @@ impl PeerManager {
                 // Note: We use print! (not info!) to avoid newlines from the logger
                 use std::io::Write;
 
+                // Get DHT stats if available
+                let dht_stats_str = if let Some(ref dht_client) = dht_client {
+                    if let Ok(stats) = dht_client.get_stats().await {
+                        format!(
+                            " | DHT: {} nodes ({} buckets, {} full, {} IPv4, {} IPv6)",
+                            stats.total_nodes,
+                            stats.buckets_used,
+                            stats.buckets_full,
+                            stats.ipv4_nodes,
+                            stats.ipv6_nodes
+                        )
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
                 // Use ANSI escape codes to clear line and move cursor to start
                 print!(
-                    "\r\x1B[KPeers: {} connected, {} available, {} choking | Pieces: {}/{} ({}%) - {} pending, {} downloading | ↓ {} ↑ {}",
+                    "\r\x1B[KPeers: {} connected, {} available ({} tracker, {} DHT), {} choking | Pieces: {}/{} ({}%) - {} pending, {} downloading | ↓ {} ↑ {}{}",
                     total_peers,
                     available_peer_count,
+                    tracker_count,
+                    dht_count,
                     choking_peers,
                     completed,
                     num_pieces,
@@ -358,7 +393,8 @@ impl PeerManager {
                     pending,
                     in_flight,
                     download_str,
-                    upload_str
+                    upload_str,
+                    dht_stats_str
                 );
 
                 let _ = std::io::stdout().flush();

@@ -151,20 +151,28 @@ pub enum BencodeTypes {
     Raw(Vec<u8>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerSource {
+    Tracker,
+    Dht,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Peer {
     pub ip: IpAddr,
     pub port: u16,
+    pub source: PeerSource,
 }
 
 pub type PeerId = [u8; 20];
 pub type PeerAddr = String;
 
 impl Peer {
-    pub fn new(ip: String, port: u16) -> Self {
+    pub fn new(ip: String, port: u16, source: PeerSource) -> Self {
         Self {
             ip: IpAddr::from_str(&ip).unwrap(),
             port,
+            source,
         }
     }
 
@@ -200,7 +208,7 @@ pub struct AnnounceResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConnectedPeer, Peer, PieceDownloadRequest};
+    use super::{ConnectedPeer, Peer, PeerSource, PieceDownloadRequest};
     use crate::peer_messages::BitfieldMessage;
     use std::collections::HashSet;
     use std::sync::Arc;
@@ -382,27 +390,31 @@ mod tests {
 
     #[test]
     fn test_peer_ipv4_address_formatting() {
-        let peer = Peer::new("192.168.1.100".to_string(), 6881);
+        let peer = Peer::new("192.168.1.100".to_string(), 6881, PeerSource::Tracker);
         assert_eq!(peer.get_addr(), "192.168.1.100:6881");
     }
 
     #[test]
     fn test_peer_ipv6_address_formatting() {
         // IPv6 addresses require bracket notation for socket addresses
-        let peer = Peer::new("2001:db8::1".to_string(), 6881);
+        let peer = Peer::new("2001:db8::1".to_string(), 6881, PeerSource::Tracker);
         assert_eq!(peer.get_addr(), "[2001:db8::1]:6881");
 
-        let peer2 = Peer::new("fe80::1".to_string(), 8080);
+        let peer2 = Peer::new("fe80::1".to_string(), 8080, PeerSource::Tracker);
         assert_eq!(peer2.get_addr(), "[fe80::1]:8080");
 
-        let peer3 = Peer::new("::1".to_string(), 6882);
+        let peer3 = Peer::new("::1".to_string(), 6882, PeerSource::Tracker);
         assert_eq!(peer3.get_addr(), "[::1]:6882");
     }
 
     #[test]
     fn test_peer_ipv6_full_address_formatting() {
         // Full IPv6 address (not compressed)
-        let peer = Peer::new("2001:0db8:0000:0000:0000:0000:0000:0001".to_string(), 6881);
+        let peer = Peer::new(
+            "2001:0db8:0000:0000:0000:0000:0000:0001".to_string(),
+            6881,
+            PeerSource::Tracker,
+        );
         assert_eq!(peer.get_addr(), "[2001:db8::1]:6881");
     }
 
@@ -410,7 +422,7 @@ mod tests {
     async fn test_connected_peer_has_piece() {
         use tokio::sync::mpsc;
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let (tx, _rx) = mpsc::channel(1);
         let (message_tx, _message_rx) = mpsc::channel(1);
 
@@ -431,7 +443,7 @@ mod tests {
     async fn test_connected_peer_piece_count() {
         use tokio::sync::mpsc;
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let (tx, _rx) = mpsc::channel(1);
         let (message_tx, _message_rx) = mpsc::channel(1);
 
@@ -450,7 +462,7 @@ mod tests {
     async fn test_connected_peer_bitfield_len() {
         use tokio::sync::mpsc;
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let (tx, _rx) = mpsc::channel(1);
         let (message_tx, _message_rx) = mpsc::channel(1);
 
@@ -469,7 +481,7 @@ mod tests {
     async fn test_connected_peer_request_piece() {
         use tokio::sync::mpsc;
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let (tx, mut rx) = mpsc::channel(1);
         let (message_tx, _message_rx) = mpsc::channel(1);
 
@@ -495,7 +507,7 @@ mod tests {
     async fn test_connected_peer_get_sender() {
         use tokio::sync::mpsc;
 
-        let peer = Peer::new("127.0.0.1".to_string(), 6881);
+        let peer = Peer::new("127.0.0.1".to_string(), 6881, PeerSource::Tracker);
         let (tx, _rx) = mpsc::channel(1);
         let (message_tx, _message_rx) = mpsc::channel(1);
         let bitfield = Arc::new(RwLock::new(HashSet::new()));
@@ -510,7 +522,7 @@ mod tests {
     fn test_connected_peer_peer_addr() {
         use tokio::sync::mpsc;
 
-        let peer = Peer::new("192.168.1.100".to_string(), 6881);
+        let peer = Peer::new("192.168.1.100".to_string(), 6881, PeerSource::Tracker);
         let (tx, _rx) = mpsc::channel(1);
         let (message_tx, _message_rx) = mpsc::channel(1);
         let bitfield = Arc::new(RwLock::new(HashSet::new()));
@@ -524,7 +536,7 @@ mod tests {
     fn test_connected_peer_peer() {
         use tokio::sync::mpsc;
 
-        let peer = Peer::new("192.168.1.100".to_string(), 6881);
+        let peer = Peer::new("192.168.1.100".to_string(), 6881, PeerSource::Tracker);
         let (tx, _rx) = mpsc::channel(1);
         let (message_tx, _message_rx) = mpsc::channel(1);
         let bitfield = Arc::new(RwLock::new(HashSet::new()));

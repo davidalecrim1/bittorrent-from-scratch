@@ -100,7 +100,11 @@ impl HttpTrackerClient {
                                         }
                                     };
 
-                                    peers.push(Peer::new(ip_string, port_u16));
+                                    peers.push(Peer::new(
+                                        ip_string,
+                                        port_u16,
+                                        crate::types::PeerSource::Tracker,
+                                    ));
                                 }
                                 _ => {
                                     return Err(AppError::InvalidFieldType {
@@ -127,7 +131,11 @@ impl HttpTrackerClient {
                                     };
                                     let ip = Ipv6Addr::from(ip_bytes);
                                     let port = u16::from_be_bytes([chunk[16], chunk[17]]);
-                                    peers.push(Peer::new(ip.to_string(), port));
+                                    peers.push(Peer::new(
+                                        ip.to_string(),
+                                        port,
+                                        crate::types::PeerSource::Tracker,
+                                    ));
                                 }
                             }
                         } else if peer_bytes.len() % 6 == 0 {
@@ -139,7 +147,11 @@ impl HttpTrackerClient {
                                         chunk[0], chunk[1], chunk[2], chunk[3]
                                     );
                                     let port = u16::from_be_bytes([chunk[4], chunk[5]]);
-                                    peers.push(Peer::new(ip, port));
+                                    peers.push(Peer::new(
+                                        ip,
+                                        port,
+                                        crate::types::PeerSource::Tracker,
+                                    ));
                                 }
                             }
                         }

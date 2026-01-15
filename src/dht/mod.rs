@@ -10,6 +10,8 @@ pub use client::DhtClient;
 pub use manager::DhtManager;
 pub use message_io::{DhtMessageIO, UdpMessageIO};
 pub use query_manager::{QueryManager, QueryType};
-pub use routing_table::RoutingTable;
+pub use routing_table::{RoutingTable, RoutingTableStats};
 pub use socket_factory::{DefaultUdpSocketFactory, UdpSocketFactory};
-pub use types::{CompactNodeInfo, DhtNode, ErrorMessage, KrpcMessage, NodeId, Query, Response};
+pub use types::{
+    CompactNodeInfo, CompactNodeInfoV6, DhtNode, ErrorMessage, KrpcMessage, NodeId, Query, Response,
+};

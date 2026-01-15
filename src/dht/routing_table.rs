@@ -1,5 +1,14 @@
 use super::types::{DhtNode, NodeId};
 
+#[derive(Debug, Clone, Default)]
+pub struct RoutingTableStats {
+    pub total_nodes: usize,
+    pub buckets_used: usize,
+    pub buckets_full: usize,
+    pub ipv4_nodes: usize,
+    pub ipv6_nodes: usize,
+}
+
 pub struct RoutingTable {
     buckets: Vec<Vec<DhtNode>>,
     self_id: NodeId,
@@ -92,6 +101,31 @@ impl RoutingTable {
     /// Returns true if the routing table contains no nodes.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Returns statistics about the routing table.
+    pub fn get_stats(&self) -> RoutingTableStats {
+        let mut stats = RoutingTableStats::default();
+
+        for bucket in &self.buckets {
+            if !bucket.is_empty() {
+                stats.buckets_used += 1;
+                if bucket.len() >= self.k {
+                    stats.buckets_full += 1;
+                }
+                stats.total_nodes += bucket.len();
+
+                for node in bucket {
+                    if node.addr.is_ipv4() {
+                        stats.ipv4_nodes += 1;
+                    } else {
+                        stats.ipv6_nodes += 1;
+                    }
+                }
+            }
+        }
+
+        stats
     }
 }
 

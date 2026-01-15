@@ -1,11 +1,12 @@
 mod helpers;
 
 use bittorrent_from_scratch::dht::{
-    CompactNodeInfo, DhtClient, KrpcMessage, NodeId, Query, Response, RoutingTable,
+    CompactNodeInfo, CompactNodeInfoV6, DhtClient, KrpcMessage, NodeId, Query, Response,
+    RoutingTable,
 };
-use bittorrent_from_scratch::types::Peer;
+use bittorrent_from_scratch::types::{Peer, PeerSource};
 use helpers::fakes::MockDhtClient;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
 #[test]
 fn test_node_id_distance() {
@@ -130,8 +131,8 @@ fn test_routing_table_bucket_index() {
 async fn test_mock_dht_client_get_peers() {
     let mock = MockDhtClient::new();
     let peers = vec![
-        Peer::new("192.168.1.1".to_string(), 6881),
-        Peer::new("192.168.1.2".to_string(), 6882),
+        Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Dht),
+        Peer::new("192.168.1.2".to_string(), 6882, PeerSource::Dht),
     ];
     mock.expect_get_peers(peers.clone()).await;
 
@@ -200,6 +201,7 @@ fn test_response_sender_id() {
     let response = Response::FindNode {
         id: node_id,
         nodes: vec![],
+        nodes6: vec![],
     };
     assert_eq!(response.sender_id(), &node_id);
 
@@ -208,6 +210,7 @@ fn test_response_sender_id() {
         token: vec![0x01, 0x02],
         values: None,
         nodes: None,
+        nodes6: None,
     };
     assert_eq!(response.sender_id(), &node_id);
 }
@@ -412,4 +415,157 @@ fn test_ping_query_has_length_prefixes() {
         "Node ID should have 20: length prefix"
     );
     assert!(encoded_str.contains("ping"));
+}
+
+#[test]
+fn test_compact_node_info_v6_roundtrip() {
+    let id = NodeId::new([0x42; 20]);
+    let addr = SocketAddrV6::new(
+        Ipv6Addr::new(
+            0x2001, 0x0db8, 0x85a3, 0x0000, 0x0000, 0x8a2e, 0x0370, 0x7334,
+        ),
+        6881,
+        0,
+        0,
+    );
+    let info = CompactNodeInfoV6 { id, addr };
+
+    let bytes = info.to_bytes();
+    assert_eq!(bytes.len(), 38);
+
+    let parsed = CompactNodeInfoV6::from_bytes(&bytes).unwrap();
+    assert_eq!(parsed.id, id);
+    assert_eq!(parsed.addr, addr);
+}
+
+#[test]
+fn test_compact_node_info_v6_parse_multiple() {
+    let id1 = NodeId::new([0x01; 20]);
+    let addr1 = SocketAddrV6::new(
+        Ipv6Addr::new(
+            0x2001, 0x0db8, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001,
+        ),
+        6881,
+        0,
+        0,
+    );
+    let info1 = CompactNodeInfoV6 {
+        id: id1,
+        addr: addr1,
+    };
+
+    let id2 = NodeId::new([0x02; 20]);
+    let addr2 = SocketAddrV6::new(
+        Ipv6Addr::new(
+            0x2001, 0x0db8, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0002,
+        ),
+        6882,
+        0,
+        0,
+    );
+    let info2 = CompactNodeInfoV6 {
+        id: id2,
+        addr: addr2,
+    };
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&info1.to_bytes());
+    bytes.extend_from_slice(&info2.to_bytes());
+
+    let parsed = CompactNodeInfoV6::parse_multiple(&bytes).unwrap();
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].id, id1);
+    assert_eq!(parsed[0].addr, addr1);
+    assert_eq!(parsed[1].id, id2);
+    assert_eq!(parsed[1].addr, addr2);
+}
+
+#[test]
+fn test_compact_node_info_v6_invalid_length() {
+    let bytes = vec![0u8; 37];
+    let result = CompactNodeInfoV6::from_bytes(&bytes);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("must be exactly 38 bytes")
+    );
+}
+
+#[test]
+fn test_compact_node_info_v6_parse_multiple_invalid_length() {
+    let bytes = vec![0u8; 39];
+    let result = CompactNodeInfoV6::parse_multiple(&bytes);
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("must be multiple of 38")
+    );
+}
+
+#[test]
+fn test_response_find_node_with_ipv6() {
+    let id = NodeId::new([0x42; 20]);
+    let ipv4_addr = SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 1), 6881);
+    let ipv4_info = CompactNodeInfo {
+        id: NodeId::new([0x01; 20]),
+        addr: ipv4_addr,
+    };
+
+    let ipv6_addr = SocketAddrV6::new(
+        Ipv6Addr::new(
+            0x2001, 0x0db8, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001,
+        ),
+        6881,
+        0,
+        0,
+    );
+    let ipv6_info = CompactNodeInfoV6 {
+        id: NodeId::new([0x02; 20]),
+        addr: ipv6_addr,
+    };
+
+    let response = Response::FindNode {
+        id,
+        nodes: vec![ipv4_info],
+        nodes6: vec![ipv6_info],
+    };
+
+    assert_eq!(response.sender_id(), &id);
+}
+
+#[test]
+fn test_response_get_peers_with_ipv6() {
+    let id = NodeId::new([0x42; 20]);
+    let token = vec![0x01, 0x02];
+
+    let ipv4_info = CompactNodeInfo {
+        id: NodeId::new([0x01; 20]),
+        addr: SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 1), 6881),
+    };
+
+    let ipv6_info = CompactNodeInfoV6 {
+        id: NodeId::new([0x02; 20]),
+        addr: SocketAddrV6::new(
+            Ipv6Addr::new(
+                0x2001, 0x0db8, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001,
+            ),
+            6881,
+            0,
+            0,
+        ),
+    };
+
+    let response = Response::GetPeers {
+        id,
+        token,
+        values: None,
+        nodes: Some(vec![ipv4_info]),
+        nodes6: Some(vec![ipv6_info]),
+    };
+
+    assert_eq!(response.sender_id(), &id);
 }

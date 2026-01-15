@@ -95,9 +95,18 @@ impl DhtManager {
             };
 
             match self.send_query(*addr, query).await {
-                Ok(Response::FindNode { nodes, .. }) => {
-                    for node_info in nodes {
+                Ok(Response::FindNode {
+                    nodes: nodes_ipv4,
+                    nodes6: nodes_ipv6,
+                    ..
+                }) => {
+                    for node_info in nodes_ipv4 {
                         let node = DhtNode::new(node_info.id, SocketAddr::V4(node_info.addr));
+                        self.routing_table.write().await.insert(node);
+                        nodes_added += 1;
+                    }
+                    for node_info in nodes_ipv6 {
+                        let node = DhtNode::new(node_info.id, SocketAddr::V6(node_info.addr));
                         self.routing_table.write().await.insert(node);
                         nodes_added += 1;
                     }
@@ -175,21 +184,31 @@ impl DhtManager {
                         GetPeersResult::Peers(new_peers) => {
                             peers.extend(new_peers);
                         }
-                        GetPeersResult::Nodes(nodes) => {
-                            for node_info in nodes {
+                        GetPeersResult::Nodes(nodes_v4, nodes_v6) => {
+                            for node_info in nodes_v4 {
                                 let node =
-                                    { DhtNode::new(node_info.id, SocketAddr::V4(node_info.addr)) };
-
+                                    DhtNode::new(node_info.id, SocketAddr::V4(node_info.addr));
+                                self.routing_table.write().await.insert(node.clone());
+                                candidates.push(node);
+                            }
+                            for node_info in nodes_v6 {
+                                let node =
+                                    DhtNode::new(node_info.id, SocketAddr::V6(node_info.addr));
                                 self.routing_table.write().await.insert(node.clone());
                                 candidates.push(node);
                             }
                         }
-                        GetPeersResult::Both(new_peers, nodes) => {
+                        GetPeersResult::Both(new_peers, nodes_v4, nodes_v6) => {
                             peers.extend(new_peers);
-                            for node_info in nodes {
+                            for node_info in nodes_v4 {
                                 let node =
-                                    { DhtNode::new(node_info.id, SocketAddr::V4(node_info.addr)) };
-
+                                    DhtNode::new(node_info.id, SocketAddr::V4(node_info.addr));
+                                self.routing_table.write().await.insert(node.clone());
+                                candidates.push(node);
+                            }
+                            for node_info in nodes_v6 {
+                                let node =
+                                    DhtNode::new(node_info.id, SocketAddr::V6(node_info.addr));
                                 self.routing_table.write().await.insert(node.clone());
                                 candidates.push(node);
                             }
@@ -296,30 +315,40 @@ impl DhtManager {
         match response {
             Response::GetPeers {
                 values: Some(peer_addrs),
-                nodes: Some(node_list),
+                nodes: nodes_ipv4,
+                nodes6: nodes_ipv6,
                 ..
             } => {
                 let peers: Vec<Peer> = peer_addrs
                     .into_iter()
-                    .map(|addr| Peer::new(addr.ip().to_string(), addr.port()))
+                    .map(|addr| {
+                        Peer::new(
+                            addr.ip().to_string(),
+                            addr.port(),
+                            crate::types::PeerSource::Dht,
+                        )
+                    })
                     .collect();
-                Ok(GetPeersResult::Both(peers, node_list))
+
+                let node_list_v4 = nodes_ipv4.unwrap_or_default();
+                let node_list_v6 = nodes_ipv6.unwrap_or_default();
+
+                if !node_list_v4.is_empty() || !node_list_v6.is_empty() {
+                    Ok(GetPeersResult::Both(peers, node_list_v4, node_list_v6))
+                } else {
+                    Ok(GetPeersResult::Peers(peers))
+                }
             }
             Response::GetPeers {
-                values: Some(peer_addrs),
+                nodes: nodes_ipv4,
+                nodes6: nodes_ipv6,
                 ..
             } => {
-                let peers: Vec<Peer> = peer_addrs
-                    .into_iter()
-                    .map(|addr| Peer::new(addr.ip().to_string(), addr.port()))
-                    .collect();
-                Ok(GetPeersResult::Peers(peers))
+                let node_list_v4 = nodes_ipv4.unwrap_or_default();
+                let node_list_v6 = nodes_ipv6.unwrap_or_default();
+                Ok(GetPeersResult::Nodes(node_list_v4, node_list_v6))
             }
-            Response::GetPeers {
-                nodes: Some(node_list),
-                ..
-            } => Ok(GetPeersResult::Nodes(node_list)),
-            _ => Ok(GetPeersResult::Nodes(vec![])),
+            _ => Ok(GetPeersResult::Nodes(vec![], vec![])),
         }
     }
 
@@ -458,45 +487,69 @@ impl DhtManager {
             Query::Ping { .. } => Response::Ping { id: self.self_id },
             Query::FindNode { target, .. } => {
                 let nodes = self.routing_table.read().await.find_closest(&target, K);
-                let compact_nodes: Vec<CompactNodeInfo> = nodes
-                    .iter()
-                    .filter_map(|node| {
-                        if let SocketAddr::V4(addr_v4) = node.addr {
-                            Some(CompactNodeInfo {
+                let mut compact_nodes_v4 = Vec::new();
+                let mut compact_nodes_v6 = Vec::new();
+
+                for node in &nodes {
+                    match node.addr {
+                        SocketAddr::V4(addr_v4) => {
+                            compact_nodes_v4.push(CompactNodeInfo {
                                 id: node.id,
                                 addr: addr_v4,
-                            })
-                        } else {
-                            None
+                            });
                         }
-                    })
-                    .collect();
+                        SocketAddr::V6(addr_v6) => {
+                            compact_nodes_v6.push(crate::dht::CompactNodeInfoV6 {
+                                id: node.id,
+                                addr: addr_v6,
+                            });
+                        }
+                    }
+                }
+
                 Response::FindNode {
                     id: self.self_id,
-                    nodes: compact_nodes,
+                    nodes: compact_nodes_v4,
+                    nodes6: compact_nodes_v6,
                 }
             }
             Query::GetPeers { info_hash, .. } => {
                 let target = NodeId::from_slice(&info_hash)?;
                 let nodes = self.routing_table.read().await.find_closest(&target, K);
-                let compact_nodes: Vec<CompactNodeInfo> = nodes
-                    .iter()
-                    .filter_map(|node| {
-                        if let SocketAddr::V4(addr_v4) = node.addr {
-                            Some(CompactNodeInfo {
+                let mut compact_nodes_v4 = Vec::new();
+                let mut compact_nodes_v6 = Vec::new();
+
+                for node in &nodes {
+                    match node.addr {
+                        SocketAddr::V4(addr_v4) => {
+                            compact_nodes_v4.push(CompactNodeInfo {
                                 id: node.id,
                                 addr: addr_v4,
-                            })
-                        } else {
-                            None
+                            });
                         }
-                    })
-                    .collect();
+                        SocketAddr::V6(addr_v6) => {
+                            compact_nodes_v6.push(crate::dht::CompactNodeInfoV6 {
+                                id: node.id,
+                                addr: addr_v6,
+                            });
+                        }
+                    }
+                }
+
                 Response::GetPeers {
                     id: self.self_id,
                     token: vec![0x00, 0x01],
                     values: None,
-                    nodes: Some(compact_nodes),
+                    nodes: if compact_nodes_v4.is_empty() {
+                        None
+                    } else {
+                        Some(compact_nodes_v4)
+                    },
+                    nodes6: if compact_nodes_v6.is_empty() {
+                        None
+                    } else {
+                        Some(compact_nodes_v6)
+                    },
                 }
             }
             Query::AnnouncePeer { .. } => Response::AnnouncePeer { id: self.self_id },
@@ -520,10 +573,160 @@ impl DhtManager {
             bootstrap_nodes: self.bootstrap_nodes.clone(),
         })
     }
+
+    /// Returns statistics about the routing table.
+    pub async fn get_stats(&self) -> crate::dht::RoutingTableStats {
+        let rt = self.routing_table.read().await;
+        rt.get_stats()
+    }
 }
 
 enum GetPeersResult {
     Peers(Vec<Peer>),
-    Nodes(Vec<CompactNodeInfo>),
-    Both(Vec<Peer>, Vec<CompactNodeInfo>),
+    Nodes(Vec<CompactNodeInfo>, Vec<crate::dht::CompactNodeInfoV6>),
+    Both(
+        Vec<Peer>,
+        Vec<CompactNodeInfo>,
+        Vec<crate::dht::CompactNodeInfoV6>,
+    ),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dht::{DhtMessageIO, NodeId, Query, Response};
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use tokio::sync::Mutex as TokioMutex;
+
+    #[derive(Debug)]
+    struct MockMessageIO {
+        responses: Arc<TokioMutex<Vec<(KrpcMessage, SocketAddr)>>>,
+        sent_messages: Arc<TokioMutex<Vec<(KrpcMessage, SocketAddr)>>>,
+    }
+
+    impl MockMessageIO {
+        fn new() -> Self {
+            Self {
+                responses: Arc::new(TokioMutex::new(Vec::new())),
+                sent_messages: Arc::new(TokioMutex::new(Vec::new())),
+            }
+        }
+
+        async fn add_response(&self, msg: KrpcMessage, addr: SocketAddr) {
+            self.responses.lock().await.push((msg, addr));
+        }
+
+        async fn get_sent_messages(&self) -> Vec<(KrpcMessage, SocketAddr)> {
+            self.sent_messages.lock().await.clone()
+        }
+    }
+
+    #[async_trait]
+    impl DhtMessageIO for MockMessageIO {
+        async fn send_message(&self, msg: &KrpcMessage, addr: SocketAddr) -> Result<()> {
+            self.sent_messages.lock().await.push((msg.clone(), addr));
+            Ok(())
+        }
+
+        async fn recv_message(&self) -> Result<(KrpcMessage, SocketAddr)> {
+            let mut responses = self.responses.lock().await;
+            if let Some(response) = responses.pop() {
+                Ok(response)
+            } else {
+                // Block forever if no responses (simulates waiting for network)
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                Err(anyhow::anyhow!("No responses configured"))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dht_manager_creation() {
+        let message_io = Arc::new(MockMessageIO::new());
+        let manager = DhtManager::new(message_io);
+
+        let stats = manager.get_stats().await;
+        assert_eq!(stats.total_nodes, 0);
+        assert_eq!(stats.buckets_used, 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_stats_returns_routing_table_stats() {
+        let message_io = Arc::new(MockMessageIO::new());
+        let manager = DhtManager::new(message_io);
+
+        // Initially empty
+        let stats = manager.get_stats().await;
+        assert_eq!(stats.total_nodes, 0);
+        assert_eq!(stats.ipv4_nodes, 0);
+        assert_eq!(stats.ipv6_nodes, 0);
+    }
+
+    #[tokio::test]
+    async fn test_routing_table_insert() {
+        let message_io = Arc::new(MockMessageIO::new());
+        let manager = DhtManager::new(message_io);
+
+        // Insert an IPv4 node
+        let node_id = NodeId::new([0x42; 20]);
+        let addr = "192.168.1.1:6881".parse().unwrap();
+        let node = DhtNode::new(node_id, addr);
+
+        manager.routing_table.write().await.insert(node);
+
+        let stats = manager.get_stats().await;
+        assert_eq!(stats.total_nodes, 1);
+        assert_eq!(stats.ipv4_nodes, 1);
+        assert_eq!(stats.ipv6_nodes, 0);
+    }
+
+    #[tokio::test]
+    async fn test_routing_table_insert_ipv6() {
+        let message_io = Arc::new(MockMessageIO::new());
+        let manager = DhtManager::new(message_io);
+
+        // Insert an IPv6 node
+        let node_id = NodeId::new([0x43; 20]);
+        let addr = "[2001:db8::1]:6881".parse().unwrap();
+        let node = DhtNode::new(node_id, addr);
+
+        manager.routing_table.write().await.insert(node);
+
+        let stats = manager.get_stats().await;
+        assert_eq!(stats.total_nodes, 1);
+        assert_eq!(stats.ipv4_nodes, 0);
+        assert_eq!(stats.ipv6_nodes, 1);
+    }
+
+    #[tokio::test]
+    async fn test_routing_table_mixed_ipv4_and_ipv6() {
+        let message_io = Arc::new(MockMessageIO::new());
+        let manager = DhtManager::new(message_io);
+
+        // Insert IPv4 node
+        let node_id_v4 = NodeId::new([0x44; 20]);
+        let addr_v4 = "10.0.0.1:6881".parse().unwrap();
+        manager
+            .routing_table
+            .write()
+            .await
+            .insert(DhtNode::new(node_id_v4, addr_v4));
+
+        // Insert IPv6 node
+        let node_id_v6 = NodeId::new([0x45; 20]);
+        let addr_v6 = "[fe80::1]:6881".parse().unwrap();
+        manager
+            .routing_table
+            .write()
+            .await
+            .insert(DhtNode::new(node_id_v6, addr_v6));
+
+        let stats = manager.get_stats().await;
+        assert_eq!(stats.total_nodes, 2);
+        assert_eq!(stats.ipv4_nodes, 1);
+        assert_eq!(stats.ipv6_nodes, 1);
+    }
 }

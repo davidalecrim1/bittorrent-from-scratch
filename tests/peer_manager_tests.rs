@@ -5,7 +5,7 @@ mod tests {
     use super::helpers;
     use bittorrent_from_scratch::error::AppError;
     use bittorrent_from_scratch::peer_manager::PeerManager;
-    use bittorrent_from_scratch::types::PeerManagerConfig;
+    use bittorrent_from_scratch::types::{Peer, PeerManagerConfig, PeerSource};
     use std::sync::Arc;
     use tempfile::NamedTempFile;
     use tokio::sync::mpsc;
@@ -224,8 +224,8 @@ mod tests {
 
         // Setup mock to return peers
         let expected_peers = vec![
-            Peer::new("192.168.1.1".to_string(), 6881),
-            Peer::new("192.168.1.2".to_string(), 6882),
+            Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Tracker),
+            Peer::new("192.168.1.2".to_string(), 6882, PeerSource::Tracker),
         ];
         tracker_client
             .expect_announce(expected_peers.clone(), Some(1800))
@@ -277,7 +277,14 @@ mod tests {
 
         // Setup tracker to return peers
         tracker_client
-            .expect_announce(vec![Peer::new("192.168.1.1".to_string(), 6881)], Some(1800))
+            .expect_announce(
+                vec![Peer::new(
+                    "192.168.1.1".to_string(),
+                    6881,
+                    PeerSource::Tracker,
+                )],
+                Some(1800),
+            )
             .await;
 
         let mut peer_manager = PeerManager::new_with_connector(
@@ -618,8 +625,8 @@ mod tests {
             .await
             .unwrap();
 
-        let peer1 = Peer::new("192.168.1.1".to_string(), 6881);
-        let peer2 = Peer::new("192.168.1.2".to_string(), 6882);
+        let peer1 = Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Tracker);
+        let peer2 = Peer::new("192.168.1.2".to_string(), 6882, PeerSource::Tracker);
 
         // Initially no available peers
         assert_eq!(peer_manager.available_peer_count().await, 0);
@@ -713,7 +720,7 @@ mod tests {
             .await
             .unwrap();
 
-        let peer = Peer::new("192.168.1.1".to_string(), 6881);
+        let peer = Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Tracker);
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
 
         // Connect peer using public API
@@ -761,7 +768,14 @@ mod tests {
 
         // Setup tracker to return this peer
         tracker_client
-            .expect_announce(vec![Peer::new("192.168.1.1".to_string(), 6881)], Some(1800))
+            .expect_announce(
+                vec![Peer::new(
+                    "192.168.1.1".to_string(),
+                    6881,
+                    PeerSource::Tracker,
+                )],
+                Some(1800),
+            )
             .await;
 
         let mut peer_manager = PeerManager::new_with_connector(
@@ -909,7 +923,11 @@ mod tests {
             .await
             .unwrap();
 
-        let peer = bittorrent_from_scratch::types::Peer::new("192.168.1.1".to_string(), 6881);
+        let peer = bittorrent_from_scratch::types::Peer::new(
+            "192.168.1.1".to_string(),
+            6881,
+            PeerSource::Tracker,
+        );
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
 
         let result = peer_manager.connect_peer(peer, event_tx).await;
@@ -1149,7 +1167,7 @@ mod tests {
             .await
             .unwrap();
 
-        let peer = Peer::new("192.168.1.1".to_string(), 6881);
+        let peer = Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Tracker);
         let disconnect = PeerDisconnected {
             peer: peer.clone(),
             error: bittorrent_from_scratch::error::AppError::PeerStreamClosed,
@@ -1167,7 +1185,14 @@ mod tests {
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
         tracker_client
-            .expect_announce(vec![Peer::new("192.168.1.1".to_string(), 6881)], Some(1800))
+            .expect_announce(
+                vec![Peer::new(
+                    "192.168.1.1".to_string(),
+                    6881,
+                    PeerSource::Tracker,
+                )],
+                Some(1800),
+            )
             .await;
 
         let mut peer_manager = PeerManager::new_with_connector(
@@ -1238,7 +1263,14 @@ mod tests {
             .expect_failure("Temporary network error")
             .await;
         tracker_client
-            .expect_announce(vec![Peer::new("192.168.1.1".to_string(), 6881)], Some(1800))
+            .expect_announce(
+                vec![Peer::new(
+                    "192.168.1.1".to_string(),
+                    6881,
+                    PeerSource::Tracker,
+                )],
+                Some(1800),
+            )
             .await;
 
         let mut peer_manager = PeerManager::new_with_connector(
@@ -1332,8 +1364,8 @@ mod tests {
         tracker_client
             .expect_announce(
                 vec![
-                    Peer::new("192.168.1.1".to_string(), 6881),
-                    Peer::new("192.168.1.2".to_string(), 6882),
+                    Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Tracker),
+                    Peer::new("192.168.1.2".to_string(), 6882, PeerSource::Tracker),
                 ],
                 Some(1800),
             )
@@ -1411,7 +1443,14 @@ mod tests {
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
 
         tracker_client
-            .expect_announce(vec![Peer::new("192.168.1.1".to_string(), 6881)], Some(1800))
+            .expect_announce(
+                vec![Peer::new(
+                    "192.168.1.1".to_string(),
+                    6881,
+                    PeerSource::Tracker,
+                )],
+                Some(1800),
+            )
             .await;
 
         let mut peer_manager = PeerManager::new_with_connector(
@@ -1479,8 +1518,8 @@ mod tests {
         tracker_client
             .expect_announce(
                 vec![
-                    Peer::new("192.168.1.1".to_string(), 6881),
-                    Peer::new("192.168.1.2".to_string(), 6882),
+                    Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Tracker),
+                    Peer::new("192.168.1.2".to_string(), 6882, PeerSource::Tracker),
                 ],
                 Some(1800),
             )
@@ -1547,8 +1586,8 @@ mod tests {
         tracker_client
             .expect_announce(
                 vec![
-                    Peer::new("192.168.1.1".to_string(), 6881),
-                    Peer::new("192.168.1.2".to_string(), 6882),
+                    Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Tracker),
+                    Peer::new("192.168.1.2".to_string(), 6882, PeerSource::Tracker),
                 ],
                 Some(1800),
             )
@@ -1663,7 +1702,7 @@ mod tests {
         let peer_manager = Arc::new(peer_manager);
 
         // Simulate disconnect
-        let peer = Peer::new("192.168.1.1".to_string(), 6881);
+        let peer = Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Tracker);
         let disconnect = PeerDisconnected {
             peer: peer.clone(),
             error: bittorrent_from_scratch::error::AppError::PeerStreamClosed,
@@ -1690,7 +1729,7 @@ mod tests {
         // Try to use connect_peer before initializing - should fail
         use bittorrent_from_scratch::types::Peer;
 
-        let peer = Peer::new("192.168.1.1".to_string(), 6881);
+        let peer = Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Tracker);
         let (event_tx, _) = mpsc::unbounded_channel();
 
         let result = peer_manager.connect_peer(peer, event_tx).await;
@@ -1720,9 +1759,9 @@ mod tests {
         tracker_client
             .expect_announce(
                 vec![
-                    Peer::new("192.168.1.1".to_string(), 6881),
-                    Peer::new("192.168.1.2".to_string(), 6881),
-                    Peer::new("192.168.1.3".to_string(), 6881),
+                    Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Tracker),
+                    Peer::new("192.168.1.2".to_string(), 6881, PeerSource::Tracker),
+                    Peer::new("192.168.1.3".to_string(), 6881, PeerSource::Tracker),
                 ],
                 Some(1800),
             )
@@ -1828,7 +1867,14 @@ mod tests {
 
         // Setup tracker to return this peer
         tracker_client
-            .expect_announce(vec![Peer::new("192.168.1.1".to_string(), 6881)], Some(1800))
+            .expect_announce(
+                vec![Peer::new(
+                    "192.168.1.1".to_string(),
+                    6881,
+                    PeerSource::Tracker,
+                )],
+                Some(1800),
+            )
             .await;
 
         let mut peer_manager = PeerManager::new_with_connector(
@@ -1917,9 +1963,9 @@ mod tests {
         tracker_client
             .expect_announce(
                 vec![
-                    Peer::new("192.168.1.1".to_string(), 6881),
-                    Peer::new("192.168.1.2".to_string(), 6881),
-                    Peer::new("192.168.1.3".to_string(), 6881),
+                    Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Tracker),
+                    Peer::new("192.168.1.2".to_string(), 6881, PeerSource::Tracker),
+                    Peer::new("192.168.1.3".to_string(), 6881, PeerSource::Tracker),
                 ],
                 Some(1800),
             )
@@ -2006,8 +2052,8 @@ mod tests {
         tracker_client
             .expect_announce(
                 vec![
-                    Peer::new("192.168.1.1".to_string(), 6881),
-                    Peer::new("192.168.1.2".to_string(), 6881),
+                    Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Tracker),
+                    Peer::new("192.168.1.2".to_string(), 6881, PeerSource::Tracker),
                 ],
                 Some(1800),
             )

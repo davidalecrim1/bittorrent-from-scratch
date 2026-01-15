@@ -266,4 +266,8 @@ impl DhtClient for MockDhtClient {
     async fn announce(&self, _info_hash: [u8; 20], _port: u16) -> Result<()> {
         Ok(())
     }
+
+    async fn get_stats(&self) -> Result<bittorrent_from_scratch::dht::RoutingTableStats> {
+        Ok(bittorrent_from_scratch::dht::RoutingTableStats::default())
+    }
 }

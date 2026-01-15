@@ -119,14 +119,27 @@ impl UdpMessageIO {
 
         match response {
             Response::Ping { .. } => {}
-            Response::FindNode { nodes, .. } => {
-                let nodes_bytes: Vec<u8> = nodes.iter().flat_map(|node| node.to_bytes()).collect();
-                r_dict.insert("nodes".to_string(), BencodeTypes::Raw(nodes_bytes));
+            Response::FindNode {
+                nodes: nodes_ipv4,
+                nodes6: nodes_ipv6,
+                ..
+            } => {
+                if !nodes_ipv4.is_empty() {
+                    let nodes_bytes: Vec<u8> =
+                        nodes_ipv4.iter().flat_map(|node| node.to_bytes()).collect();
+                    r_dict.insert("nodes".to_string(), BencodeTypes::Raw(nodes_bytes));
+                }
+                if !nodes_ipv6.is_empty() {
+                    let nodes6_bytes: Vec<u8> =
+                        nodes_ipv6.iter().flat_map(|node| node.to_bytes()).collect();
+                    r_dict.insert("nodes6".to_string(), BencodeTypes::Raw(nodes6_bytes));
+                }
             }
             Response::GetPeers {
                 token,
                 values,
-                nodes,
+                nodes: nodes_ipv4,
+                nodes6: nodes_ipv6,
                 ..
             } => {
                 r_dict.insert("token".to_string(), BencodeTypes::Raw(token.clone()));
@@ -144,10 +157,18 @@ impl UdpMessageIO {
                     r_dict.insert("values".to_string(), BencodeTypes::List(peer_list));
                 }
 
-                if let Some(node_list) = nodes {
+                if let Some(node_list) = nodes_ipv4 {
                     let nodes_bytes: Vec<u8> =
                         node_list.iter().flat_map(|node| node.to_bytes()).collect();
                     r_dict.insert("nodes".to_string(), BencodeTypes::Raw(nodes_bytes));
+                }
+
+                if let Some(node_list_v6) = nodes_ipv6 {
+                    let nodes6_bytes: Vec<u8> = node_list_v6
+                        .iter()
+                        .flat_map(|node| node.to_bytes())
+                        .collect();
+                    r_dict.insert("nodes6".to_string(), BencodeTypes::Raw(nodes6_bytes));
                 }
             }
             Response::AnnouncePeer { .. } => {}
@@ -280,8 +301,14 @@ impl UdpMessageIO {
                 None
             };
 
-            let nodes = if let Some(BencodeTypes::Raw(bytes)) = r_dict.get("nodes") {
+            let nodes_ipv4 = if let Some(BencodeTypes::Raw(bytes)) = r_dict.get("nodes") {
                 Some(CompactNodeInfo::parse_multiple(bytes)?)
+            } else {
+                None
+            };
+
+            let nodes_ipv6 = if let Some(BencodeTypes::Raw(bytes)) = r_dict.get("nodes6") {
+                Some(crate::dht::CompactNodeInfoV6::parse_multiple(bytes)?)
             } else {
                 None
             };
@@ -290,12 +317,27 @@ impl UdpMessageIO {
                 id,
                 token,
                 values,
-                nodes,
+                nodes: nodes_ipv4,
+                nodes6: nodes_ipv6,
             })
-        } else if r_dict.contains_key("nodes") {
-            let nodes_bytes = self.extract_raw_bytes(r_dict, "nodes")?;
-            let nodes = CompactNodeInfo::parse_multiple(&nodes_bytes)?;
-            Ok(Response::FindNode { id, nodes })
+        } else if r_dict.contains_key("nodes") || r_dict.contains_key("nodes6") {
+            let nodes_ipv4 = if let Some(BencodeTypes::Raw(bytes)) = r_dict.get("nodes") {
+                CompactNodeInfo::parse_multiple(bytes)?
+            } else {
+                Vec::new()
+            };
+
+            let nodes_ipv6 = if let Some(BencodeTypes::Raw(bytes)) = r_dict.get("nodes6") {
+                crate::dht::CompactNodeInfoV6::parse_multiple(bytes)?
+            } else {
+                Vec::new()
+            };
+
+            Ok(Response::FindNode {
+                id,
+                nodes: nodes_ipv4,
+                nodes6: nodes_ipv6,
+            })
         } else {
             Ok(Response::Ping { id })
         }
@@ -365,16 +407,20 @@ impl UdpMessageIO {
 
     fn parse_peer_values(&self, list: &[BencodeTypes]) -> Result<Vec<SocketAddrV4>> {
         list.iter()
-            .map(|item| match item {
-                BencodeTypes::Raw(bytes) => {
-                    if bytes.len() != 6 {
-                        anyhow::bail!("Peer address must be 6 bytes");
-                    }
-                    let ip = Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]);
-                    let port = u16::from_be_bytes([bytes[4], bytes[5]]);
-                    Ok(SocketAddrV4::new(ip, port))
+            .map(|item| {
+                let bytes = match item {
+                    BencodeTypes::Raw(bytes) => bytes.as_slice(),
+                    BencodeTypes::String(s) => s.as_bytes(),
+                    _ => anyhow::bail!("Peer value must be raw bytes or string"),
+                };
+
+                if bytes.len() != 6 {
+                    anyhow::bail!("Peer address must be 6 bytes, got {}", bytes.len());
                 }
-                _ => anyhow::bail!("Peer value must be raw bytes"),
+
+                let ip = Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]);
+                let port = u16::from_be_bytes([bytes[4], bytes[5]]);
+                Ok(SocketAddrV4::new(ip, port))
             })
             .collect()
     }
@@ -397,5 +443,269 @@ impl DhtMessageIO for UdpMessageIO {
         let msg = self.decode_message(&buf[..len])?;
         debug!("Received DHT message from {}: {:?}", addr, msg);
         Ok((msg, addr))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dht::{CompactNodeInfo, CompactNodeInfoV6, NodeId, Query, Response};
+    use crate::encoding::{Decoder, Encoder};
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+    use std::sync::Arc;
+    use tokio::net::UdpSocket;
+
+    async fn create_test_message_io() -> UdpMessageIO {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let encoder = Encoder {};
+        let decoder = Decoder {};
+        UdpMessageIO::new(Arc::new(socket), encoder, decoder)
+    }
+
+    #[tokio::test]
+    async fn test_encode_decode_find_node_response_with_ipv6() {
+        let io = create_test_message_io().await;
+
+        let ipv4_node = CompactNodeInfo {
+            id: NodeId::new([0x01; 20]),
+            addr: SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 1), 6881),
+        };
+
+        let ipv6_node = CompactNodeInfoV6 {
+            id: NodeId::new([0x02; 20]),
+            addr: SocketAddrV6::new(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1), 6881, 0, 0),
+        };
+
+        let response = Response::FindNode {
+            id: NodeId::new([0x42; 20]),
+            nodes: vec![ipv4_node.clone()],
+            nodes6: vec![ipv6_node.clone()],
+        };
+
+        let msg = KrpcMessage::Response {
+            transaction_id: vec![0x01, 0x02],
+            response: response.clone(),
+        };
+
+        let encoded = io.encode_message(&msg).unwrap();
+        let decoded = io.decode_message(&encoded).unwrap();
+
+        if let KrpcMessage::Response {
+            transaction_id,
+            response: decoded_response,
+        } = decoded
+        {
+            assert_eq!(transaction_id, vec![0x01, 0x02]);
+            if let Response::FindNode { id, nodes, nodes6 } = decoded_response {
+                assert_eq!(id, NodeId::new([0x42; 20]));
+                assert_eq!(nodes.len(), 1);
+                assert_eq!(nodes[0].id, ipv4_node.id);
+                assert_eq!(nodes6.len(), 1);
+                assert_eq!(nodes6[0].id, ipv6_node.id);
+            } else {
+                panic!("Expected FindNode response");
+            }
+        } else {
+            panic!("Expected Response message");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_encode_decode_get_peers_response_with_ipv6() {
+        let io = create_test_message_io().await;
+
+        let ipv4_node = CompactNodeInfo {
+            id: NodeId::new([0x03; 20]),
+            addr: SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 1), 6882),
+        };
+
+        let ipv6_node = CompactNodeInfoV6 {
+            id: NodeId::new([0x04; 20]),
+            addr: SocketAddrV6::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 6882, 0, 0),
+        };
+
+        let response = Response::GetPeers {
+            id: NodeId::new([0x43; 20]),
+            token: vec![0xAA, 0xBB],
+            values: None,
+            nodes: Some(vec![ipv4_node.clone()]),
+            nodes6: Some(vec![ipv6_node.clone()]),
+        };
+
+        let msg = KrpcMessage::Response {
+            transaction_id: vec![0x12, 0x34],
+            response: response.clone(),
+        };
+
+        let encoded = io.encode_message(&msg).unwrap();
+        let decoded = io.decode_message(&encoded).unwrap();
+
+        if let KrpcMessage::Response {
+            transaction_id,
+            response: decoded_response,
+        } = decoded
+        {
+            assert_eq!(transaction_id, vec![0x12, 0x34]);
+            if let Response::GetPeers {
+                id,
+                token,
+                nodes,
+                nodes6,
+                ..
+            } = decoded_response
+            {
+                assert_eq!(id, NodeId::new([0x43; 20]));
+                assert_eq!(token, vec![0xAA, 0xBB]);
+                assert_eq!(nodes.unwrap().len(), 1);
+                assert_eq!(nodes6.unwrap().len(), 1);
+            } else {
+                panic!("Expected GetPeers response");
+            }
+        } else {
+            panic!("Expected Response message");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_encode_decode_ping_query() {
+        let io = create_test_message_io().await;
+
+        let query = Query::Ping {
+            id: NodeId::new([0x55; 20]),
+        };
+
+        let msg = KrpcMessage::Query {
+            transaction_id: vec![0xAB, 0xCD],
+            query: query.clone(),
+        };
+
+        let encoded = io.encode_message(&msg).unwrap();
+        let decoded = io.decode_message(&encoded).unwrap();
+
+        if let KrpcMessage::Query {
+            transaction_id,
+            query: decoded_query,
+        } = decoded
+        {
+            assert_eq!(transaction_id, vec![0xAB, 0xCD]);
+            if let Query::Ping { id } = decoded_query {
+                assert_eq!(id, NodeId::new([0x55; 20]));
+            } else {
+                panic!("Expected Ping query");
+            }
+        } else {
+            panic!("Expected Query message");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_encode_decode_find_node_query() {
+        let io = create_test_message_io().await;
+
+        let query = Query::FindNode {
+            id: NodeId::new([0x66; 20]),
+            target: NodeId::new([0x77; 20]),
+        };
+
+        let msg = KrpcMessage::Query {
+            transaction_id: vec![0x11, 0x22],
+            query: query.clone(),
+        };
+
+        let encoded = io.encode_message(&msg).unwrap();
+        let decoded = io.decode_message(&encoded).unwrap();
+
+        if let KrpcMessage::Query {
+            transaction_id,
+            query: decoded_query,
+        } = decoded
+        {
+            assert_eq!(transaction_id, vec![0x11, 0x22]);
+            if let Query::FindNode { id, target } = decoded_query {
+                assert_eq!(id, NodeId::new([0x66; 20]));
+                assert_eq!(target, NodeId::new([0x77; 20]));
+            } else {
+                panic!("Expected FindNode query");
+            }
+        } else {
+            panic!("Expected Query message");
+        }
+    }
+
+    #[test]
+    fn test_find_node_response_with_both_ipv4_and_ipv6_nodes() {
+        let ipv4_node = CompactNodeInfo {
+            id: NodeId::new([0x01; 20]),
+            addr: SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 1), 6881),
+        };
+
+        let ipv6_node = CompactNodeInfoV6 {
+            id: NodeId::new([0x02; 20]),
+            addr: SocketAddrV6::new(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1), 6881, 0, 0),
+        };
+
+        let response = Response::FindNode {
+            id: NodeId::new([0x42; 20]),
+            nodes: vec![ipv4_node.clone()],
+            nodes6: vec![ipv6_node.clone()],
+        };
+
+        // Verify response contains both node types
+        if let Response::FindNode { id, nodes, nodes6 } = response {
+            assert_eq!(id, NodeId::new([0x42; 20]));
+            assert_eq!(nodes.len(), 1);
+            assert_eq!(nodes[0].id, ipv4_node.id);
+            assert_eq!(nodes6.len(), 1);
+            assert_eq!(nodes6[0].id, ipv6_node.id);
+        } else {
+            panic!("Expected FindNode response");
+        }
+    }
+
+    #[test]
+    fn test_get_peers_response_with_both_ipv4_and_ipv6_nodes() {
+        let token = vec![0xAA, 0xBB];
+
+        let ipv4_node = CompactNodeInfo {
+            id: NodeId::new([0x03; 20]),
+            addr: SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 1), 6882),
+        };
+
+        let ipv6_node = CompactNodeInfoV6 {
+            id: NodeId::new([0x04; 20]),
+            addr: SocketAddrV6::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), 6882, 0, 0),
+        };
+
+        let response = Response::GetPeers {
+            id: NodeId::new([0x43; 20]),
+            token: token.clone(),
+            values: None,
+            nodes: Some(vec![ipv4_node.clone()]),
+            nodes6: Some(vec![ipv6_node.clone()]),
+        };
+
+        // Verify response contains both node types
+        if let Response::GetPeers {
+            id,
+            token: resp_token,
+            values,
+            nodes,
+            nodes6,
+        } = response
+        {
+            assert_eq!(id, NodeId::new([0x43; 20]));
+            assert_eq!(resp_token, token);
+            assert!(values.is_none());
+
+            let nodes = nodes.unwrap();
+            assert_eq!(nodes.len(), 1);
+            assert_eq!(nodes[0].id, ipv4_node.id);
+
+            let nodes6 = nodes6.unwrap();
+            assert_eq!(nodes6.len(), 1);
+            assert_eq!(nodes6[0].id, ipv6_node.id);
+        } else {
+            panic!("Expected GetPeers response");
+        }
     }
 }

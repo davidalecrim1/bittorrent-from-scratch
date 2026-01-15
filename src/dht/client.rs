@@ -1,3 +1,4 @@
+use super::RoutingTableStats;
 use super::manager::DhtManager;
 use crate::types::Peer;
 use anyhow::Result;
@@ -9,6 +10,8 @@ pub trait DhtClient: Send + Sync {
     async fn get_peers(&self, info_hash: [u8; 20]) -> Result<Vec<Peer>>;
     /// Announces that this node has the torrent identified by info_hash on the given port.
     async fn announce(&self, info_hash: [u8; 20], port: u16) -> Result<()>;
+    /// Returns statistics about the DHT routing table.
+    async fn get_stats(&self) -> Result<RoutingTableStats>;
 }
 
 #[async_trait]
@@ -21,5 +24,10 @@ impl DhtClient for DhtManager {
     /// Announces that this node has the torrent identified by info_hash on the given port.
     async fn announce(&self, info_hash: [u8; 20], port: u16) -> Result<()> {
         self.announce(info_hash, port).await
+    }
+
+    /// Returns statistics about the DHT routing table.
+    async fn get_stats(&self) -> Result<RoutingTableStats> {
+        Ok(self.get_stats().await)
     }
 }
