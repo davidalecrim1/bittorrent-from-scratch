@@ -7,8 +7,6 @@ This file tracks pending tasks and improvements identified in the codebase.
 - [ ] Break the file types into the existing files and remove it.
 - [ ] See what I can do to improve the download speed.
 - [ ] Consider a minimal terminal UI.
-- [ ] Add some docs about the Magnet Link.
-- [ ] Code review of Magnet Link.
 
 ## Out of Scope
 - [ ] Choke uploads if peers are abusing the requests.

@@ -107,7 +107,7 @@ pub struct FakePeerConnectionFactory {
     /// Without this, the channel would close immediately when connect() returns.
     _receivers: Arc<
         tokio::sync::Mutex<
-            Vec<mpsc::Receiver<bittorrent_from_scratch::types::PieceDownloadRequest>>,
+            Vec<mpsc::UnboundedReceiver<bittorrent_from_scratch::types::PieceDownloadRequest>>,
         >,
     >,
 }
@@ -173,8 +173,8 @@ impl PeerConnectionFactory for FakePeerConnectionFactory {
         >,
     ) -> Result<ConnectedPeer> {
         let (download_request_tx, rx) =
-            mpsc::channel::<bittorrent_from_scratch::types::PieceDownloadRequest>(10);
-        let (message_tx, _message_rx) = mpsc::channel::<PeerMessage>(10);
+            mpsc::unbounded_channel::<bittorrent_from_scratch::types::PieceDownloadRequest>();
+        let (message_tx, _message_rx) = mpsc::unbounded_channel::<PeerMessage>();
 
         // Store receiver to keep channel alive
         self._receivers.lock().await.push(rx);

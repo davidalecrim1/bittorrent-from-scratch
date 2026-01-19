@@ -22,9 +22,15 @@ const TCP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 #[async_trait]
 impl TcpStreamFactory for DefaultTcpStreamFactory {
     async fn connect(&self, addr: String) -> Result<TcpStream> {
-        tokio::time::timeout(TCP_CONNECTION_TIMEOUT, TcpStream::connect(&addr))
+        let stream = tokio::time::timeout(TCP_CONNECTION_TIMEOUT, TcpStream::connect(&addr))
             .await
             .with_context(|| format!("connection timeout to {}", addr))?
-            .with_context(|| format!("failed to connect to {}", addr))
+            .with_context(|| format!("failed to connect to {}", addr))?;
+
+        // Disable Nagle's algorithm for lower latency on small packets
+        // This is a standard optimization used by uTorrent, qBittorrent, and other high-performance clients
+        stream.set_nodelay(true)?;
+
+        Ok(stream)
     }
 }

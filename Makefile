@@ -1,64 +1,64 @@
 sample-run-1: clean
-	LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- \
+	@LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- \
 		-i ./tests/testdata/ubuntu-24.04.3-desktop-amd64.iso.torrent \
 		-o ./output/ \
-		--max-download-rate 2M \
-		--max-upload-rate 100K \
-		--max-peers 15 \
+		--max-download-rate 10M \
+		--max-upload-rate 200K \
+		--max-peers 40 \
 		--log-dir ./logs
 
 sample-run-2: clean
-	LOG_LEVEL=INFO RUST_BACKTRACE=1 cargo run -- \
+	@LOG_LEVEL=INFO RUST_BACKTRACE=1 cargo run -- \
 		-i ./tests/testdata/ubuntu-24.04.3-desktop-amd64.iso.torrent \
 		-o ./output/ \
-		--max-download-rate 2M \
-		--max-upload-rate 100K \
-		--max-peers 15 \
+		--max-download-rate 10M \
+		--max-upload-rate 200K \
+		--max-peers 40 \
 		--log-dir ./logs
 
 sample-run-3: clean
-	LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- \
+	@LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- \
 		-i ./tests/testdata/alpine-standard-3.23.2-aarch64.iso.torrent \
 		-o ./output/ \
-		--max-download-rate 2M \
-		--max-upload-rate 100K \
-		--max-peers 15 \
+		--max-download-rate 10M \
+		--max-upload-rate 200K \
+		--max-peers 40 \
 		--log-dir ./logs \
 		--no-tracker
 
 sample-run-4: clean
-	LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- \
+	@LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- \
 		-i ./tests/testdata/alpine-standard-3.23.2-aarch64.iso.torrent \
 		-o ./output/ \
-		--max-download-rate 2M \
-		--max-upload-rate 100K \
-		--max-peers 15 \
+		--max-download-rate 10M \
+		--max-upload-rate 200K \
+		--max-peers 40 \
 		--log-dir ./logs
 
 sample-run-5: clean
-	LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- \
+	@LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- \
 		-i ./tests/testdata/archlinux-2026.01.01-x86_64.iso.torrent \
 		-o ./output/ \
-		--max-download-rate 2M \
-		--max-upload-rate 100K \
-		--max-peers 15 \
+		--max-download-rate 10M \
+		--max-upload-rate 200K \
+		--max-peers 40 \
 		--log-dir ./logs
 
 sample-run-magnet-1: clean
-	LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- \
+	@LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- \
 		--input "magnet:?xt=urn:btih:1e873cd33f55737aaaefc0c282c428593c16e106&dn=archlinux-2026.01.01-x86_64.iso" \
 		--output ./output/ \
 		--name archlinux-2026.01.01-x86_64.iso \
-		--max-download-rate 2M \
-		--max-upload-rate 100K \
-		--max-peers 15 \
+		--max-download-rate 10M \
+		--max-upload-rate 200K \
+		--max-peers 40 \
 		--log-dir ./logs
 
 build:
-	cargo build --release
+	@cargo build --release
 
 install:
-	cargo build --release
+	@cargo build --release
 	@mkdir -p ~/.local/bin
 	@cp target/release/bittorrent-from-scratch ~/.local/bin/bittorrent
 	@echo "Installed to ~/.local/bin/bittorrent"
@@ -67,18 +67,19 @@ install:
 clean:
 	@rm -rf output/*
 	@rm -rf target/*
+	@rm -rf logs/*
 
 format:
-	cargo fmt --all
+	@cargo fmt --all
 
 lint:
-	cargo clippy -- -D warnings
+	@cargo clippy -- -D warnings
 
 test:
-	cargo test
+	@cargo test
 
 coverage:
-	cargo tarpaulin --all-targets --engine llvm --out Stdout --timeout 30
+	@cargo tarpaulin --all-targets --engine llvm --out Stdout --timeout 30
 
 coverage-by-file:
 	@./scripts/coverage-by-file.sh

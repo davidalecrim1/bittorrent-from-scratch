@@ -20,19 +20,15 @@ use crate::peer_messages::{
 };
 use crate::piece_manager::PieceManager;
 use crate::types::{
-    FailedPiece, Peer, PeerDisconnected, PeerEvent, PieceDownloadRequest, StorePieceRequest,
+    FailedPiece, MAX_PIECES_PER_PEER, Peer, PeerDisconnected, PeerEvent, PieceDownloadRequest,
+    StorePieceRequest,
 };
 
 const DEFAULT_BLOCK_SIZE: usize = 16 * 1024; // 16 KiB per BitTorrent spec
-const MAX_PIECES_PER_PEER: usize = 1; // Max concurrent pieces per peer
 
 // Limits the amount of concurrent pieces blocks (chunks) that can be
 // downloaded concurrently.
-const SEMAPHORE_BLOCK_CONCURRENCY: usize = 6;
-
-const OUTBOUND_CHANNEL_SIZE: usize = 1024;
-const INBOUND_CHANNEL_SIZE: usize = 1024;
-const DOWNLOAD_REQUEST_CHANNEL_SIZE: usize = 256;
+const SEMAPHORE_BLOCK_CONCURRENCY: usize = 25;
 
 const MAX_RETRIES_HANDSHAKE: usize = 3;
 
@@ -40,7 +36,7 @@ pub struct PieceDownloadTask {
     pub piece_index: u32,
     pub download_state: DownloadState,
     pub block_semaphore: Arc<tokio::sync::Semaphore>,
-    pub outbound_tx: mpsc::Sender<PeerMessage>,
+    pub outbound_tx: mpsc::UnboundedSender<PeerMessage>,
     pub inbound_rx: mpsc::UnboundedReceiver<PieceMessage>,
     pub event_tx: mpsc::UnboundedSender<PeerEvent>,
     pub peer_addr: String,
@@ -72,7 +68,7 @@ impl PieceDownloadTask {
                     length,
                 };
 
-                self.outbound_tx.send(PeerMessage::Request(request)).await?;
+                self.outbound_tx.send(PeerMessage::Request(request))?;
 
                 let piece_msg = match self.inbound_rx.recv().await {
                     Some(msg) => msg,
@@ -163,19 +159,19 @@ pub struct PeerConnection {
     tcp_connector: Arc<dyn crate::tcp_connector::TcpStreamFactory>,
 
     // Outbound messages the actor will write to the wire
-    outbound_tx: mpsc::Sender<PeerMessage>,
-    outbound_rx: Option<mpsc::Receiver<PeerMessage>>,
+    outbound_tx: mpsc::UnboundedSender<PeerMessage>,
+    outbound_rx: Option<mpsc::UnboundedReceiver<PeerMessage>>,
 
     // Inbound messages read from the wire and sent out
-    inbound_tx: mpsc::Sender<PeerMessage>,
-    inbound_rx: Option<mpsc::Receiver<PeerMessage>>,
+    inbound_tx: mpsc::UnboundedSender<PeerMessage>,
+    inbound_rx: Option<mpsc::UnboundedReceiver<PeerMessage>>,
 
     // Receives broadcast messages from PeerManager to send to all peers simultaneously.
     // Used for efficiently broadcasting Have messages when we complete pieces.
     broadcast_rx: Option<tokio::sync::broadcast::Receiver<PeerMessage>>,
 
     // Piece download channels
-    download_request_rx: Option<mpsc::Receiver<PieceDownloadRequest>>,
+    download_request_rx: Option<mpsc::UnboundedReceiver<PieceDownloadRequest>>,
 
     // Unified event channel with Peer Manager
     event_tx: mpsc::UnboundedSender<PeerEvent>,
@@ -223,14 +219,13 @@ impl PeerConnection {
         broadcast_rx: tokio::sync::broadcast::Receiver<PeerMessage>,
     ) -> (
         Self,
-        mpsc::Sender<PieceDownloadRequest>,
+        mpsc::UnboundedSender<PieceDownloadRequest>,
         Arc<RwLock<HashSet<u32>>>,
-        mpsc::Sender<PeerMessage>,
+        mpsc::UnboundedSender<PeerMessage>,
     ) {
-        let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CHANNEL_SIZE);
-        let (inbound_tx, inbound_rx) = mpsc::channel(INBOUND_CHANNEL_SIZE);
-        let (download_request_tx, download_request_rx) =
-            mpsc::channel(DOWNLOAD_REQUEST_CHANNEL_SIZE);
+        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+        let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+        let (download_request_tx, download_request_rx) = mpsc::unbounded_channel();
 
         let bitfield = Arc::new(RwLock::new(HashSet::new()));
         let block_semaphore = Arc::new(tokio::sync::Semaphore::new(SEMAPHORE_BLOCK_CONCURRENCY));
@@ -379,7 +374,7 @@ impl PeerConnection {
                     result = message_io.read_message() => {
                         match result {
                             Ok(Some(msg)) => {
-                                if inbound_tx.send(msg).await.is_err() {
+                                if inbound_tx.send(msg).is_err() {
                                     // Channel closed, stop I/O task
                                     break;
                                 }
@@ -416,13 +411,11 @@ impl PeerConnection {
 
         // Send bitfield if we have any pieces (bandwidth saving: don't send empty bitfield)
         if let Some(bitfield) = our_bitfield {
-            let _ = outbound_tx.send(PeerMessage::Bitfield(bitfield)).await;
+            let _ = outbound_tx.send(PeerMessage::Bitfield(bitfield));
         }
 
         // Send interested message (peer will respond with bitfield)
-        let _ = outbound_tx
-            .send(PeerMessage::Interested(InterestedMessage {}))
-            .await;
+        let _ = outbound_tx.send(PeerMessage::Interested(InterestedMessage {}));
 
         Ok(())
     }
@@ -437,7 +430,7 @@ impl PeerConnection {
         let peer_addr = peer.get_addr();
 
         tokio::task::spawn(async move {
-            let mut cleanup_interval = tokio::time::interval(Duration::from_millis(500));
+            let mut cleanup_interval = tokio::time::interval(Duration::from_millis(50));
             cleanup_interval.tick().await;
 
             loop {
@@ -453,7 +446,7 @@ impl PeerConnection {
                         match result {
                             Ok(msg) => {
                                 // Forward broadcast message to outbound channel
-                                if let Err(e) = outbound_tx.send(msg).await {
+                                if let Err(e) = outbound_tx.send(msg) {
                                     debug!("Failed to send broadcast message to peer {}: {}", peer_addr, e);
                                 }
                             }
@@ -572,8 +565,7 @@ impl PeerConnection {
                 self.is_interested = true;
                 let _ = self
                     .outbound_tx
-                    .send(PeerMessage::Unchoke(UnchokeMessage {}))
-                    .await;
+                    .send(PeerMessage::Unchoke(UnchokeMessage {}));
             }
 
             PeerMessage::NotInterested(_) => {
@@ -615,7 +607,7 @@ impl PeerConnection {
                                 block,
                             };
 
-                            if let Err(e) = outbound_tx.send(PeerMessage::Piece(piece_msg)).await {
+                            if let Err(e) = outbound_tx.send(PeerMessage::Piece(piece_msg)) {
                                 debug!("Failed to send piece to peer {}: {}", peer_addr_clone, e);
                             } else {
                                 debug!(

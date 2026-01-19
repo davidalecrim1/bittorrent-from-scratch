@@ -177,7 +177,7 @@ mod tests {
             expected_hash: [0u8; 20],
             piece_length: 16384,
         };
-        download_request_tx.send(piece_request).await.unwrap();
+        download_request_tx.send(piece_request).unwrap();
 
         // Give it time to process
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -257,7 +257,7 @@ mod tests {
             expected_hash,
             piece_length,
         };
-        download_request_tx.send(piece_request).await.unwrap();
+        download_request_tx.send(piece_request).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Peer should receive Request message
@@ -354,7 +354,7 @@ mod tests {
             expected_hash,
             piece_length,
         };
-        download_request_tx.send(piece_request).await.unwrap();
+        download_request_tx.send(piece_request).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // The task will request blocks - respond to all of them
@@ -573,7 +573,7 @@ mod tests {
             expected_hash: [0u8; 20],
             piece_length: 16384,
         };
-        let send_result = download_request_tx.send(piece_request).await;
+        let send_result = download_request_tx.send(piece_request);
         assert!(
             send_result.is_ok(),
             "Should be able to send download request"
@@ -646,7 +646,7 @@ mod tests {
             expected_hash: [0u8; 20],
             piece_length: 16384,
         };
-        download_request_tx.send(piece_request).await.unwrap();
+        download_request_tx.send(piece_request).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Wait for Request message
@@ -731,7 +731,7 @@ mod tests {
             expected_hash: [0u8; 20],
             piece_length: 16384,
         };
-        download_request_tx.send(piece_request).await.unwrap();
+        download_request_tx.send(piece_request).unwrap();
 
         // Should receive a failure notification
         match tokio::time::timeout(tokio::time::Duration::from_secs(1), event_rx.recv()).await {
@@ -929,7 +929,7 @@ mod tests {
             expected_hash,
             piece_length,
         };
-        download_request_tx.send(piece_request).await.unwrap();
+        download_request_tx.send(piece_request).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Handle block requests and responses in a loop
@@ -1259,7 +1259,6 @@ mod tests {
                     expected_hash,
                     piece_length: 16384,
                 })
-                .await
                 .unwrap();
         }
 
@@ -1325,10 +1324,7 @@ mod tests {
             expected_hash: [0u8; 20],
         };
 
-        download_request_tx
-            .send(piece_request.clone())
-            .await
-            .unwrap();
+        download_request_tx.send(piece_request.clone()).unwrap();
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -1398,7 +1394,6 @@ mod tests {
                     piece_length,
                     expected_hash: [0u8; 20],
                 })
-                .await
                 .unwrap();
         }
 
@@ -1434,8 +1429,8 @@ mod tests {
 
         assert_eq!(
             unique_pieces.len(),
-            1,
-            "Should only download 1 piece at a time due to MAX_PIECES_PER_PEER=1, got {} pieces",
+            3,
+            "Should only download 3 pieces at a time due to MAX_PIECES_PER_PEER=3, got {} pieces",
             unique_pieces.len()
         );
     }

@@ -8,8 +8,9 @@ use crate::piece_manager::{FilePieceManager, PieceManager};
 use crate::tcp_connector::DefaultTcpStreamFactory;
 use crate::tracker_client::{HttpTrackerClient, TrackerClient};
 use crate::types::{
-    AnnounceRequest, ConnectedPeer, FailedPiece, Peer, PeerAddr, PeerConnection, PeerDisconnected,
-    PeerEvent, PeerManagerConfig, PeerManagerHandle, PieceDownloadRequest,
+    AnnounceRequest, ConnectedPeer, FailedPiece, MAX_PIECES_PER_PEER, Peer, PeerAddr,
+    PeerConnection, PeerDisconnected, PeerEvent, PeerManagerConfig, PeerManagerHandle,
+    PieceDownloadRequest,
 };
 
 use crate::dht::DhtClient;
@@ -26,7 +27,6 @@ const PROGRESS_REPORT_INTERVAL_SECS: u64 = 10;
 const PEER_CONNECTOR_INTERVAL_SECS: u64 = 10;
 const STALE_DOWNLOAD_CHECK_INTERVAL_SECS: u64 = 30;
 const MAX_CONCURRENT_HANDSHAKES: usize = 10;
-const MAX_PIECES_PER_PEER: usize = 1;
 const CLIENT_PEER_ID: &[u8; 20] = b"bittorrent-rust-0001";
 
 #[async_trait]
@@ -727,7 +727,7 @@ impl PeerManager {
                         }
                         Ok(false) | Err(_) => {
                             // Queue empty or assignment failed, wait before retry
-                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            tokio::time::sleep(Duration::from_millis(10)).await;
                         }
                     }
                 } => {}
@@ -882,7 +882,7 @@ impl PeerManager {
         }; // Read lock released here
 
         // Phase 3: Send request WITHOUT holding any locks
-        sender.send(request.clone()).await?;
+        sender.send(request.clone())?;
 
         // Phase 4: Transition piece to InFlight state
         self.piece_manager
