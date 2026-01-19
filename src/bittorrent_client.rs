@@ -7,8 +7,11 @@ use std::{collections::BTreeMap, fs};
 
 use crate::encoding::Decoder;
 use crate::encoding::Encoder;
+use crate::magnet_link::MagnetLink;
 use crate::peer_manager::PeerManager;
 use crate::types::{BencodeTypes, PeerManagerConfig, PieceDownloadRequest};
+
+const CLIENT_PEER_ID: &[u8; 20] = b"bittorrent-rust-0001";
 
 pub struct BitTorrent {
     // Encoder and Decoder are used to encode and decode
@@ -25,6 +28,9 @@ pub struct BitTorrent {
 
     // Download timing metrics
     start_time: Option<Instant>,
+
+    // Magnet link (for magnet-based downloads)
+    magnet_link: Option<MagnetLink>,
 }
 
 impl BitTorrent {
@@ -40,14 +46,31 @@ impl BitTorrent {
             metadata: None,
             peer_manager: Arc::new(peer_manager),
             start_time: None,
+            magnet_link: None,
         };
 
-        torrent.load_file(input_file_path)?;
+        torrent.load_torrent_file(input_file_path)?;
         Ok(torrent)
     }
 
+    pub fn new_from_magnet(
+        decoder: Decoder,
+        encoder: Encoder,
+        peer_manager: PeerManager,
+        magnet: MagnetLink,
+    ) -> Result<Self> {
+        Ok(Self {
+            decoder,
+            encoder,
+            metadata: None,
+            peer_manager: Arc::new(peer_manager),
+            start_time: None,
+            magnet_link: Some(magnet),
+        })
+    }
+
     // Loads the torrent source file to extract metadata.
-    fn load_file(&mut self, path: String) -> Result<()> {
+    fn load_torrent_file(&mut self, path: String) -> Result<()> {
         let bytes = fs::read(path)?;
 
         let (_n, val) = self.decoder.from_bytes(&bytes)?;
@@ -160,7 +183,11 @@ impl BitTorrent {
         let piece_length = self.get_piece_length()?;
         let num_pieces = self.get_num_pieces()?;
         let pieces_hashes = self.get_pieces_hashes()?;
-        let client_peer_id = *b"postman-000000000001"; // TODO: Improve this to something clearer.
+        let client_peer_id = *CLIENT_PEER_ID;
+
+        let filename = self.get_filename()?;
+        let output_path = format!("{}/{}", output_directory_path, filename);
+        let file_path = std::path::PathBuf::from(&output_path);
 
         let config = PeerManagerConfig {
             info_hash,
@@ -170,92 +197,8 @@ impl BitTorrent {
             piece_length,
         };
 
-        let filename = self.get_filename()?;
-        let output_path = format!("{}/{}", output_directory_path, filename);
-        let file_path = std::path::PathBuf::from(&output_path);
-
-        // Initialize PeerManager with file metadata - it will create and manage the file
-        Arc::get_mut(&mut self.peer_manager)
-            .ok_or_else(|| anyhow!("Failed to get mutable reference to PeerManager"))?
-            .initialize(config, file_path, file_size as u64, piece_length)
-            .await?;
-
-        let _peer_manager_handle = self
-            .peer_manager
-            .clone()
-            .start(announce_url.clone())
-            .await?;
-
-        let piece_requests: Vec<PieceDownloadRequest> = (0..num_pieces)
-            .map(|idx| {
-                let piece_hash = pieces_hashes[idx];
-
-                // Calculate the correct piece length for this piece
-                let offset = idx * piece_length;
-                let remaining = file_size.saturating_sub(offset);
-                let current_piece_length = std::cmp::min(piece_length, remaining);
-
-                PieceDownloadRequest {
-                    piece_index: idx as u32,
-                    piece_length: current_piece_length,
-                    expected_hash: piece_hash,
-                }
-            })
-            .collect();
-
-        self.peer_manager.request_pieces(piece_requests).await?;
-
-        // Wait for all pieces to complete by checking download status
-        self.wait_for_download_completion(num_pieces).await?;
-
-        info!("✅ All pieces downloaded and written to disk");
-
-        // Verify all pieces by reading from disk and checking hashes
-        info!("🔍 Verifying piece integrity...");
-        let failed_pieces = self
-            .peer_manager
-            .verify_completed_pieces(&pieces_hashes)
-            .await?;
-
-        if !failed_pieces.is_empty() {
-            info!(
-                "⚠️ Found {} pieces with hash mismatches, re-downloading...",
-                failed_pieces.len()
-            );
-            // Pieces are already re-queued, wait for completion again
-            self.wait_for_download_completion(num_pieces).await?;
-
-            // Verify again after re-download
-            let failed_pieces_retry = self
-                .peer_manager
-                .verify_completed_pieces(&pieces_hashes)
-                .await?;
-
-            if !failed_pieces_retry.is_empty() {
-                return Err(anyhow!(
-                    "Verification failed after retry. {} pieces still corrupted",
-                    failed_pieces_retry.len()
-                ));
-            }
-
-            info!("✅ All pieces verified successfully after retry");
-        } else {
-            info!("✅ All pieces verified successfully");
-        }
-
-        // Display download metrics
-        if let Some(start_time) = self.start_time {
-            let duration = start_time.elapsed();
-            let duration_secs = duration.as_secs_f64();
-            let file_size_mb = file_size as f64 / (1024.0 * 1024.0);
-            let avg_speed_mbps = file_size_mb / duration_secs;
-
-            info!("📊 Download completed in {:.2}s", duration_secs);
-            info!("📦 File size: {:.2} MB", file_size_mb);
-            info!("⚡ Average speed: {:.2} MB/s", avg_speed_mbps);
-        }
-
-        Ok(())
+        self.initialize_and_download(config, announce_url, file_path, &pieces_hashes)
+            .await
     }
 
     /// Wait for all pieces to be downloaded and written to disk.
@@ -323,5 +266,321 @@ impl BitTorrent {
                 .collect(),
             _ => Err(anyhow!("pieces field is not a list")),
         }
+    }
+
+    pub fn set_metadata_for_test(&mut self, metadata: BTreeMap<String, BencodeTypes>) {
+        self.metadata = Some(metadata);
+    }
+
+    pub fn build_piece_requests(
+        &self,
+        num_pieces: usize,
+        piece_length: usize,
+        file_size: usize,
+        pieces_hashes: &[[u8; 20]],
+    ) -> Vec<PieceDownloadRequest> {
+        (0..num_pieces)
+            .map(|idx| {
+                let piece_hash = pieces_hashes[idx];
+                let offset = idx * piece_length;
+                let remaining = file_size.saturating_sub(offset);
+                let current_piece_length = std::cmp::min(piece_length, remaining);
+
+                PieceDownloadRequest {
+                    piece_index: idx as u32,
+                    piece_length: current_piece_length,
+                    expected_hash: piece_hash,
+                }
+            })
+            .collect()
+    }
+
+    async fn download_and_verify_pieces(
+        &mut self,
+        num_pieces: usize,
+        piece_length: usize,
+        file_size: usize,
+        pieces_hashes: &[[u8; 20]],
+    ) -> Result<()> {
+        let piece_requests =
+            self.build_piece_requests(num_pieces, piece_length, file_size, pieces_hashes);
+        self.peer_manager.request_pieces(piece_requests).await?;
+        self.wait_for_download_completion(num_pieces).await?;
+
+        info!("✅ All pieces downloaded and written to disk");
+
+        info!("🔍 Verifying piece integrity...");
+        let failed_pieces = self
+            .peer_manager
+            .verify_completed_pieces(pieces_hashes)
+            .await?;
+
+        if !failed_pieces.is_empty() {
+            info!(
+                "⚠️ Found {} pieces with hash mismatches, re-downloading...",
+                failed_pieces.len()
+            );
+
+            let retry_requests: Vec<PieceDownloadRequest> = failed_pieces
+                .iter()
+                .map(|&idx| {
+                    let piece_hash = pieces_hashes[idx as usize];
+                    let offset = idx as usize * piece_length;
+                    let remaining = file_size.saturating_sub(offset);
+                    let current_piece_length = std::cmp::min(piece_length, remaining);
+
+                    PieceDownloadRequest {
+                        piece_index: idx,
+                        piece_length: current_piece_length,
+                        expected_hash: piece_hash,
+                    }
+                })
+                .collect();
+
+            self.peer_manager.request_pieces(retry_requests).await?;
+            self.wait_for_download_completion(num_pieces).await?;
+
+            let failed_pieces_second = self
+                .peer_manager
+                .verify_completed_pieces(pieces_hashes)
+                .await?;
+
+            if !failed_pieces_second.is_empty() {
+                return Err(anyhow!(
+                    "Verification failed after retry. {} pieces still corrupted",
+                    failed_pieces_second.len()
+                ));
+            }
+
+            info!("✅ All pieces verified successfully after retry");
+        } else {
+            info!("✅ All pieces verified successfully");
+        }
+
+        Ok(())
+    }
+
+    async fn initialize_and_download(
+        &mut self,
+        config: PeerManagerConfig,
+        announce_url: Option<String>,
+        file_path: std::path::PathBuf,
+        pieces_hashes: &[[u8; 20]],
+    ) -> Result<()> {
+        let file_size = config.file_size;
+        let piece_length = config.piece_length;
+        let num_pieces = config.num_pieces;
+
+        Arc::get_mut(&mut self.peer_manager)
+            .ok_or_else(|| anyhow!("Failed to get mutable reference to PeerManager"))?
+            .initialize(config, file_path, file_size as u64, piece_length)
+            .await?;
+
+        let _peer_manager_handle = self
+            .peer_manager
+            .clone()
+            .start(announce_url.clone())
+            .await?;
+
+        self.start_time = Some(Instant::now());
+
+        self.download_and_verify_pieces(num_pieces, piece_length, file_size, pieces_hashes)
+            .await?;
+
+        self.print_download_metrics(file_size);
+
+        Ok(())
+    }
+
+    fn print_download_metrics(&self, file_size: usize) {
+        if let Some(start_time) = self.start_time {
+            let duration = start_time.elapsed();
+            let duration_secs = duration.as_secs_f64();
+            let file_size_mb = file_size as f64 / (1024.0 * 1024.0);
+            let avg_speed_mbps = file_size_mb / duration_secs;
+
+            info!("📊 Download completed in {:.2}s", duration_secs);
+            info!("📦 File size: {:.2} MB", file_size_mb);
+            info!("⚡ Average speed: {:.2} MB/s", avg_speed_mbps);
+        }
+    }
+
+    async fn fetch_metadata_from_peers(
+        &mut self,
+        info_hash: [u8; 20],
+        announce_url: Option<String>,
+        client_peer_id: [u8; 20],
+    ) -> Result<BTreeMap<String, BencodeTypes>> {
+        use crate::peer_connection::PeerConnection;
+        use crate::tcp_connector::DefaultTcpStreamFactory;
+        use std::io::Write;
+
+        let tcp_factory = Arc::new(DefaultTcpStreamFactory);
+        let mut info_dict = None;
+        let mut total_attempts = 0;
+
+        loop {
+            let peer_addrs = self
+                .peer_manager
+                .discover_peers(info_hash, announce_url.clone())
+                .await?;
+
+            if peer_addrs.is_empty() {
+                total_attempts += 1;
+                print!(
+                    "\r\x1B[K🔍 Discovering peers... (attempt {})",
+                    total_attempts
+                );
+                let _ = std::io::stdout().flush();
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                continue;
+            }
+
+            {
+                use crate::types::{Peer, PeerSource};
+                let peers: Vec<Peer> = peer_addrs
+                    .iter()
+                    .map(|addr| Peer {
+                        ip: addr.ip(),
+                        port: addr.port(),
+                        source: PeerSource::Dht,
+                    })
+                    .collect();
+
+                self.peer_manager.add_available_peers(peers).await;
+            }
+
+            let batch_size = 5;
+            let total_peers = peer_addrs.len();
+
+            for batch_start in (0..total_peers).step_by(batch_size) {
+                let batch_end = std::cmp::min(batch_start + batch_size, total_peers);
+                let batch = &peer_addrs[batch_start..batch_end];
+
+                print!(
+                    "\r\x1B[K📥 Requesting metadata from peers {}-{} of {}...",
+                    batch_start + 1,
+                    batch_end,
+                    total_peers
+                );
+                let _ = std::io::stdout().flush();
+
+                let mut tasks = Vec::new();
+                for peer_addr in batch {
+                    let addr = *peer_addr;
+                    let hash = info_hash;
+                    let peer_id = client_peer_id;
+                    let factory = tcp_factory.clone();
+
+                    let task = tokio::spawn(async move {
+                        PeerConnection::fetch_metadata(hash, addr, peer_id, factory).await
+                    });
+                    tasks.push((addr, task));
+                }
+
+                for (peer_addr, task) in tasks {
+                    match task.await {
+                        Ok(Ok(dict)) => {
+                            print!("\r\x1B[K");
+                            let _ = std::io::stdout().flush();
+                            println!("✅ Metadata fetched successfully from {}", peer_addr);
+                            info_dict = Some(dict);
+                            break;
+                        }
+                        Ok(Err(e)) => {
+                            debug!("Metadata fetch from {} failed: {}", peer_addr, e);
+                        }
+                        Err(e) => {
+                            debug!("Metadata fetch task from {} panicked: {}", peer_addr, e);
+                        }
+                    }
+                }
+
+                if info_dict.is_some() {
+                    break;
+                }
+            }
+
+            if info_dict.is_some() {
+                break;
+            }
+
+            total_attempts += 1;
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+
+        let info_dict = info_dict.ok_or_else(|| anyhow!("Failed to fetch metadata"))?;
+
+        let mut full_metadata = BTreeMap::new();
+        full_metadata.insert("info".to_string(), BencodeTypes::Dictionary(info_dict));
+
+        if let Some(tracker) = &announce_url {
+            full_metadata.insert(
+                "announce".to_string(),
+                BencodeTypes::String(tracker.clone()),
+            );
+        }
+
+        Ok(full_metadata)
+    }
+
+    /// Downloads a torrent from a magnet link by fetching metadata from peers and then downloading the content.
+    pub async fn download_from_magnet(
+        &mut self,
+        output_directory_path: String,
+        filename_override: Option<String>,
+    ) -> Result<()> {
+        let magnet = self
+            .magnet_link
+            .clone()
+            .ok_or_else(|| anyhow!("Not a magnet link download"))?;
+
+        println!("🧲 Magnet link detected - fetching metadata from peers first...");
+        println!("🔑 Info hash: {}", hex::encode(magnet.info_hash));
+
+        let client_peer_id = *CLIENT_PEER_ID;
+        let announce_url = magnet.trackers.first().cloned();
+
+        if announce_url.is_none() {
+            println!("🌐 Using DHT for peer discovery (no tracker URL in magnet link)");
+        }
+
+        let full_metadata = self
+            .fetch_metadata_from_peers(magnet.info_hash, announce_url.clone(), client_peer_id)
+            .await?;
+
+        self.metadata = Some(full_metadata);
+
+        let computed_hash = self.get_info_hash()?;
+        if computed_hash != magnet.info_hash.to_vec() {
+            return Err(anyhow!("Metadata info hash mismatch"));
+        }
+
+        let file_size = self.get_file_size()?;
+        let piece_length = self.get_piece_length()?;
+        let num_pieces = self.get_num_pieces()?;
+        let pieces_hashes = self.get_pieces_hashes()?;
+
+        let filename = filename_override
+            .or_else(|| magnet.display_name.clone())
+            .or_else(|| self.get_filename().ok())
+            .ok_or_else(|| anyhow!("No filename available - use --name flag"))?;
+
+        println!("\n📥 Downloading: {}", filename);
+        self.print_file_metadata()?;
+
+        let output_path = format!("{}/{}", output_directory_path, filename);
+        let file_path = std::path::PathBuf::from(&output_path);
+
+        let config = PeerManagerConfig {
+            info_hash: magnet.info_hash,
+            client_peer_id,
+            file_size,
+            num_pieces,
+            piece_length,
+        };
+
+        self.initialize_and_download(config, announce_url, file_path, &pieces_hashes)
+            .await
     }
 }

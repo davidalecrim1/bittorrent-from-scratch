@@ -2,17 +2,13 @@
 
 This file tracks pending tasks and improvements identified in the codebase.
 
-## Bugs
-
 ## Features
-- [x] Consider the DHT feature to download any kind of file.
-  - [ ] Add stats to see if the peer comes from DHT or Tracker.
-  - [ ] Support IPV6 DHT Node - Until then will cause this: bittorrent_from_scratch::dht::manager] Failed to bootstrap from [2a02:752:0:18::128]:25401: Invalid argument (os error 22)
-- [ ] Support magnet links instead of torrent files.
-  - **Plan:** `/Users/davidalecrim/.claude/plans/zazzy-noodling-yeti.md`
-  - Adds BEP 9 extension protocol for metadata exchange
-  - Enables downloads without .torrent files using info hash only
-  - Out of scope: base32 info hashes, multi-piece metadata (> 16 KiB)
+- [ ] Improve the folder directory here to get rid of the types file.
+- [ ] Break the file types into the existing files and remove it.
+- [ ] See what I can do to improve the download speed.
+- [ ] Consider a minimal terminal UI.
+- [ ] Add some docs about the Magnet Link.
+- [ ] Code review of Magnet Link.
 
 ## Out of Scope
 - [ ] Choke uploads if peers are abusing the requests.
@@ -30,5 +26,3 @@ This file tracks pending tasks and improvements identified in the codebase.
 ## Maybe
 - [ ] Add 70% coverage to the File Manager.
 - [ ] Fix the coverage on the DHT files to be 70% at least.
-- [ ] Add some folder structure consider the DHT to make it clearer.
-- [ ] Instead of terminal printing, make a nice terminal UI.

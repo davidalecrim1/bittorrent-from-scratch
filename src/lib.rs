@@ -7,6 +7,7 @@ pub mod download_state;
 pub mod encoding;
 pub mod error;
 pub mod io;
+pub mod magnet_link;
 pub mod peer_connection;
 pub mod peer_connection_stats;
 pub mod peer_manager;

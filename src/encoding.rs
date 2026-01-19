@@ -355,7 +355,10 @@ impl Decoder {
     }
 
     fn is_dictionary(&self, bytes: &[u8]) -> bool {
-        bytes.len() >= 2 && bytes[0] as char == 'd' && bytes[bytes.len() - 1] as char == 'e'
+        // Only check if it starts with 'd'. The decode_dictionary function
+        // will handle finding the matching 'e' and returning bytes consumed.
+        // Checking bytes[len-1] == 'e' is incorrect when there's data after the dict.
+        bytes.len() >= 2 && bytes[0] as char == 'd'
     }
 }
 

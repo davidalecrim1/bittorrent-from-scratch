@@ -180,15 +180,21 @@ async fn main() {
         max_peers,
     );
 
-    let mut torrent_client =
-        BitTorrent::new(Decoder {}, Encoder {}, peer_manager, args.input_file_path).unwrap();
+    let is_magnet_link = args.input.starts_with("magnet:?");
 
-    torrent_client.print_file_metadata().unwrap();
-
-    match torrent_client
-        .download_file(args.output_directory_path)
+    let download_result = if is_magnet_link {
+        download_from_magnet(
+            args.input,
+            args.output_directory_path,
+            args.output_name,
+            peer_manager,
+        )
         .await
-    {
+    } else {
+        download_from_torrent_file(args.input, args.output_directory_path, peer_manager).await
+    };
+
+    match download_result {
         Ok(_) => {
             debug!("[main] File downloaded successfully!");
         }
@@ -217,4 +223,33 @@ async fn main() {
             }
         },
     }
+}
+
+async fn download_from_magnet(
+    magnet_uri: String,
+    output_directory: String,
+    output_name: Option<String>,
+    peer_manager: PeerManager,
+) -> Result<(), anyhow::Error> {
+    use bittorrent_from_scratch::magnet_link::MagnetLink;
+
+    let magnet = MagnetLink::parse(&magnet_uri)?;
+    let mut torrent_client =
+        BitTorrent::new_from_magnet(Decoder {}, Encoder {}, peer_manager, magnet)?;
+
+    torrent_client
+        .download_from_magnet(output_directory, output_name)
+        .await
+}
+
+async fn download_from_torrent_file(
+    torrent_file_path: String,
+    output_directory: String,
+    peer_manager: PeerManager,
+) -> Result<(), anyhow::Error> {
+    let mut torrent_client =
+        BitTorrent::new(Decoder {}, Encoder {}, peer_manager, torrent_file_path)?;
+
+    torrent_client.print_file_metadata()?;
+    torrent_client.download_file(output_directory).await
 }

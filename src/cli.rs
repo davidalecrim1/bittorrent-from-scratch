@@ -3,13 +3,17 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about, allow_external_subcommands = true)]
 pub struct Args {
-    /// Input torrent file to process
+    /// Input: either a .torrent file path OR a magnet link
     #[arg(short = 'i', long = "input")]
-    pub input_file_path: String,
+    pub input: String,
 
     /// Output directory to save the downloaded file
     #[arg(short = 'o', long = "output", default_value = "./downloaded")]
     pub output_directory_path: String,
+
+    /// Optional: Override output filename (useful for magnet links)
+    #[arg(short = 'n', long = "name")]
+    pub output_name: Option<String>,
 
     /// Maximum download rate (e.g., "5M", "100K", "1G"). No limit if omitted.
     #[arg(long = "max-download-rate")]

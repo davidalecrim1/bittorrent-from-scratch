@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -12,7 +13,7 @@ use tokio::time::sleep;
 use crate::bandwidth_limiter::BandwidthLimiter;
 use crate::download_state::DownloadState;
 use crate::error::AppError;
-use crate::io::ThrottledMessageIO;
+use crate::io::{MessageIO, ThrottledMessageIO};
 use crate::peer_messages::{self, PeerHandshakeMessage};
 use crate::peer_messages::{
     BitfieldMessage, InterestedMessage, PeerMessage, PieceMessage, UnchokeMessage,
@@ -668,6 +669,13 @@ impl PeerConnection {
                     cancel.piece_index, peer_addr,
                 );
             }
+
+            PeerMessage::Extended { .. } => {
+                debug!(
+                    "Peer Connector received Extended message from Peer {} (ignored - only used during metadata fetch)",
+                    peer_addr
+                );
+            }
         }
 
         Ok(())
@@ -882,5 +890,229 @@ impl PeerConnection {
             .get_bitfield()
             .await
             .map(|bitfield| BitfieldMessage { bitfield })
+    }
+
+    /// Fetch torrent metadata from peer using BEP 9 extension protocol
+    pub async fn fetch_metadata(
+        info_hash: [u8; 20],
+        peer_addr: std::net::SocketAddr,
+        peer_id: [u8; 20],
+        tcp_factory: Arc<dyn crate::tcp_connector::TcpStreamFactory>,
+    ) -> Result<std::collections::BTreeMap<String, crate::types::BencodeTypes>> {
+        use crate::encoding::Decoder;
+        use crate::peer_messages::{
+            create_extension_handshake, create_metadata_request, parse_extension_handshake,
+            parse_metadata_data,
+        };
+        use crate::types::BencodeTypes;
+
+        info!("Fetching metadata from peer {}", peer_addr);
+
+        let handshake_msg = PeerHandshakeMessage::new_with_extensions(info_hash, peer_id, true);
+
+        debug!("Connecting to peer {}", peer_addr);
+        let mut tcp_stream = tcp_factory.connect(peer_addr.to_string()).await?;
+
+        debug!("Sending handshake to peer {}", peer_addr);
+        tcp_stream.write_all(&handshake_msg.to_bytes()).await?;
+
+        debug!("Reading handshake response from peer {}", peer_addr);
+        let mut buf = [0u8; 68];
+        tcp_stream.read_exact(&mut buf).await?;
+        let peer_handshake = PeerHandshakeMessage::from_bytes(&buf)?;
+
+        if !peer_handshake.supports_extensions() {
+            warn!("Peer {} does not support extensions", peer_addr);
+            return Err(anyhow!("Peer does not support extensions"));
+        }
+        debug!("Peer {} supports extensions", peer_addr);
+
+        let tcp_message_io = crate::io::TcpMessageIO::from_stream(tcp_stream, 0);
+        let mut message_io = ThrottledMessageIO::new(Box::new(tcp_message_io), None, None, None);
+
+        debug!("Sending extension handshake to peer {}", peer_addr);
+        message_io
+            .write_message(&create_extension_handshake())
+            .await?;
+
+        debug!(
+            "Reading extension handshake response from peer {}",
+            peer_addr
+        );
+        let ext_handshake_msg = message_io
+            .read_message()
+            .await?
+            .ok_or_else(|| anyhow!("Connection closed before extension handshake"))?;
+        let payload = match ext_handshake_msg {
+            PeerMessage::Extended {
+                extension_id: 0,
+                payload,
+            } => payload,
+            other => {
+                warn!(
+                    "Expected extension handshake from {}, got {:?}",
+                    peer_addr, other
+                );
+                return Err(anyhow!("Expected extension handshake"));
+            }
+        };
+
+        debug!("Parsing extension handshake from peer {}", peer_addr);
+        let extensions = parse_extension_handshake(&payload)?;
+        debug!("Extensions supported by {}: {:?}", peer_addr, extensions);
+
+        let ut_metadata_id = extensions.get("ut_metadata").ok_or_else(|| {
+            warn!("Peer {} does not support ut_metadata", peer_addr);
+            anyhow!("Peer does not support ut_metadata")
+        })?;
+        debug!(
+            "Peer {} ut_metadata extension ID: {}",
+            peer_addr, ut_metadata_id
+        );
+
+        debug!("Requesting metadata piece 0 from peer {}", peer_addr);
+        message_io
+            .write_message(&create_metadata_request(*ut_metadata_id as u8, 0))
+            .await?;
+
+        // Helper function to read metadata response, skipping other messages
+        async fn read_metadata_response<T: MessageIO>(
+            message_io: &mut T,
+            peer_addr: SocketAddr,
+        ) -> Result<Vec<u8>> {
+            // NOTE: We check for OUR extension ID (1), not the peer's ID
+            // because the peer uses OUR ID when sending messages TO us
+            const OUR_UT_METADATA_ID: u8 = 1;
+            let metadata_timeout = std::time::Duration::from_secs(10);
+
+            let result: Result<Vec<u8>> = tokio::time::timeout(metadata_timeout, async {
+                loop {
+                    let msg = message_io
+                        .read_message()
+                        .await?
+                        .ok_or_else(|| anyhow!("Connection closed before metadata response"))?;
+
+                    match msg {
+                        PeerMessage::Extended {
+                            extension_id,
+                            payload,
+                        } if extension_id == OUR_UT_METADATA_ID => {
+                            debug!("Received metadata response from peer {}", peer_addr);
+                            return Ok::<Vec<u8>, anyhow::Error>(payload);
+                        }
+                        other => {
+                            debug!(
+                                "Skipping non-metadata message from {}: {:?}",
+                                peer_addr, other
+                            );
+                        }
+                    }
+                }
+            })
+            .await
+            .map_err(|_| anyhow!("Timeout waiting for metadata response from {}", peer_addr))?;
+
+            result
+        }
+
+        debug!("Reading metadata response from peer {}", peer_addr);
+        let payload = read_metadata_response(&mut message_io, peer_addr).await?;
+
+        debug!("Parsing metadata data from peer {}", peer_addr);
+        let piece0_response = parse_metadata_data(&payload)?;
+        let total_size = piece0_response.total_size as usize;
+        let piece_size = 16384; // BEP 9 standard metadata piece size
+        let num_pieces = total_size.div_ceil(piece_size);
+
+        debug!(
+            "Received piece 0: {} bytes from peer {} (total size: {}, {} pieces needed)",
+            piece0_response.data.len(),
+            peer_addr,
+            total_size,
+            num_pieces
+        );
+
+        // Collect all pieces
+        let mut all_pieces = vec![Vec::new(); num_pieces];
+        all_pieces[0] = piece0_response.data;
+
+        // Request remaining pieces if needed
+        if num_pieces > 1 {
+            debug!(
+                "Metadata requires {} pieces, fetching remaining pieces from {}",
+                num_pieces, peer_addr
+            );
+
+            for (idx, piece_slot) in all_pieces.iter_mut().enumerate().skip(1) {
+                let piece_index = idx;
+                debug!(
+                    "Requesting metadata piece {} from peer {}",
+                    piece_index, peer_addr
+                );
+
+                message_io
+                    .write_message(&create_metadata_request(
+                        *ut_metadata_id as u8,
+                        piece_index as isize,
+                    ))
+                    .await?;
+
+                let piece_payload = read_metadata_response(&mut message_io, peer_addr).await?;
+                let piece_response = parse_metadata_data(&piece_payload)?;
+
+                if piece_response.piece != piece_index as isize {
+                    return Err(anyhow!(
+                        "Received wrong piece: expected {}, got {}",
+                        piece_index,
+                        piece_response.piece
+                    ));
+                }
+
+                debug!(
+                    "Received piece {}: {} bytes from peer {}",
+                    piece_index,
+                    piece_response.data.len(),
+                    peer_addr
+                );
+
+                *piece_slot = piece_response.data;
+            }
+        }
+
+        // Concatenate all pieces
+        let complete_metadata: Vec<u8> = all_pieces.into_iter().flatten().collect();
+
+        // Verify size
+        if complete_metadata.len() != total_size {
+            return Err(anyhow!(
+                "Metadata size mismatch: expected {} bytes, got {}",
+                total_size,
+                complete_metadata.len()
+            ));
+        }
+
+        debug!(
+            "Assembled complete metadata: {} bytes from peer {}",
+            complete_metadata.len(),
+            peer_addr
+        );
+
+        // Parse complete metadata
+        let decoder = Decoder {};
+        let (_n, bencode) = decoder.from_bytes(&complete_metadata)?;
+
+        match bencode {
+            BencodeTypes::Dictionary(info_dict) => {
+                info!(
+                    "Successfully parsed metadata dictionary from peer {}",
+                    peer_addr
+                );
+                Ok(info_dict)
+            }
+            _ => {
+                warn!("Metadata from {} is not a dictionary", peer_addr);
+                Err(anyhow!("Metadata is not a dictionary"))
+            }
+        }
     }
 }

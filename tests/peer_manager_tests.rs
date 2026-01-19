@@ -2116,4 +2116,235 @@ mod tests {
 
         assert_eq!(peer_manager.connected_peer_count().await, 2);
     }
+
+    #[tokio::test]
+    async fn test_discover_peers_from_tracker() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
+
+        // Setup tracker to return peers
+        let peers = vec![
+            Peer {
+                ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                port: 6881,
+                source: PeerSource::Tracker,
+            },
+            Peer {
+                ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)),
+                port: 6881,
+                source: PeerSource::Tracker,
+            },
+        ];
+        tracker_client.expect_announce(peers, Some(1800)).await;
+
+        let peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
+            50,
+        );
+
+        let info_hash = [1u8; 20];
+        let tracker_url = Some("http://tracker.example.com:8080/announce".to_string());
+
+        let discovered_peers = peer_manager
+            .discover_peers(info_hash, tracker_url)
+            .await
+            .unwrap();
+
+        assert_eq!(discovered_peers.len(), 2);
+        assert_eq!(
+            discovered_peers[0].to_string(),
+            "192.168.1.1:6881".to_string()
+        );
+        assert_eq!(
+            discovered_peers[1].to_string(),
+            "192.168.1.2:6881".to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_discover_peers_tracker_failure_returns_empty() {
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
+
+        // Setup tracker to fail
+        tracker_client.expect_failure("Tracker unreachable").await;
+
+        let peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
+            50,
+        );
+
+        let info_hash = [1u8; 20];
+        let tracker_url = Some("http://tracker.example.com:8080/announce".to_string());
+
+        let discovered_peers = peer_manager
+            .discover_peers(info_hash, tracker_url)
+            .await
+            .unwrap();
+
+        // Should return empty list on failure, not error
+        assert_eq!(discovered_peers.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_discover_peers_no_tracker() {
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
+
+        let peer_manager = PeerManager::new_with_connector(
+            tracker_client,
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
+            50,
+        );
+
+        let info_hash = [1u8; 20];
+        let tracker_url = None; // No tracker URL
+
+        let discovered_peers = peer_manager
+            .discover_peers(info_hash, tracker_url)
+            .await
+            .unwrap();
+
+        // Should work but return empty (would use DHT in real scenario)
+        assert_eq!(discovered_peers.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_discover_peers_with_dht_fallback() {
+        use bittorrent_from_scratch::types::Peer;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
+
+        // Setup tracker to return only 5 peers (< 10 threshold for DHT)
+        let tracker_peers = vec![
+            Peer {
+                ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                port: 6881,
+                source: PeerSource::Tracker,
+            },
+            Peer {
+                ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)),
+                port: 6881,
+                source: PeerSource::Tracker,
+            },
+            Peer {
+                ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 3)),
+                port: 6881,
+                source: PeerSource::Tracker,
+            },
+            Peer {
+                ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 4)),
+                port: 6881,
+                source: PeerSource::Tracker,
+            },
+            Peer {
+                ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)),
+                port: 6881,
+                source: PeerSource::Tracker,
+            },
+        ];
+
+        tracker_client
+            .expect_announce(tracker_peers.clone(), Some(1800))
+            .await;
+
+        // Setup DHT to return additional peers
+        let dht_client = Arc::new(super::helpers::fakes::MockDhtClient::new());
+        let dht_peers = vec![
+            Peer {
+                ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                port: 6881,
+                source: PeerSource::Dht,
+            },
+            Peer {
+                ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                port: 6881,
+                source: PeerSource::Dht,
+            },
+        ];
+
+        dht_client.expect_get_peers(dht_peers.clone()).await;
+
+        let peer_manager = PeerManager::new_with_dht(
+            Some(tracker_client),
+            Some(dht_client),
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
+            50,
+        );
+
+        let info_hash = [1u8; 20];
+        let tracker_url = Some("http://tracker.example.com:8080/announce".to_string());
+
+        let discovered_peers = peer_manager
+            .discover_peers(info_hash, tracker_url)
+            .await
+            .unwrap();
+
+        // Should combine tracker + DHT peers (5 + 2 = 7)
+        assert_eq!(discovered_peers.len(), 7);
+    }
+
+    #[tokio::test]
+    async fn test_discover_peers_skips_dht_when_enough_from_tracker() {
+        use bittorrent_from_scratch::types::Peer;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
+        let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
+
+        // Setup tracker to return 15 peers (>= 10 threshold)
+        let tracker_peers: Vec<Peer> = (0..15)
+            .map(|i| Peer {
+                ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, i as u8)),
+                port: 6881,
+                source: PeerSource::Tracker,
+            })
+            .collect();
+
+        tracker_client
+            .expect_announce(tracker_peers.clone(), Some(1800))
+            .await;
+
+        // DHT should not be called
+        let dht_client = Arc::new(super::helpers::fakes::MockDhtClient::new());
+
+        let peer_manager = PeerManager::new_with_dht(
+            Some(tracker_client),
+            Some(dht_client),
+            connector,
+            None,
+            helpers::create_test_bandwidth_stats(),
+            helpers::create_test_connection_stats(),
+            50,
+        );
+
+        let info_hash = [1u8; 20];
+        let tracker_url = Some("http://tracker.example.com:8080/announce".to_string());
+
+        let discovered_peers = peer_manager
+            .discover_peers(info_hash, tracker_url)
+            .await
+            .unwrap();
+
+        // Should only have tracker peers, DHT not queried
+        assert_eq!(discovered_peers.len(), 15);
+    }
 }

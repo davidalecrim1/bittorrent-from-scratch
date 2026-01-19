@@ -44,6 +44,16 @@ sample-run-5: clean
 		--max-peers 15 \
 		--log-dir ./logs
 
+sample-run-magnet-1: clean
+	LOG_LEVEL=DEBUG RUST_BACKTRACE=1 cargo run -- \
+		--input "magnet:?xt=urn:btih:1e873cd33f55737aaaefc0c282c428593c16e106&dn=archlinux-2026.01.01-x86_64.iso" \
+		--output ./output/ \
+		--name archlinux-2026.01.01-x86_64.iso \
+		--max-download-rate 2M \
+		--max-upload-rate 100K \
+		--max-peers 15 \
+		--log-dir ./logs
+
 build:
 	cargo build --release
 

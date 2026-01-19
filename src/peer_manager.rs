@@ -27,6 +27,7 @@ const PEER_CONNECTOR_INTERVAL_SECS: u64 = 10;
 const STALE_DOWNLOAD_CHECK_INTERVAL_SECS: u64 = 30;
 const MAX_CONCURRENT_HANDSHAKES: usize = 10;
 const MAX_PIECES_PER_PEER: usize = 1;
+const CLIENT_PEER_ID: &[u8; 20] = b"bittorrent-rust-0001";
 
 #[async_trait]
 pub trait PeerConnectionFactory: Send + Sync {
@@ -225,6 +226,93 @@ impl PeerManager {
     pub async fn get_connected_peer_addrs(&self) -> Vec<String> {
         let connected_peers = self.connected_peers.read().await;
         connected_peers.keys().cloned().collect()
+    }
+
+    /// Get the Nth connected peer's socket address
+    pub async fn get_nth_peer_addr(&self, index: usize) -> Option<std::net::SocketAddr> {
+        let connected_peers = self.connected_peers.read().await;
+        connected_peers
+            .keys()
+            .nth(index)
+            .and_then(|addr_str| addr_str.parse().ok())
+    }
+
+    /// Update file information after fetching metadata (for magnet links)
+    pub async fn update_file_info(
+        &self,
+        file_path: std::path::PathBuf,
+        file_size: u64,
+        piece_length: usize,
+        num_pieces: usize,
+    ) -> Result<()> {
+        self.piece_manager
+            .initialize(num_pieces, file_path, file_size, piece_length)
+            .await
+    }
+
+    /// Announce to tracker without file size requirement (for metadata fetching)
+    async fn announce_to_tracker(
+        &self,
+        tracker_url: &str,
+        info_hash: [u8; 20],
+    ) -> Result<Vec<Peer>> {
+        let Some(tracker_client) = &self.tracker_client else {
+            anyhow::bail!("Tracker client is disabled");
+        };
+
+        let request = AnnounceRequest {
+            endpoint: tracker_url.to_string(),
+            info_hash: info_hash.to_vec(),
+            peer_id: String::from_utf8_lossy(CLIENT_PEER_ID).to_string(),
+            port: 6881,
+            uploaded: 0,
+            downloaded: 0,
+            left: 0,
+        };
+
+        let response = tracker_client.announce(request).await?;
+        Ok(response.peers)
+    }
+
+    /// Discover peers from tracker and/or DHT without starting the PeerManager
+    pub async fn discover_peers(
+        &self,
+        info_hash: [u8; 20],
+        tracker_url: Option<String>,
+    ) -> Result<Vec<std::net::SocketAddr>> {
+        use std::net::SocketAddr;
+
+        let mut peer_addrs = Vec::new();
+
+        // Try tracker first if available
+        if let Some(url) = tracker_url {
+            match self.announce_to_tracker(&url, info_hash).await {
+                Ok(peers) => {
+                    info!("Tracker returned {} peers", peers.len());
+                    peer_addrs.extend(peers.into_iter().map(|p| SocketAddr::new(p.ip, p.port)));
+                }
+                Err(e) => {
+                    warn!("Tracker announce failed: {}", e);
+                }
+            }
+        }
+
+        // Try DHT if available and we don't have enough peers
+        if peer_addrs.len() < 10
+            && let Some(dht) = &self.dht_client
+        {
+            match dht.get_peers(info_hash).await {
+                Ok(dht_peers) => {
+                    info!("DHT returned {} peers", dht_peers.len());
+                    peer_addrs.extend(dht_peers.into_iter().map(|p| SocketAddr::new(p.ip, p.port)));
+                }
+                Err(e) => {
+                    warn!("DHT peer discovery failed: {}", e);
+                }
+            }
+        }
+
+        Ok(peer_addrs)
     }
 
     /// Get a copy of the available peers HashMap
@@ -1093,7 +1181,7 @@ impl PeerManager {
         let request = AnnounceRequest {
             endpoint: endpoint.to_string(),
             info_hash: info_hash.to_vec(),
-            peer_id: "postman-000000000001".to_string(),
+            peer_id: String::from_utf8_lossy(CLIENT_PEER_ID).to_string(),
             port: 6881,
             uploaded: 0,
             downloaded: 0,
