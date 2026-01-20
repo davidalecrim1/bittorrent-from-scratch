@@ -1,6 +1,6 @@
 use super::RoutingTableStats;
 use super::manager::DhtManager;
-use crate::types::Peer;
+use crate::peer::Peer;
 use anyhow::Result;
 use async_trait::async_trait;
 

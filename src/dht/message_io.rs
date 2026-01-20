@@ -1,6 +1,5 @@
 use super::types::{CompactNodeInfo, ErrorMessage, KrpcMessage, NodeId, Query, Response};
-use crate::encoding::{Decoder as BencodeDecoder, Encoder as BencodeEncoder};
-use crate::types::BencodeTypes;
+use crate::encoding::{BencodeTypes, Decoder as BencodeDecoder, Encoder as BencodeEncoder};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use log::debug;

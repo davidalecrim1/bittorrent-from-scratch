@@ -8,6 +8,7 @@ pub mod encoding;
 pub mod error;
 pub mod io;
 pub mod magnet_link;
+pub mod peer;
 pub mod peer_connection;
 pub mod peer_connection_stats;
 pub mod peer_manager;
@@ -16,7 +17,6 @@ pub mod piece_manager;
 pub mod tcp_connector;
 pub mod terminal_ui;
 pub mod tracker_client;
-pub mod types;
 
 pub use bandwidth_stats::BandwidthStats;
 pub use peer_connection_stats::PeerConnectionStats;

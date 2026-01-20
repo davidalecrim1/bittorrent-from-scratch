@@ -1,10 +1,29 @@
-use crate::encoding::Decoder;
+use crate::encoding::{BencodeTypes, Decoder};
 use crate::error::AppError;
-use crate::types::{AnnounceRequest, AnnounceResponse, BencodeTypes, Peer};
+use crate::peer::{Peer, PeerSource};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::{Client, Url};
 use std::net::Ipv6Addr;
+
+/// Tracker announce request parameters
+#[derive(Debug, Clone)]
+pub struct AnnounceRequest {
+    pub endpoint: String,
+    pub info_hash: Vec<u8>,
+    pub peer_id: String,
+    pub port: u16,
+    pub uploaded: usize,
+    pub downloaded: usize,
+    pub left: usize,
+}
+
+/// Tracker announce response
+#[derive(Debug, Clone)]
+pub struct AnnounceResponse {
+    pub interval: Option<u64>,
+    pub peers: Vec<Peer>,
+}
 
 /// Abstraction for tracker HTTP communication.
 /// Allows testing peer discovery logic without making real HTTP requests.
@@ -100,11 +119,7 @@ impl HttpTrackerClient {
                                         }
                                     };
 
-                                    peers.push(Peer::new(
-                                        ip_string,
-                                        port_u16,
-                                        crate::types::PeerSource::Tracker,
-                                    ));
+                                    peers.push(Peer::new(ip_string, port_u16, PeerSource::Tracker));
                                 }
                                 _ => {
                                     return Err(AppError::InvalidFieldType {
@@ -134,7 +149,7 @@ impl HttpTrackerClient {
                                     peers.push(Peer::new(
                                         ip.to_string(),
                                         port,
-                                        crate::types::PeerSource::Tracker,
+                                        PeerSource::Tracker,
                                     ));
                                 }
                             }
@@ -147,11 +162,7 @@ impl HttpTrackerClient {
                                         chunk[0], chunk[1], chunk[2], chunk[3]
                                     );
                                     let port = u16::from_be_bytes([chunk[4], chunk[5]]);
-                                    peers.push(Peer::new(
-                                        ip,
-                                        port,
-                                        crate::types::PeerSource::Tracker,
-                                    ));
+                                    peers.push(Peer::new(ip, port, PeerSource::Tracker));
                                 }
                             }
                         }

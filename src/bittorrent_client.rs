@@ -5,11 +5,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::{collections::BTreeMap, fs};
 
-use crate::encoding::Decoder;
-use crate::encoding::Encoder;
+use crate::encoding::{BencodeTypes, Decoder, Encoder};
 use crate::magnet_link::MagnetLink;
-use crate::peer_manager::PeerManager;
-use crate::types::{BencodeTypes, PeerManagerConfig, PieceDownloadRequest};
+use crate::peer_manager::{PeerManager, PeerManagerConfig, PieceDownloadRequest};
 
 const CLIENT_PEER_ID: &[u8; 20] = b"bittorrent-rust-0001";
 
@@ -437,7 +435,7 @@ impl BitTorrent {
             }
 
             {
-                use crate::types::{Peer, PeerSource};
+                use crate::peer::{Peer, PeerSource};
                 let peers: Vec<Peer> = peer_addrs
                     .iter()
                     .map(|addr| Peer {

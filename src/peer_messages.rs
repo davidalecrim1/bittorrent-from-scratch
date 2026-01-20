@@ -549,8 +549,7 @@ impl Debug for PeerHandshakeMessage {
 
 /// Create extension handshake message (extension_id = 0)
 pub fn create_extension_handshake() -> PeerMessage {
-    use crate::encoding::Encoder;
-    use crate::types::BencodeTypes;
+    use crate::encoding::{BencodeTypes, Encoder};
     use std::collections::BTreeMap;
 
     let mut dict = BTreeMap::new();
@@ -572,8 +571,7 @@ pub fn create_extension_handshake() -> PeerMessage {
 
 /// Parse extension handshake response
 pub fn parse_extension_handshake(payload: &[u8]) -> Result<BTreeMap<String, isize>> {
-    use crate::encoding::Decoder;
-    use crate::types::BencodeTypes;
+    use crate::encoding::{BencodeTypes, Decoder};
 
     let decoder = Decoder {};
     let (_n, bencode) = decoder.from_bytes(payload)?;
@@ -601,8 +599,7 @@ pub fn parse_extension_handshake(payload: &[u8]) -> Result<BTreeMap<String, isiz
 
 /// Create metadata request message
 pub fn create_metadata_request(peer_ut_metadata_id: u8, piece: isize) -> PeerMessage {
-    use crate::encoding::Encoder;
-    use crate::types::BencodeTypes;
+    use crate::encoding::{BencodeTypes, Encoder};
 
     let mut dict = BTreeMap::new();
     dict.insert("msg_type".to_string(), BencodeTypes::Integer(0));
@@ -628,8 +625,7 @@ pub struct MetadataResponse {
 
 /// Parse metadata data message
 pub fn parse_metadata_data(payload: &[u8]) -> Result<MetadataResponse> {
-    use crate::encoding::Decoder;
-    use crate::types::BencodeTypes;
+    use crate::encoding::{BencodeTypes, Decoder};
 
     let decoder = Decoder {};
     let (bytes_read, bencode) = decoder.from_bytes(payload)?;
@@ -678,8 +674,7 @@ pub fn parse_metadata_data(payload: &[u8]) -> Result<MetadataResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoding::{Decoder, Encoder};
-    use crate::types::BencodeTypes;
+    use crate::encoding::{BencodeTypes, Decoder, Encoder};
 
     #[test]
     fn test_handshake_extension_support() {

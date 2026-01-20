@@ -6,7 +6,16 @@ use tokio_util::codec::{Decoder as TokioDecoder, Encoder as TokioEncoder};
 
 use crate::error::CodecError;
 use crate::peer_messages::PeerMessage;
-use crate::types::BencodeTypes;
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum BencodeTypes {
+    String(String),
+    Integer(isize),
+    List(Vec<BencodeTypes>),
+    Dictionary(BTreeMap<String, BencodeTypes>),
+    #[allow(dead_code)]
+    Raw(Vec<u8>),
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Encoder {}

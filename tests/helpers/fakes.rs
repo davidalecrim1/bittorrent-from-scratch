@@ -3,11 +3,11 @@ use async_trait::async_trait;
 use bittorrent_from_scratch::bandwidth_limiter::BandwidthLimiter;
 use bittorrent_from_scratch::dht::DhtClient;
 use bittorrent_from_scratch::io::MessageIO;
-use bittorrent_from_scratch::peer_manager::PeerConnectionFactory;
+use bittorrent_from_scratch::peer::Peer;
+use bittorrent_from_scratch::peer_manager::{ConnectedPeer, PeerConnectionFactory};
 use bittorrent_from_scratch::peer_messages::PeerMessage;
 use bittorrent_from_scratch::piece_manager::{InMemoryPieceManager, PieceManager};
-use bittorrent_from_scratch::tracker_client::TrackerClient;
-use bittorrent_from_scratch::types::{AnnounceRequest, AnnounceResponse, ConnectedPeer, Peer};
+use bittorrent_from_scratch::tracker_client::{AnnounceRequest, AnnounceResponse, TrackerClient};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
@@ -107,7 +107,11 @@ pub struct FakePeerConnectionFactory {
     /// Without this, the channel would close immediately when connect() returns.
     _receivers: Arc<
         tokio::sync::Mutex<
-            Vec<mpsc::UnboundedReceiver<bittorrent_from_scratch::types::PieceDownloadRequest>>,
+            Vec<
+                mpsc::UnboundedReceiver<
+                    bittorrent_from_scratch::peer_manager::PieceDownloadRequest,
+                >,
+            >,
         >,
     >,
 }
@@ -161,7 +165,7 @@ impl PeerConnectionFactory for FakePeerConnectionFactory {
     async fn connect(
         &self,
         peer: Peer,
-        _event_tx: mpsc::UnboundedSender<bittorrent_from_scratch::types::PeerEvent>,
+        _event_tx: mpsc::UnboundedSender<bittorrent_from_scratch::peer_manager::PeerEvent>,
         _client_peer_id: [u8; 20],
         _info_hash: [u8; 20],
         _num_pieces: usize,
@@ -172,8 +176,9 @@ impl PeerConnectionFactory for FakePeerConnectionFactory {
             bittorrent_from_scratch::peer_messages::PeerMessage,
         >,
     ) -> Result<ConnectedPeer> {
-        let (download_request_tx, rx) =
-            mpsc::unbounded_channel::<bittorrent_from_scratch::types::PieceDownloadRequest>();
+        let (download_request_tx, rx) = mpsc::unbounded_channel::<
+            bittorrent_from_scratch::peer_manager::PieceDownloadRequest,
+        >();
         let (message_tx, _message_rx) = mpsc::unbounded_channel::<PeerMessage>();
 
         // Store receiver to keep channel alive

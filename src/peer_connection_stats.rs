@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use crate::types::PeerAddr;
+use crate::peer::PeerAddr;
 
 #[derive(Debug, Clone)]
 struct PeerChokeState {

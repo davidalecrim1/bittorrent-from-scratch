@@ -5,8 +5,6 @@ This file tracks pending tasks and improvements identified in the codebase.
 ## Features
 - [ ] Improve the folder directory here to get rid of the types file.
 - [ ] Break the file types into the existing files and remove it.
-- [ ] See what I can do to improve the download speed.
-- [ ] Consider a minimal terminal UI.
 
 ## Out of Scope
 - [ ] Choke uploads if peers are abusing the requests.

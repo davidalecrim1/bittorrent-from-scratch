@@ -10,7 +10,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::RwLock;
 
-use crate::types::PieceDownloadRequest;
+use crate::peer_manager::PieceDownloadRequest;
 
 /// Maximum time a piece can be in-flight before being considered stale
 pub const PIECE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);

@@ -4,7 +4,7 @@ use bittorrent_from_scratch::dht::{
     CompactNodeInfo, CompactNodeInfoV6, DhtClient, KrpcMessage, NodeId, Query, Response,
     RoutingTable,
 };
-use bittorrent_from_scratch::types::{Peer, PeerSource};
+use bittorrent_from_scratch::peer::{Peer, PeerSource};
 use helpers::fakes::MockDhtClient;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 
@@ -237,8 +237,7 @@ fn test_krpc_message_transaction_id() {
 }
 
 fn encode_krpc_message(msg: &KrpcMessage) -> anyhow::Result<Vec<u8>> {
-    use bittorrent_from_scratch::encoding::Encoder;
-    use bittorrent_from_scratch::types::BencodeTypes;
+    use bittorrent_from_scratch::encoding::{BencodeTypes, Encoder};
     use std::collections::BTreeMap;
 
     let encoder = Encoder {};

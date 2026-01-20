@@ -4,8 +4,10 @@ mod helpers;
 mod tests {
     use super::helpers::{self, fakes::FakeMessageIO};
     use bittorrent_from_scratch::io::MessageIO;
+    use bittorrent_from_scratch::peer::{Peer, PeerSource};
+    use bittorrent_from_scratch::peer_connection::PeerConnection;
+    use bittorrent_from_scratch::peer_manager::PieceDownloadRequest;
     use bittorrent_from_scratch::peer_messages::{PeerMessage, PieceMessage};
-    use bittorrent_from_scratch::types::{Peer, PeerConnection, PeerSource, PieceDownloadRequest};
     use tokio::sync::mpsc;
 
     /// Helper to consume the initial Interested message that PeerConnection sends on start
@@ -281,7 +283,7 @@ mod tests {
 
         // Wait for completion notification
         match tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await {
-            Ok(Some(bittorrent_from_scratch::types::PeerEvent::StorePiece(completed))) => {
+            Ok(Some(bittorrent_from_scratch::peer_manager::PeerEvent::StorePiece(completed))) => {
                 assert_eq!(
                     completed.piece_index, 0,
                     "Completed piece should be index 0"
@@ -374,7 +376,7 @@ mod tests {
 
         // Wait for failure notification (hash mismatch)
         match tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await {
-            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Failure(failed))) => {
+            Ok(Some(bittorrent_from_scratch::peer_manager::PeerEvent::Failure(failed))) => {
                 assert_eq!(failed.piece_index, 0, "Failed piece should be index 0");
                 assert!(
                     matches!(
@@ -735,7 +737,7 @@ mod tests {
 
         // Should receive a failure notification
         match tokio::time::timeout(tokio::time::Duration::from_secs(1), event_rx.recv()).await {
-            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Failure(failed))) => {
+            Ok(Some(bittorrent_from_scratch::peer_manager::PeerEvent::Failure(failed))) => {
                 assert_eq!(failed.piece_index, 1, "Failed piece should be index 1");
                 assert!(
                     matches!(
@@ -962,7 +964,7 @@ mod tests {
 
         // Wait for completion
         match tokio::time::timeout(tokio::time::Duration::from_secs(2), event_rx.recv()).await {
-            Ok(Some(bittorrent_from_scratch::types::PeerEvent::StorePiece(completed))) => {
+            Ok(Some(bittorrent_from_scratch::peer_manager::PeerEvent::StorePiece(completed))) => {
                 assert_eq!(completed.piece_index, 0);
                 assert_eq!(completed.data.len(), piece_length);
                 assert_eq!(completed.data, piece_data);
@@ -1029,7 +1031,7 @@ mod tests {
 
         // Should receive a disconnect notification
         match tokio::time::timeout(tokio::time::Duration::from_millis(200), event_rx.recv()).await {
-            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Disconnect(_disconnect))) => {
+            Ok(Some(bittorrent_from_scratch::peer_manager::PeerEvent::Disconnect(_disconnect))) => {
                 // Disconnect event received (peer disconnected due to write error)
             }
             other => panic!("Expected disconnect notification, got: {:?}", other),
@@ -1085,7 +1087,7 @@ mod tests {
 
         // Should receive a disconnect notification when stream is detected as closed
         match tokio::time::timeout(tokio::time::Duration::from_millis(200), event_rx.recv()).await {
-            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Disconnect(_disconnect))) => {
+            Ok(Some(bittorrent_from_scratch::peer_manager::PeerEvent::Disconnect(_disconnect))) => {
                 // Disconnect event received (stream closed)
             }
             other => panic!("Expected disconnect notification, got: {:?}", other),
@@ -1136,7 +1138,7 @@ mod tests {
 
         // Should receive a disconnect notification
         match tokio::time::timeout(tokio::time::Duration::from_millis(200), event_rx.recv()).await {
-            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Disconnect(_disconnect))) => {
+            Ok(Some(bittorrent_from_scratch::peer_manager::PeerEvent::Disconnect(_disconnect))) => {
                 // Disconnect event received (peer disconnected due to read error)
             }
             other => panic!("Expected disconnect notification, got: {:?}", other),
@@ -1266,7 +1268,7 @@ mod tests {
 
         // The 6th piece should fail with "Queue full"
         match tokio::time::timeout(tokio::time::Duration::from_secs(1), event_rx.recv()).await {
-            Ok(Some(bittorrent_from_scratch::types::PeerEvent::Failure(failed))) => {
+            Ok(Some(bittorrent_from_scratch::peer_manager::PeerEvent::Failure(failed))) => {
                 assert!(
                     matches!(
                         failed.error,
@@ -1334,7 +1336,8 @@ mod tests {
 
         let result =
             tokio::time::timeout(tokio::time::Duration::from_millis(500), event_rx.recv()).await;
-        if let Ok(Some(bittorrent_from_scratch::types::PeerEvent::Failure(failed))) = result {
+        if let Ok(Some(bittorrent_from_scratch::peer_manager::PeerEvent::Failure(failed))) = result
+        {
             assert!(
                 matches!(
                     failed.error,

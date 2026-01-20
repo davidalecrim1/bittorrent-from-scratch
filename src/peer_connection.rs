@@ -14,15 +14,16 @@ use crate::bandwidth_limiter::BandwidthLimiter;
 use crate::download_state::DownloadState;
 use crate::error::AppError;
 use crate::io::{MessageIO, ThrottledMessageIO};
+use crate::peer::Peer;
+use crate::peer_manager::{
+    FailedPiece, MAX_PIECES_PER_PEER, PeerDisconnected, PeerEvent, PieceDownloadRequest,
+    StorePieceRequest,
+};
 use crate::peer_messages::{self, PeerHandshakeMessage};
 use crate::peer_messages::{
     BitfieldMessage, InterestedMessage, PeerMessage, PieceMessage, UnchokeMessage,
 };
 use crate::piece_manager::PieceManager;
-use crate::types::{
-    FailedPiece, MAX_PIECES_PER_PEER, Peer, PeerDisconnected, PeerEvent, PieceDownloadRequest,
-    StorePieceRequest,
-};
 
 const DEFAULT_BLOCK_SIZE: usize = 16 * 1024; // 16 KiB per BitTorrent spec
 
@@ -890,13 +891,12 @@ impl PeerConnection {
         peer_addr: std::net::SocketAddr,
         peer_id: [u8; 20],
         tcp_factory: Arc<dyn crate::tcp_connector::TcpStreamFactory>,
-    ) -> Result<std::collections::BTreeMap<String, crate::types::BencodeTypes>> {
-        use crate::encoding::Decoder;
+    ) -> Result<std::collections::BTreeMap<String, crate::encoding::BencodeTypes>> {
+        use crate::encoding::{BencodeTypes, Decoder};
         use crate::peer_messages::{
             create_extension_handshake, create_metadata_request, parse_extension_handshake,
             parse_metadata_data,
         };
-        use crate::types::BencodeTypes;
 
         info!("Fetching metadata from peer {}", peer_addr);
 

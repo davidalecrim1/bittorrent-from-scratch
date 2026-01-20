@@ -1,5 +1,4 @@
-use bittorrent_from_scratch::encoding::{Decoder, Encoder};
-use bittorrent_from_scratch::types::BencodeTypes;
+use bittorrent_from_scratch::encoding::{BencodeTypes, Decoder, Encoder};
 use std::collections::BTreeMap;
 
 #[test]

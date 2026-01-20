@@ -4,8 +4,8 @@ mod helpers;
 mod tests {
     use super::helpers;
     use bittorrent_from_scratch::error::AppError;
-    use bittorrent_from_scratch::peer_manager::PeerManager;
-    use bittorrent_from_scratch::types::{Peer, PeerManagerConfig, PeerSource};
+    use bittorrent_from_scratch::peer::{Peer, PeerSource};
+    use bittorrent_from_scratch::peer_manager::{PeerManager, PeerManagerConfig};
     use std::sync::Arc;
     use tempfile::NamedTempFile;
     use tokio::sync::mpsc;
@@ -43,7 +43,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_pieces_queues_pieces() {
-        use bittorrent_from_scratch::types::PieceDownloadRequest;
+        use bittorrent_from_scratch::peer_manager::PieceDownloadRequest;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -92,7 +92,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_piece() {
-        use bittorrent_from_scratch::types::PieceDownloadRequest;
+        use bittorrent_from_scratch::peer_manager::PieceDownloadRequest;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -173,7 +173,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_piece_requests() {
-        use bittorrent_from_scratch::types::PieceDownloadRequest;
+        use bittorrent_from_scratch::peer_manager::PieceDownloadRequest;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -217,7 +217,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_peers_from_tracker() {
-        use bittorrent_from_scratch::types::Peer;
+        use bittorrent_from_scratch::peer::Peer;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -270,7 +270,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect_with_peers() {
-        use bittorrent_from_scratch::types::Peer;
+        use bittorrent_from_scratch::peer::Peer;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -377,11 +377,13 @@ mod tests {
 
         // Request the piece first
         peer_manager
-            .request_pieces(vec![bittorrent_from_scratch::types::PieceDownloadRequest {
-                piece_index: 5,
-                expected_hash: [0u8; 20],
-                piece_length: 16384,
-            }])
+            .request_pieces(vec![
+                bittorrent_from_scratch::peer_manager::PieceDownloadRequest {
+                    piece_index: 5,
+                    expected_hash: [0u8; 20],
+                    piece_length: 16384,
+                },
+            ])
             .await
             .unwrap();
 
@@ -402,7 +404,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_failure_retry_logic() {
-        use bittorrent_from_scratch::types::{FailedPiece, PieceDownloadRequest};
+        use bittorrent_from_scratch::peer_manager::{FailedPiece, PieceDownloadRequest};
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -457,7 +459,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_failure_unlimited_retries() {
-        use bittorrent_from_scratch::types::{FailedPiece, PieceDownloadRequest};
+        use bittorrent_from_scratch::peer_manager::{FailedPiece, PieceDownloadRequest};
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -594,7 +596,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_available_peers() {
-        use bittorrent_from_scratch::types::Peer;
+        use bittorrent_from_scratch::peer::Peer;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -646,7 +648,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_assign_piece_to_peer_no_peers_available() {
-        use bittorrent_from_scratch::types::PieceDownloadRequest;
+        use bittorrent_from_scratch::peer_manager::PieceDownloadRequest;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -689,7 +691,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_assign_piece_to_peer_already_downloading() {
-        use bittorrent_from_scratch::types::{Peer, PieceDownloadRequest};
+        use bittorrent_from_scratch::peer::Peer;
+        use bittorrent_from_scratch::peer_manager::PieceDownloadRequest;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -756,7 +759,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_assign_piece_to_peer_with_piece_available() {
-        use bittorrent_from_scratch::types::{Peer, PieceDownloadRequest};
+        use bittorrent_from_scratch::peer::Peer;
+        use bittorrent_from_scratch::peer_manager::PieceDownloadRequest;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -923,7 +927,7 @@ mod tests {
             .await
             .unwrap();
 
-        let peer = bittorrent_from_scratch::types::Peer::new(
+        let peer = bittorrent_from_scratch::peer::Peer::new(
             "192.168.1.1".to_string(),
             6881,
             PeerSource::Tracker,
@@ -1023,7 +1027,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_piece_state_query_methods() {
-        use bittorrent_from_scratch::types::PieceDownloadRequest;
+        use bittorrent_from_scratch::peer_manager::PieceDownloadRequest;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1076,7 +1080,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_failure_with_push_front() {
-        use bittorrent_from_scratch::types::{FailedPiece, PieceDownloadRequest};
+        use bittorrent_from_scratch::peer_manager::{FailedPiece, PieceDownloadRequest};
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1135,7 +1139,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_disconnect() {
-        use bittorrent_from_scratch::types::{Peer, PeerDisconnected};
+        use bittorrent_from_scratch::peer::Peer;
+        use bittorrent_from_scratch::peer_manager::PeerDisconnected;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1179,7 +1184,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_connected_peer_addrs() {
-        use bittorrent_from_scratch::types::Peer;
+        use bittorrent_from_scratch::peer::Peer;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1253,7 +1258,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_peers_retry_success() {
-        use bittorrent_from_scratch::types::Peer;
+        use bittorrent_from_scratch::peer::Peer;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1356,7 +1361,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect_with_peers_at_capacity() {
-        use bittorrent_from_scratch::types::Peer;
+        use bittorrent_from_scratch::peer::Peer;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1437,7 +1442,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_peer_connected() {
-        use bittorrent_from_scratch::types::Peer;
+        use bittorrent_from_scratch::peer::Peer;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1510,7 +1515,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_tracker_populates_available_peers() {
-        use bittorrent_from_scratch::types::Peer;
+        use bittorrent_from_scratch::peer::Peer;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1578,7 +1583,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_connected_peer_count() {
-        use bittorrent_from_scratch::types::Peer;
+        use bittorrent_from_scratch::peer::Peer;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1650,7 +1655,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_disconnect_with_in_flight_pieces() {
-        use bittorrent_from_scratch::types::{Peer, PeerDisconnected, PieceDownloadRequest};
+        use bittorrent_from_scratch::peer::Peer;
+        use bittorrent_from_scratch::peer_manager::{PeerDisconnected, PieceDownloadRequest};
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
         let connector = Arc::new(super::helpers::fakes::FakePeerConnectionFactory::new());
@@ -1727,7 +1733,7 @@ mod tests {
         );
 
         // Try to use connect_peer before initializing - should fail
-        use bittorrent_from_scratch::types::Peer;
+        use bittorrent_from_scratch::peer::Peer;
 
         let peer = Peer::new("192.168.1.1".to_string(), 6881, PeerSource::Tracker);
         let (event_tx, _) = mpsc::unbounded_channel();
@@ -1738,7 +1744,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_assign_piece_selects_least_busy_peer() {
-        use bittorrent_from_scratch::types::{Peer, PeerManagerConfig, PieceDownloadRequest};
+        use bittorrent_from_scratch::peer::Peer;
+        use bittorrent_from_scratch::peer_manager::{PeerManagerConfig, PieceDownloadRequest};
         use std::time::Duration;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
@@ -1854,7 +1861,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_assign_piece_fails_when_no_peer_has_piece() {
-        use bittorrent_from_scratch::types::{Peer, PeerManagerConfig, PieceDownloadRequest};
+        use bittorrent_from_scratch::peer::Peer;
+        use bittorrent_from_scratch::peer_manager::{PeerManagerConfig, PieceDownloadRequest};
         use std::time::Duration;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
@@ -1942,7 +1950,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_drop_useless_peers_when_at_capacity() {
-        use bittorrent_from_scratch::types::{Peer, PeerManagerConfig};
+        use bittorrent_from_scratch::peer::Peer;
+        use bittorrent_from_scratch::peer_manager::PeerManagerConfig;
         use std::time::Duration;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
@@ -2035,7 +2044,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_keep_useless_peers_when_below_capacity() {
-        use bittorrent_from_scratch::types::{Peer, PeerManagerConfig};
+        use bittorrent_from_scratch::peer::Peer;
+        use bittorrent_from_scratch::peer_manager::PeerManagerConfig;
         use std::time::Duration;
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
@@ -2224,7 +2234,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_discover_peers_with_dht_fallback() {
-        use bittorrent_from_scratch::types::Peer;
+        use bittorrent_from_scratch::peer::Peer;
         use std::net::{IpAddr, Ipv4Addr};
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());
@@ -2304,7 +2314,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_discover_peers_skips_dht_when_enough_from_tracker() {
-        use bittorrent_from_scratch::types::Peer;
+        use bittorrent_from_scratch::peer::Peer;
         use std::net::{IpAddr, Ipv4Addr};
 
         let tracker_client = Arc::new(super::helpers::fakes::MockTrackerClient::new());

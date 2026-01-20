@@ -2,7 +2,7 @@ use super::message_io::DhtMessageIO;
 use super::query_manager::{QueryManager, QueryType};
 use super::routing_table::RoutingTable;
 use super::types::{CompactNodeInfo, DhtNode, KrpcMessage, NodeId, Query, Response};
-use crate::types::Peer;
+use crate::peer::{Peer, PeerSource};
 use anyhow::Result;
 use log::{debug, info, warn};
 use std::collections::HashSet;
@@ -321,13 +321,7 @@ impl DhtManager {
             } => {
                 let peers: Vec<Peer> = peer_addrs
                     .into_iter()
-                    .map(|addr| {
-                        Peer::new(
-                            addr.ip().to_string(),
-                            addr.port(),
-                            crate::types::PeerSource::Dht,
-                        )
-                    })
+                    .map(|addr| Peer::new(addr.ip().to_string(), addr.port(), PeerSource::Dht))
                     .collect();
 
                 let node_list_v4 = nodes_ipv4.unwrap_or_default();

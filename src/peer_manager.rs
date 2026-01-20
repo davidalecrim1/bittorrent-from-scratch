@@ -3,23 +3,22 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use crate::bandwidth_limiter::BandwidthLimiter;
 use crate::encoding::Decoder;
 use crate::error::{AppError, Result};
+use crate::peer::{Peer, PeerAddr, PeerSource};
+use crate::peer_connection::PeerConnection;
 use crate::peer_messages::{HaveMessage, PeerMessage};
 use crate::piece_manager::{FilePieceManager, PieceManager};
 use crate::tcp_connector::DefaultTcpStreamFactory;
-use crate::tracker_client::{HttpTrackerClient, TrackerClient};
-use crate::types::{
-    AnnounceRequest, ConnectedPeer, FailedPiece, MAX_PIECES_PER_PEER, Peer, PeerAddr,
-    PeerConnection, PeerDisconnected, PeerEvent, PeerManagerConfig, PeerManagerHandle,
-    PieceDownloadRequest,
-};
+use crate::tracker_client::{AnnounceRequest, HttpTrackerClient, TrackerClient};
 
 use crate::dht::DhtClient;
 
 use crate::terminal_ui::{DhtStats, ProgressDisplay, ProgressStats};
 use crate::{BandwidthStats, PeerConnectionStats};
+use anyhow::anyhow;
 use async_trait::async_trait;
 use log::{debug, info, warn};
 use reqwest::Client;
+use std::collections::HashSet;
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::time;
 
@@ -29,6 +28,134 @@ const PEER_CONNECTOR_INTERVAL_SECS: u64 = 10;
 const STALE_DOWNLOAD_CHECK_INTERVAL_SECS: u64 = 30;
 const MAX_CONCURRENT_HANDSHAKES: usize = 10;
 const CLIENT_PEER_ID: &[u8; 20] = b"bittorrent-rust-0001";
+
+/// Maximum number of pieces that can be downloaded concurrently from a single peer.
+pub const MAX_PIECES_PER_PEER: usize = 3;
+
+#[derive(Debug, Clone)]
+pub struct PieceDownloadRequest {
+    pub piece_index: u32,
+    pub piece_length: usize,
+    pub expected_hash: [u8; 20],
+}
+
+#[derive(Debug, Clone)]
+pub struct PeerManagerConfig {
+    pub info_hash: [u8; 20],
+    pub client_peer_id: [u8; 20],
+    pub file_size: usize,
+    pub num_pieces: usize,
+    pub piece_length: usize,
+}
+
+#[derive(Debug)]
+pub struct ConnectedPeer {
+    peer: Peer,
+    download_request_tx: mpsc::UnboundedSender<PieceDownloadRequest>,
+    message_tx: mpsc::UnboundedSender<PeerMessage>,
+    bitfield: Arc<RwLock<HashSet<u32>>>,
+}
+
+impl ConnectedPeer {
+    pub fn new(
+        peer: Peer,
+        download_request_tx: mpsc::UnboundedSender<PieceDownloadRequest>,
+        message_tx: mpsc::UnboundedSender<PeerMessage>,
+        bitfield: Arc<RwLock<HashSet<u32>>>,
+    ) -> Self {
+        Self {
+            peer,
+            download_request_tx,
+            message_tx,
+            bitfield,
+        }
+    }
+
+    pub async fn has_piece(&self, piece_index: u32) -> bool {
+        let bf = self.bitfield.read().await;
+        bf.contains(&piece_index)
+    }
+
+    pub async fn piece_count(&self) -> usize {
+        let bf = self.bitfield.read().await;
+        bf.len()
+    }
+
+    pub async fn bitfield_len(&self) -> usize {
+        self.bitfield.read().await.len()
+    }
+
+    pub fn request_piece(&self, request: PieceDownloadRequest) -> Result<()> {
+        self.download_request_tx
+            .send(request)
+            .map_err(|e| anyhow!("Failed to send download request: {}", e))
+    }
+
+    pub fn send_message(&self, msg: PeerMessage) -> Result<()> {
+        self.message_tx
+            .send(msg)
+            .map_err(|e| anyhow!("Failed to send message: {}", e))
+    }
+
+    pub fn get_sender(&self) -> mpsc::UnboundedSender<PieceDownloadRequest> {
+        self.download_request_tx.clone()
+    }
+
+    pub fn peer_addr(&self) -> String {
+        self.peer.get_addr()
+    }
+
+    pub fn peer(&self) -> &Peer {
+        &self.peer
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StorePieceRequest {
+    pub piece_index: u32,
+    pub peer_addr: String,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub struct FailedPiece {
+    pub piece_index: u32,
+    pub peer_addr: String,
+    pub error: AppError,
+    pub push_front: bool,
+}
+
+#[derive(Debug)]
+pub struct PeerDisconnected {
+    pub peer: Peer,
+    pub error: AppError,
+}
+
+/// Unified event type for peer manager events
+#[derive(Debug)]
+pub enum PeerEvent {
+    StorePiece(StorePieceRequest),
+    Failure(FailedPiece),
+    Disconnect(PeerDisconnected),
+    PeerChoked(String),
+    PeerUnchoked(String),
+}
+
+/// Handle for managing PeerManager lifecycle
+pub struct PeerManagerHandle {
+    shutdown_tx: tokio::sync::broadcast::Sender<()>,
+}
+
+impl PeerManagerHandle {
+    pub fn new(shutdown_tx: tokio::sync::broadcast::Sender<()>) -> Self {
+        Self { shutdown_tx }
+    }
+
+    /// Signal shutdown to all background tasks
+    pub fn shutdown(self) {
+        let _ = self.shutdown_tx.send(());
+    }
+}
 
 #[async_trait]
 pub trait PeerConnectionFactory: Send + Sync {
@@ -427,11 +554,11 @@ impl PeerManager {
                     let peers = available_peers.read().await;
                     let tracker = peers
                         .values()
-                        .filter(|p| p.source == crate::types::PeerSource::Tracker)
+                        .filter(|p| p.source == PeerSource::Tracker)
                         .count();
                     let dht = peers
                         .values()
-                        .filter(|p| p.source == crate::types::PeerSource::Dht)
+                        .filter(|p| p.source == PeerSource::Dht)
                         .count();
                     (tracker, dht)
                 };
