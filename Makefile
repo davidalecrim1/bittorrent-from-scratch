@@ -4,7 +4,7 @@ sample-run-1: clean
 		-o ./output/ \
 		--max-download-rate 10M \
 		--max-upload-rate 200K \
-		--max-peers 40 \
+		--max-peers 20 \
 		--log-dir ./logs
 
 sample-run-2: clean
@@ -13,7 +13,7 @@ sample-run-2: clean
 		-o ./output/ \
 		--max-download-rate 10M \
 		--max-upload-rate 200K \
-		--max-peers 40 \
+		--max-peers 20 \
 		--log-dir ./logs
 
 sample-run-3: clean
@@ -22,7 +22,7 @@ sample-run-3: clean
 		-o ./output/ \
 		--max-download-rate 10M \
 		--max-upload-rate 200K \
-		--max-peers 40 \
+		--max-peers 20 \
 		--log-dir ./logs \
 		--no-tracker
 
@@ -32,7 +32,7 @@ sample-run-4: clean
 		-o ./output/ \
 		--max-download-rate 10M \
 		--max-upload-rate 200K \
-		--max-peers 40 \
+		--max-peers 20 \
 		--log-dir ./logs
 
 sample-run-5: clean
@@ -41,7 +41,7 @@ sample-run-5: clean
 		-o ./output/ \
 		--max-download-rate 10M \
 		--max-upload-rate 200K \
-		--max-peers 40 \
+		--max-peers 20 \
 		--log-dir ./logs
 
 sample-run-magnet-1: clean
@@ -51,7 +51,7 @@ sample-run-magnet-1: clean
 		--name archlinux-2026.01.01-x86_64.iso \
 		--max-download-rate 10M \
 		--max-upload-rate 200K \
-		--max-peers 40 \
+		--max-peers 20 \
 		--log-dir ./logs
 
 build:
