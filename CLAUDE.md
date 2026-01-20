@@ -4,14 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a BitTorrent client implementation in Rust built from scratch for educational purposes. It parses .torrent files, connects to tracker servers, discovers peers, and downloads files using the BitTorrent peer protocol over raw TCP connections.
+This is a BitTorrent client implementation in Rust built from scratch for educational purposes. It supports both .torrent files and magnet links, connects to tracker servers, discovers peers via DHT, and downloads files using the BitTorrent peer protocol over raw TCP connections. Features include BEP 9 metadata exchange for magnet links and a real-time multi-line terminal UI for progress tracking.
 
 ## Development Commands
 
 ### Build and Run
 ```bash
 cargo build
-cargo run -- -i <path-to-torrent-file> -o <output-directory>
+cargo run -- -i <path-to-torrent-file-or-magnet-link> -o <output-directory>
+```
+
+Examples:
+```bash
+# Download from .torrent file
+cargo run -- -i ./tests/testdata/sample.torrent -o ./downloads
+
+# Download from magnet link
+cargo run -- -i "magnet:?xt=urn:btih:..." -o ./downloads
 ```
 
 ### Testing
@@ -62,14 +71,16 @@ The application uses `env_logger` with debug level enabled by default in main.rs
 - **main.rs**: Entry point, initializes components and CLI
 - **cli.rs**: Command-line argument parsing using clap
 - **encoding.rs**: Bencode encoder/decoder implementation
-- **messages.rs**: BitTorrent peer protocol message types and serialization
+- **messages.rs**: BitTorrent peer protocol message types and serialization (includes Extension Protocol support)
 - **types.rs**: Core types including PeerConnection, PeerManagerHandle, and protocol structs
-- **peer_connection.rs**: Individual peer connection lifecycle and piece download logic
+- **peer_connection.rs**: Individual peer connection lifecycle, piece download logic, and metadata fetching
 - **peer_manager.rs**: Peer pool orchestration, piece assignment, retry logic, and PeerConnectionFactory trait
-- **bittorrent_client.rs**: Torrent metadata, file I/O, piece verification, and download progress tracking
+- **bittorrent_client.rs**: Torrent metadata, file I/O, piece verification, magnet link handling, and download progress tracking
+- **magnet_link.rs**: Magnet link parsing (info hash, display name, tracker URLs)
 - **tracker_client.rs**: HTTP tracker communication and TrackerClient trait
 - **tcp_connector.rs**: TCP connection establishment and TcpStreamFactory trait
 - **io.rs**: Message I/O implementation using tokio_util::codec and MessageIO trait
+- **terminal_ui.rs**: Multi-line terminal progress display with ANSI escape codes
 - **dht/**: DHT (Distributed Hash Table) implementation for trackerless peer discovery
   - **types.rs**: DHT protocol types (NodeId, KrpcMessage, Query/Response enums)
   - **routing_table.rs**: Kademlia routing table with 160 k-buckets
@@ -104,7 +115,7 @@ Production code uses concrete implementations (`DefaultTcpStreamFactory`, `TcpMe
 - **Disconnect handler**: Cleans up disconnected peers, requeues in-flight pieces
 - **Tracker refresh task**: Periodically announces to HTTP tracker for new peers (every 30 minutes)
 - **DHT refresh task**: Periodically queries DHT for new peers (every 30 minutes)
-- **Progress reporter**: Displays download progress once per minute
+- **Progress reporter**: Displays multi-line terminal UI with download progress every 2 seconds
 
 All tasks listen on a `broadcast::Receiver<()>` shutdown channel and terminate gracefully via `tokio::select!` when `PeerManagerHandle.shutdown()` is called.
 
@@ -133,6 +144,10 @@ Pieces flow through channels: BitTorrent client requests pieces → PeerManager 
 **Tracker Protocol**: Uses compact format (compact=1) to get peer list as binary data.
 
 **DHT Protocol**: Implements Kademlia-based DHT following BEP 5. Uses KRPC protocol over UDP with bencode encoding. Enables trackerless peer discovery via iterative lookups (alpha=3 parallel queries, max 8 iterations). See docs/DHT.md for detailed protocol documentation.
+
+**Extension Protocol**: Implements BEP 9 (metadata exchange) and BEP 10 (extension protocol) for magnet link support. Allows fetching torrent metadata from peers using the `ut_metadata` extension. See docs/MAGNET_LINKS.md for detailed implementation.
+
+**Terminal UI**: Multi-line progress display using ANSI escape codes. Clears screen on first print, then updates in place every 2 seconds. Shows peer statistics, piece progress, bandwidth rates, and DHT routing table stats.
 
 ## Important Implementation Details
 

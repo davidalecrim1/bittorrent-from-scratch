@@ -14,9 +14,11 @@ pub mod peer_manager;
 pub mod peer_messages;
 pub mod piece_manager;
 pub mod tcp_connector;
+pub mod terminal_ui;
 pub mod tracker_client;
 pub mod types;
 
 pub use bandwidth_stats::BandwidthStats;
 pub use peer_connection_stats::PeerConnectionStats;
 pub use piece_manager::{FilePieceManager, InMemoryPieceManager, PieceManager};
+pub use terminal_ui::{DhtStats, ProgressDisplay, ProgressStats};

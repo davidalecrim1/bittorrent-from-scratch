@@ -7,13 +7,15 @@ This project uses an **actor concurrency model** with **event-driven communicati
 ## Features
 
 - Parse .torrent files using custom Bencode decoder
+- **Magnet link support** with metadata fetching via Extension Protocol (BEP 9) - see [docs/MAGNET_LINKS.md](docs/MAGNET_LINKS.md)
+- **DHT support** for trackerless peer discovery (BEP 5)
 - Connect to tracker servers and discover peers
 - Download files from multiple peers concurrently (up to 20 peers by default)
 - Block pipelining: 5 concurrent block requests per peer for optimal throughput
 - Verify downloaded pieces with SHA1 hashing
 - Automatic retry logic for failed pieces with unlimited retries
 - Graceful shutdown with proper piece requeuing on peer disconnect
-- Real-time progress tracking in terminal
+- **Real-time multi-line terminal UI** with live progress updates every 2 seconds
 
 ## Quick Start
 
@@ -35,28 +37,46 @@ This installs the binary as `bittorrent` in `~/.local/bin/`. Make sure `~/.local
 ### Usage
 
 ```bash
-bittorrent -i <torrent-file> -o <output-directory> [options]
+bittorrent -i <torrent-file-or-magnet-link> -o <output-directory> [options]
 
 Options:
-  -i, --input <FILE>              Path to .torrent file
+  -i, --input <FILE|MAGNET>       Path to .torrent file or magnet link
   -o, --output <DIR>              Output directory for downloaded file
+  --name <NAME>                   Output filename (for magnet links without display name)
   --max-download-rate <RATE>      Max download rate (e.g., 2M, 500K)
   --max-upload-rate <RATE>        Max upload rate (e.g., 100K, 1M)
   --max-peers <NUM>               Maximum concurrent peers (default: 20)
+  --no-tracker                    Disable HTTP tracker (DHT only)
+  --no-dht                        Disable DHT (tracker only)
   --log-dir <DIR>                 Directory to store log files
                                   (default: ~/Library/Logs/bittorrent on macOS, ./logs elsewhere)
 ```
 
-Example:
+Examples:
 ```bash
+# Download from .torrent file
 bittorrent -i ./tests/testdata/ubuntu-24.04.3-desktop-amd64.iso.torrent -o ~/Downloads --max-download-rate 2M --max-peers 15
+
+# Download from magnet link
+bittorrent -i "magnet:?xt=urn:btih:1e873cd33f55737aaaefc0c282c428593c16e106&dn=archlinux-2026.01.01-x86_64.iso" -o ~/Downloads
 ```
 
 ### Example Output
 
+The terminal UI clears the screen and displays a real-time multi-line progress view:
+
 ```
-Peers: 5 connected, 52 available, 0 choking | Pieces: 4/24208 (0%) - 24200 pending, 4 downloading | ↓ 59.2 KB/s ↑ 59.3 KB/s
+Peers:     11 connected | 24 available (24 tracker, 0 DHT) | 0 choking
+Pieces:    342/24208 (1%) | 23842 pending | 24 downloading
+Bandwidth: ↓ 2.8 MB/s | ↑ 51 KB/s
+DHT:       18 nodes | 5 buckets (1 full) | 18 IPv4, 0 IPv6
 ```
+
+The display updates every 2 seconds, showing:
+- **Peers**: Connected peers, available peers (breakdown by source), choking peers
+- **Pieces**: Progress, pending/downloading counts
+- **Bandwidth**: Real-time download/upload speeds
+- **DHT**: Routing table statistics (nodes, buckets, IPv4/IPv6)
 
 Watch as pieces flow in from multiple peers across the internet and reassemble into a verified file!
 
@@ -67,6 +87,8 @@ Watch as pieces flow in from multiple peers across the internet and reassemble i
 
 ### Protocol & Networking
 - **Protocol**: BitTorrent peer wire protocol over TCP with handshake, bitfield, interested, unchoke, request, and piece messages
+- **Extension Protocol**: BEP 9 (metadata exchange) and BEP 10 (extension protocol) for magnet link support
+- **DHT**: BEP 5 implementation for trackerless peer discovery with Kademlia routing table
 - **Async Runtime**: Tokio-based with split read/write tasks communicating via `mpsc` channels
 - **Piece Validation**: SHA1 hashing of downloaded pieces (20 bytes per hash)
 - **Block Size**: 16 KiB per network request (as per BitTorrent spec)
@@ -111,9 +133,12 @@ When the download finishes, you'll see a summary:
 
 ## Limitations & Educational Notes
 
-This is an **MVP implementation** focused on learning:
+This is an **educational implementation** focused on learning:
 
 - Single-file torrents only (no multi-file support)
-- No DHT (Distributed Hash Table) support
-- No magnet link support
-- Built from scratch for educational purposes
+- Built from scratch for educational purposes (not production-ready)
+
+## Additional Documentation
+
+- **Magnet Links**: See [docs/MAGNET_LINKS.md](docs/MAGNET_LINKS.md) for detailed implementation of magnet link support and Extension Protocol
+- **DHT Protocol**: See [docs/DHT.md](docs/DHT.md) for DHT implementation details

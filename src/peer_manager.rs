@@ -15,6 +15,7 @@ use crate::types::{
 
 use crate::dht::DhtClient;
 
+use crate::terminal_ui::{DhtStats, ProgressDisplay, ProgressStats};
 use crate::{BandwidthStats, PeerConnectionStats};
 use async_trait::async_trait;
 use log::{debug, info, warn};
@@ -23,7 +24,7 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::time;
 
 const WATCH_TRACKER_DELAY: u64 = 30;
-const PROGRESS_REPORT_INTERVAL_SECS: u64 = 10;
+const PROGRESS_REPORT_INTERVAL_SECS: u64 = 2;
 const PEER_CONNECTOR_INTERVAL_SECS: u64 = 10;
 const STALE_DOWNLOAD_CHECK_INTERVAL_SECS: u64 = 30;
 const MAX_CONCURRENT_HANDSHAKES: usize = 10;
@@ -408,10 +409,11 @@ impl PeerManager {
         tokio::task::spawn(async move {
             let mut interval =
                 tokio::time::interval(Duration::from_secs(PROGRESS_REPORT_INTERVAL_SECS));
+            let mut display = ProgressDisplay::new();
+
             loop {
                 interval.tick().await;
 
-                // Get atomic snapshot from PieceManager
                 let snapshot = peer_manager_progress.get_piece_snapshot().await;
                 let (completed, pending, in_flight) = (
                     snapshot.completed_count,
@@ -421,7 +423,6 @@ impl PeerManager {
 
                 let (total_peers, choking_peers) = connection_stats.get_stats();
 
-                // Calculate peer source breakdown
                 let (tracker_count, dht_count) = {
                     let peers = available_peers.read().await;
                     let tracker = peers
@@ -435,57 +436,42 @@ impl PeerManager {
                     (tracker, dht)
                 };
                 let available_peer_count = tracker_count + dht_count;
-                let percentage = (completed * 100) / num_pieces;
 
-                // Get bandwidth rates
                 let download_rate = bandwidth_stats.get_download_rate();
                 let upload_rate = bandwidth_stats.get_upload_rate();
 
-                // Format rates
-                let download_str = Self::format_rate(download_rate);
-                let upload_str = Self::format_rate(upload_rate);
-
-                // Print to terminal on same line (overwrites previous)
-                // Note: We use print! (not info!) to avoid newlines from the logger
-                use std::io::Write;
-
-                // Get DHT stats if available
-                let dht_stats_str = if let Some(ref dht_client) = dht_client {
+                let dht_stats = if let Some(ref dht_client) = dht_client {
                     if let Ok(stats) = dht_client.get_stats().await {
-                        format!(
-                            " | DHT: {} nodes ({} buckets, {} full, {} IPv4, {} IPv6)",
-                            stats.total_nodes,
-                            stats.buckets_used,
-                            stats.buckets_full,
-                            stats.ipv4_nodes,
-                            stats.ipv6_nodes
-                        )
+                        Some(DhtStats {
+                            total_nodes: stats.total_nodes,
+                            buckets_used: stats.buckets_used,
+                            buckets_full: stats.buckets_full,
+                            ipv4_nodes: stats.ipv4_nodes,
+                            ipv6_nodes: stats.ipv6_nodes,
+                        })
                     } else {
-                        String::new()
+                        None
                     }
                 } else {
-                    String::new()
+                    None
                 };
 
-                // Use ANSI escape codes to clear line and move cursor to start
-                print!(
-                    "\r\x1B[KPeers: {} connected, {} available ({} tracker, {} DHT), {} choking | Pieces: {}/{} ({}%) - {} pending, {} downloading | ↓ {} ↑ {}{}",
+                let stats = ProgressStats {
                     total_peers,
+                    choking_peers,
                     available_peer_count,
                     tracker_count,
                     dht_count,
-                    choking_peers,
                     completed,
                     num_pieces,
-                    percentage,
                     pending,
                     in_flight,
-                    download_str,
-                    upload_str,
-                    dht_stats_str
-                );
+                    download_rate,
+                    upload_rate,
+                    dht_stats,
+                };
 
-                let _ = std::io::stdout().flush();
+                display.print(&stats);
             }
         });
 
@@ -1429,16 +1415,5 @@ impl PeerManager {
     #[doc(hidden)]
     pub async fn has_piece(&self, piece_index: u32) -> bool {
         self.piece_manager.has_piece(piece_index).await
-    }
-
-    /// Formats a bandwidth rate in bytes/sec to a human-readable string
-    fn format_rate(bytes_per_sec: f64) -> String {
-        if bytes_per_sec >= 1_048_576.0 {
-            format!("{:.2} MB/s", bytes_per_sec / 1_048_576.0)
-        } else if bytes_per_sec >= 1_024.0 {
-            format!("{:.1} KB/s", bytes_per_sec / 1_024.0)
-        } else {
-            format!("{:.0} B/s", bytes_per_sec)
-        }
     }
 }
