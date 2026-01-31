@@ -1,6 +1,6 @@
 # BitTorrent Client (Rust)
 
-Educational BitTorrent client implementation in Rust, built from scratch to explore distributed systems, network protocols, and concurrent programming.
+BitTorrent client implementation in Rust, built from scratch to explore distributed systems, network protocols, and concurrent programming.
 
 This project uses an **actor concurrency model** with **event-driven communication** through channels, enabling true parallelism while naturally preventing shared mutable state issues.
 
